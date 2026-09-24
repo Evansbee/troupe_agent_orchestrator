@@ -27,19 +27,30 @@ Code: `src/troupe/runners.py`.
     fields. The Settings view will show "not supported" next to level for local agents (#5).
   - Test: argv built for each provider/level pair.
 
-- **REQ-BE-015 [ ]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
+- **REQ-BE-015 [x]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
   2026-09-24: agents inherited `~/.codex/config.toml` plugins, including computer-use, browser, app tools and a notify
   hook into the Computer Use app. Those could drive the human's desktop and apps, and are a likely cause of the hangs.
   - Codex runs with `CODEX_HOME=.troupe/codex-home/<agent>`. That directory has a minimal generated `config.toml`
     (model/level from team.yaml plus the troupe MCP server, **no plugins, no notify**) and a symlink to the human's
     `~/.codex/auth.json` for login only.
+  - **Allowlist, not just omission** (QA rejection of the first cut, 2026-09-24): a bare CODEX_HOME with no
+    `[features]` section still auto-enables `apps`/`plugins` from the account linked via the symlinked auth, which
+    sync in the human's ChatGPT-account connectors (Gmail send/delete/forward, Canva, ...) as tools. The generated
+    config explicitly sets `apps`, `plugins`, `remote_plugin`, `computer_use`, `browser_use`, `browser_use_external`,
+    `in_app_browser` and `tool_suggest` to `false` under `[features]`. The same names are repeated as
+    `-c features.<name>=false` launch argv, so a stale or hand-edited `config.toml` in the home can't re-enable them.
+    Only `mcp_servers.troupe` is configured — no other MCP server.
   - Session resume (`exec resume`) keeps working, because sessions live under the new home. BE-014 usage reading
     looks in these homes (and the app-server fallback).
   - This is the first layer of the codex sandbox (REQ-SAFE-050, #43). `runners.py` is protected, so the human
     approves the merge (REQ-SAFE-020).
   - Test:
     - the launch env sets `CODEX_HOME`;
-    - the generated config has no `plugins` or `notify`;
+    - the generated config has no `plugins` or `notify`, and explicitly disables every feature above with
+      `mcp_servers` containing only `troupe` (parsed with `tomllib`);
+    - the launch argv repeats the same feature disables as `-c` overrides;
+    - live (skipped without a logged-in `codex` CLI): a real isolated CODEX_HOME shows nothing enabled in
+      `codex plugin list` and every listed feature above as `false` in `codex features list`;
     - live: during a codex run, `ps` shows no ChatGPT.app, cua_node or node_repl children;
     - login and resume work.
 
