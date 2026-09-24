@@ -380,16 +380,31 @@ class TeamAPI:
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, title: str, content: str = "", rationale: str = "",
                  kind: Literal["decision", "note", "fact", "idea", "preference"] = "decision",
-                 private: bool = False) -> str:
+                 private: bool = False, supersedes: int | None = None) -> str:
         """Record something in memory so it outlives this session. Use for every non-trivial decision
         (with its `rationale` — WHY), facts learned, the human's preferences, and parked ideas.
-        Team memory is visible to everyone; `private=True` keeps a working note just for you."""
-        mid = self.store.remember(self.me, title, content, rationale, kind, "private" if private else "team")
-        return f"Remembered ({kind} #{mid})."
+        Team memory is visible to everyone; `private=True` keeps a working note just for you.
+        Pass `supersedes=<memory id>` when this replaces an earlier one — the old memory is marked
+        superseded (hidden from prompts and recall, never deleted) and the Memory view links to this one.
+        You can't supersede a memory that's pinned, authored by the human, or a `preference` — those
+        are the human's; ask_human instead."""
+        if supersedes is not None:
+            old = self.store.memory(supersedes)
+            if old is None:
+                return f"ERROR: memory #{supersedes} not found."
+            if old["superseded_by"]:
+                return f"ERROR: memory #{supersedes} is already superseded by #{old['superseded_by']}."
+            if self.me != "human" and (old["pinned"] or old["agent"] == "human" or old["kind"] == "preference"):
+                return "ERROR: that's the human's — ask the human (ask_human) instead"
+        mid = self.store.remember(self.me, title, content, rationale, kind, "private" if private else "team",
+                                  supersedes=supersedes)
+        return f"Remembered ({kind} #{mid})." + (f" Superseded #{supersedes}." if supersedes is not None else "")
 
-    def recall(self, query: str = "", agent: str = "", kind: str = "", limit: int = 15) -> str:
+    def recall(self, query: str = "", agent: str = "", kind: str = "", limit: int = 15,
+               include_superseded: bool = False) -> str:
         """Search team memory (plus your private notes) — decisions, facts, preferences, ideas.
-        `query`: keywords (all must match). Filter by `agent` or `kind`. Check before deciding or asking."""
+        `query`: keywords (all must match). Filter by `agent` or `kind`. Check before deciding or asking.
+        Superseded memories are hidden by default; pass `include_superseded=True` to see them too."""
         if agent:
             try:
                 ids = self.names.resolve(agent)
@@ -399,7 +414,7 @@ class TeamAPI:
             except ValueError as e:
                 return f"ERROR: {e}"
         rows = self.store.memories(agent=agent or None, query=query, kind=kind, limit=limit,
-                                   include_private_of=self.me)
+                                   include_private_of=self.me, include_superseded=include_superseded)
         answered = []
         if query:
             answered = [q for q in self.store.questions(status="answered", limit=100)
@@ -408,6 +423,7 @@ class TeamAPI:
         if not rows and not answered:
             return "Nothing found."
         out = [f"[{m['kind']} #{m['id']}] {m['title']} — {self.names.name(m['agent'])}, {ago(m['ts'])}"
+               + (f" [superseded by #{m['superseded_by']}]" if m["superseded_by"] else "")
                + (f"\n  {m['content']}" if m["content"] else "")
                + (f"\n  why: {m['rationale']}" if m["rationale"] else "") for m in rows]
         out += [f"[answered question #{q['id']}] {q['question']} → human: {q['answer']}" for q in answered]

@@ -751,7 +751,14 @@ class Engine(MergeGateMixin):
                        if w.chat else "Your questions still awaiting the human (don't re-ask)")
             p.append(f"\n## {heading}\n"
                      + "\n".join(f"- #{q['id']}: {q['question']}" for q in pending_q))
-        decisions = s.memories(kind="decision", limit=10, include_private_of=a.id)
+        pinned = s.memories(limit=50, include_private_of=a.id, pinned_only=True)
+        if pinned:
+            p.append("\n## Pinned memories\n" + "\n".join(
+                f"- [{m['kind']} #{m['id']}] {m['title']}" + (f" — why: {m['rationale'][:160]}" if m["rationale"] else "")
+                for m in pinned))
+        pinned_ids = {m["id"] for m in pinned}
+        decisions = [m for m in s.memories(kind="decision", limit=10, include_private_of=a.id)
+                    if m["id"] not in pinned_ids]
         if decisions:
             p.append("\n## Recent team decisions\n" + "\n".join(
                 f"- {m['title']} ({names.name(m['agent'])}, {ago(m['ts'])})" + (f" — why: {m['rationale'][:160]}" if m["rationale"] else "")
