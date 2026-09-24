@@ -51,10 +51,12 @@ carry it back into the rest of the GUI.
   running it shows the **Engine offline** state below, not an error screen — Stage always renders
   something calm.
 - `TROUPE_STAGE_DEMO=1` (with `TROUPE_TAB=Stage TROUPE_SHOT=...`) seeds one of everything at once for
-  a single representative screenshot: a working node, an idle node, a parked node, a throttled node,
-  one in-flight comet mid-label, one fan-out (2-3 comets from one sender), one attached task card, one
-  bounce-in-progress, the gold YOU glow at count 2, and a full 5-line ticker. Design elements below are
-  written so all of those can coexist without overlapping.
+  a single representative screenshot: a working node (with model chip + mail pips), an idle node, a
+  parked node, one node in each of the five waiting substates from `design/pulse.md` (including a
+  rate-limited one with its provider badge lit), one in-flight comet mid-label, one fan-out (2-3 comets
+  from one sender), one attached task card, one bounce-in-progress, the gold YOU glow at count 2, and a
+  full 5-line ticker with at least one work-entry slot. Design elements below (and in `design/pulse.md`)
+  are written so all of those can coexist without overlapping.
 
 ## Layout
 
