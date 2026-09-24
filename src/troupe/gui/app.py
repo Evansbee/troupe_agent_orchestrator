@@ -24,10 +24,11 @@ class App:
         self.data = Data(cfg)
         self.ui = UI()
         self.tab = "Chat"
-        self.chat_with = "pm"
+        self.chat_with = next((a.id for a in cfg.agents if a.role == "pm"), cfg.agents[0].id)
         self.sel_agent = next((a.id for a in cfg.agents if a.role == "lead"), cfg.agents[0].id)
         self.sel_task: int | None = None
         self.sel_run: int | None = None
+        self.run_view = "Transcript"
         self.mail_filter: str | None = None
         self.mem_filter: str | None = None
         self.doc_sel: str | None = None
@@ -180,6 +181,13 @@ class App:
         if ui.hover(pr) and d.kv.get("throttled"):
             ui.tip(str(d.kv.get("throttled")))
         x = pr.r + 12
+        for filename in ("team.yaml", "troupe.toml"):
+            error = d.kv.get(f"config_error.{filename}")
+            if error:
+                width = ui.pill(x, r.cy - 13, f"{filename} invalid", T.RED, 12, h=26)
+                if ui.hover(Rect(x, r.cy - 13, width, 26)):
+                    ui.tip(str(error))
+                x += width + 8
         for backend in ("claude", "codex", "local"):
             limit = d.limit_label(backend)
             if limit:

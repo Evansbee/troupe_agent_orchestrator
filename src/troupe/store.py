@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, started REAL, ended REAL, reason TEXT,
   status TEXT DEFAULT 'running', cost REAL DEFAULT 0, tokens INTEGER DEFAULT 0,
-  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0
+  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0,
+  prompt TEXT DEFAULT '', system TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS run_lines(
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, ts REAL, kind TEXT, text TEXT
@@ -80,6 +81,11 @@ class Store:
             columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
             if "answered_via" not in columns:
                 self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
+            run_columns = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
+            if "prompt" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
+            if "system" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -292,9 +298,16 @@ class Store:
         return self.q(sql, *args)
 
     # ── runs ──────────────────────────────────────────────────────────────
-    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool) -> int:
-        return self.x("INSERT INTO runs(agent,started,reason,task_id,cwd,chat) VALUES(?,?,?,?,?,?)",
-                      agent, now(), reason, task_id, cwd, int(chat))
+    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool,
+                 prompt: str = "", system: str = "") -> int:
+        return self.x("""INSERT INTO runs(agent,started,reason,task_id,cwd,chat,prompt,system)
+                         VALUES(?,?,?,?,?,?,?,?)""",
+                      agent, now(), reason, task_id, cwd, int(chat), prompt, system)
+
+    def update_run_prompt(self, run_id: int, prompt: str) -> None:
+        """Re-persist the wake prompt after it's mutated post-launch (e.g. worktree setup appending
+        failure context in Engine._run), so the inspector matches what the backend actually received."""
+        self.x("UPDATE runs SET prompt=? WHERE id=?", prompt, run_id)
 
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",

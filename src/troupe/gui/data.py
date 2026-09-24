@@ -94,7 +94,8 @@ class Data:
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
         self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
-                                                       "limit.claude", "limit.codex", "limit.local")}
+                                                       "limit.claude", "limit.codex", "limit.local",
+                                                       "config_error.team.yaml", "config_error.troupe.toml")}
         self.cost_24h = s.scalar("SELECT SUM(cost) FROM runs WHERE started>?", now - 86400, default=0.0)
         self.runs_1h = s.scalar("SELECT COUNT(*) FROM runs WHERE started>? AND chat=0", now - 3600, default=0)
         self.chat_unread = {r["sender"]: r["n"] for r in s.q(

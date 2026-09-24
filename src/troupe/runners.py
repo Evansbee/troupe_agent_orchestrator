@@ -336,6 +336,9 @@ class CodexRunner(Runner):
         common = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", *overrides]
         if a.model:
             common += ["-m", a.model]
+        if a.effort:
+            level = "xhigh" if a.effort == "max" else a.effort
+            common += ["-c", f"model_reasoning_effort={level}"]
         common += a.extra_args
         if session_id:
             args = [cfg.backends.codex_command, "exec", "resume", *common, session_id, "-"]

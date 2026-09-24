@@ -779,6 +779,10 @@ def docs_view(app: "App", r: Rect) -> None:
 # Agent detail
 # ════════════════════════════════════════════════════════════════════════════
 _lines_cache: dict[int, list[dict]] = {}
+_run_picker_agent: str | None = None  # agent id whose run picker is open, if any
+_run_picker_anchor: Rect | None = None  # this frame's selector-button rect, for the popover to anchor to
+_run_picker_runs: list[dict] = []  # this frame's full run list for the open picker's agent
+_RUN_STATUS_COLOR = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}
 
 
 def _run_lines(app: "App", run_id: int, live: bool) -> list[dict]:
@@ -839,33 +843,142 @@ def agent_view(app: "App", r: Rect) -> None:
     left, right = body.cut_left(body.w * 0.63)
     ui.rect(Rect(left.r, left.y, 1, left.h), T.BORDER)
     # runs strip
-    runs = d.store.runs(a["id"], limit=14) if (ui.t % 1 < 0.05 or not hasattr(app, "_runs")) else app._runs
+    runs = d.store.runs(a["id"], limit=200) if (ui.t % 1 < 0.05 or not hasattr(app, "_runs")) else app._runs
     app._runs = runs
     if runs and a["id"] != getattr(app, "_runs_agent", None):
         app._runs_agent = a["id"]
         app.sel_run = None
     rsel = app.sel_run or (runs[0]["id"] if runs else None)
     strip, tr = left.cut_top(46)
-    x = strip.x + 14
-    for run in runs:
-        label = f"#{run['id']} {run['reason']}"
-        c = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}.get(run["status"], T.TEXT_FAINT)
-        clicked, w = ui.chip(f"run:{run['id']}", x, strip.y + 10, label, run["id"] == rsel, c, 11.5)
-        if ui.hover(Rect(x, strip.y + 10, w, 26)):
-            ui.tip(f"{run['status']} · {ago(run['started'])} · ${run['cost']:.3f}\n{(run['summary'] or '')[:300]}")
+    view_w = 190.0
+    view_toggle, sel_area = strip.cut_right(view_w)
+    _run_selector(app, a, runs, rsel, Rect(sel_area.x + 14, sel_area.y + 8, min(260.0, sel_area.w - 22), 30))
+    vx = view_toggle.x + 8
+    for mode in ("Transcript", "Prompt"):
+        clicked, w = ui.chip(f"runview:{mode}", vx, view_toggle.y + 10, mode, app.run_view == mode,
+                             T.ACCENT, 11.5)
         if clicked:
-            app.sel_run = run["id"]
-        x += w + 6
-        if x > strip.r - 120:
-            break
+            app.run_view = mode
+        vx += w + 6
     ui.hline(left.x, strip.b, left.w, T.BORDER)
-    if rsel:
+    rsel_row = next((run for run in runs if run["id"] == rsel), None)
+    if not rsel:
+        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
+    elif app.run_view == "Prompt":
+        _prompt_view(app, rsel_row, tr)
+    else:
         live = any(run["id"] == rsel and run["status"] == "running" for run in runs)
         lines = _run_lines(app, rsel, live)
         _transcript(app, lines, tr, f"tr:{rsel}")
-    else:
-        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
     _agent_side(app, a, right)
+
+
+def _run_selector(app: "App", a: dict, runs: list[dict], rsel: int | None, r: Rect) -> None:
+    """Compact "current run" control; click opens a scrollable popover listing every run for this
+    agent, so history stays reachable at any window width (no chip-fitting, no overflow-by-omission).
+    """
+    global _run_picker_agent, _run_picker_anchor, _run_picker_runs
+    ui = app.ui
+    open_ = _run_picker_agent == a["id"]
+    if open_:
+        _run_picker_anchor, _run_picker_runs = r, runs
+    run = next((x for x in runs if x["id"] == rsel), None)
+    col = _RUN_STATUS_COLOR.get(run["status"], T.TEXT_FAINT) if run else T.TEXT_FAINT
+    label = f"#{run['id']} {run['reason']}" if run else "No runs yet"
+    hov = ui.hover(r)
+    ui.rect(r, T.PANEL3 if (hov or open_) else T.PANEL2, 8)
+    if open_:
+        ui.stroke(r, alpha(T.ACCENT, 0.55), 8)
+    if run:
+        ui.dot(r.x + 14, r.cy, col, 4)
+    ui.text_fit(r.x + 24, r.y + (r.h - 12) / 2, label, r.w - 54, 12, T.TEXT, "med")
+    if len(runs) > 1:
+        ui.text(r.r - 16 - ui.measure(str(len(runs)), 10.5), r.y + (r.h - 10.5) / 2, str(len(runs)), 10.5,
+                T.TEXT_FAINT)
+    ui.text(r.r - 30, r.y + (r.h - 11) / 2, "↑" if open_ else "↓", 11, T.TEXT_FAINT, "bold")
+    if hov:
+        ui.hand()
+        if run:
+            ui.tip(f"{run['status']} · {ago(run['started'])} · ${run['cost']:.3f}\n{(run['summary'] or '')[:300]}")
+    if runs and ui.click(r):
+        _run_picker_agent = None if open_ else a["id"]
+        _run_picker_anchor, _run_picker_runs = r, runs
+
+
+def _run_picker_popover(app: "App") -> None:
+    ui = app.ui
+    global _run_picker_agent
+    anchor, runs = _run_picker_anchor, _run_picker_runs
+    w = 300.0
+    h = min(420.0, 44 + len(runs) * 38)
+    x = min(anchor.x, ui.w - w - 16)
+    y = anchor.b + 6
+    if y + h > ui.h - 16:
+        y = max(16.0, anchor.y - h - 6)
+    r = Rect(x, y, w, h)
+    if ui.clicked and not r.contains(ui.mouse) and not anchor.contains(ui.mouse):
+        _run_picker_agent = None
+        ui.click_consumed = True
+        return
+    ui.panel(r, T.PANEL2, 10, T.BORDER_HI)
+    head, body = r.cut_top(32)
+    ui.text(head.x + 14, head.y + 9, f"{len(runs)} run{'s' if len(runs) != 1 else ''}", 11, T.TEXT_FAINT, "bold")
+    sc = ui.scroll_begin(f"runpicker:{_run_picker_agent}", body.inset(4, 4))
+    y2 = body.y + 4 - sc.offset
+    rw = body.w - 8
+    for run in runs:
+        rr = Rect(body.x + 4, y2, rw, 34)
+        if rr.b > body.y - 10 and rr.y < body.b + 10:
+            hov = ui.hover(rr)
+            if run["id"] == app.sel_run:
+                ui.rect(rr, alpha(T.ACCENT, 0.14), 6)
+            elif hov:
+                ui.rect(rr, T.HOVER, 6)
+            if hov:
+                ui.hand()
+            col = _RUN_STATUS_COLOR.get(run["status"], T.TEXT_FAINT)
+            ui.dot(rr.x + 12, rr.cy - 4, col, 4)
+            ui.text(rr.x + 24, rr.y + 3, f"#{run['id']} {run['reason']}", 12.5, T.TEXT, "med")
+            ts = ago(run["started"])
+            ui.text(rr.r - 10 - ui.measure(ts, 11), rr.y + 3, ts, 11, T.TEXT_FAINT)
+            summ = (run["summary"] or "").split("\n")[0]
+            ui.text_fit(rr.x + 24, rr.y + 19, summ, rr.w - 34, 10.5, T.TEXT_FAINT)
+            if ui.click(rr):
+                app.sel_run = run["id"]
+                _run_picker_agent = None
+        y2 += 36
+    ui.scroll_end(sc, y2 + sc.offset - body.y + 4)
+
+
+def _prompt_view(app: "App", run: dict | None, r: Rect) -> None:
+    ui = app.ui
+    sc = ui.scroll_begin(f"prompt:{run['id'] if run else 0}", r)
+    y = r.y + 16 - sc.offset
+    w = r.w - 48
+    if not run:
+        ui.text(r.x + 24, r.y + 16, "No run selected.", 13, T.TEXT_FAINT)
+        ui.scroll_end(sc, 0)
+        return
+    for title, text in (("System prompt", run.get("system") or ""), ("Wake prompt", run.get("prompt") or "")):
+        key = f"promptclosed:{run['id']}:{title}"
+        closed = key in app.expanded
+        hr = Rect(r.x + 24, y, w, 20)
+        ui.text(hr.x, hr.y, "→" if closed else "↓", 12, T.TEXT_FAINT, "bold")
+        ui.text(hr.x + 16, hr.y, title.upper(), 11, T.TEXT_FAINT, "bold")
+        if ui.hover(hr):
+            ui.hand()
+        if ui.click(hr):
+            app.expanded.symmetric_difference_update({key})
+        y += 26
+        if closed:
+            continue
+        if text:
+            y += ui.text_block(r.x + 24, y, text, w, 12.5, T.TEXT, "mono", 1.5)
+        else:
+            ui.text(r.x + 24, y, "(not recorded)", 13, T.TEXT_FAINT)
+            y += 20
+        y += 24
+    ui.scroll_end(sc, y + sc.offset - r.y + 12)
 
 
 def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
@@ -962,6 +1075,9 @@ def _scrim(app: "App", key: str) -> None:
 
 def draw_modals(app: "App") -> None:
     ui = app.ui
+    global _run_picker_agent
+    picker_live = (_run_picker_agent is not None and app.tab == "Agent" and app.sel_agent == _run_picker_agent
+                  and _run_picker_anchor is not None)
     if app.sel_task is not None:
         ui.modal = ui.layer = "task"
         _scrim(app, "task")
@@ -972,8 +1088,13 @@ def draw_modals(app: "App") -> None:
         _scrim(app, "newtask")
         _new_task_modal(app)
         ui.layer = None
+    elif picker_live:
+        ui.modal = ui.layer = "runpicker"
+        _run_picker_popover(app)
+        ui.layer = None
     else:
         ui.modal = None
+        _run_picker_agent = None
 
 
 def _task_modal(app: "App") -> None:

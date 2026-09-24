@@ -54,16 +54,17 @@ def cmd_init(args: argparse.Namespace) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     cfgfile = root / config_mod.STATE_DIR / config_mod.CONFIG_FILE
     if cfgfile.exists():
+        config_mod.load(root)  # migrate a legacy roster even when init is repeated
         print(f"Already initialized: {cfgfile}")
         return root
     name = getattr(args, "name", None) or root.name
-    local_model = detect_local_model() or "qwen/qwen3.8-27b"
+    local_model = detect_local_model()
     config_mod.write_default(root, name, local_model)
     gitops.ensure_repo(root)
     cfg = config_mod.load(root)
     store = Store(cfg.db_path)
     store.sync_agents(cfg.agents)
-    store.send("pm", "human", PM_GREETING, kind="chat")
+    store.send(next(a.id for a in cfg.agents if a.role == "pm"), "human", PM_GREETING, kind="chat")
     print(f"✓ Initialized troupe in {root}\n  config: {cfgfile}\n  Next: `troupe up`")
     return root
 
