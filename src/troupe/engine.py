@@ -8,6 +8,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
+from collections import deque
 from pathlib import Path
 
 from . import gitops
@@ -53,6 +54,8 @@ class Engine:
         self.pokes: set[str] = set()
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
+        self._merge_task: asyncio.Task | None = None
+        self._merge_lock = threading.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start_thread(self) -> threading.Thread:
@@ -70,6 +73,7 @@ class Engine:
         s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
+        s.kv_set("checking_task", None)
         self.cleanup_worktrees()
 
     def cleanup_worktrees(self) -> None:
@@ -103,13 +107,22 @@ class Engine:
         for runner, _task, _w in list(self.running.values()):
             runner.kill()
         await asyncio.sleep(0.5)
+        if self._merge_task is not None:
+            await self._merge_task
 
     # ── the loop ──────────────────────────────────────────────────────────
     async def tick(self) -> None:
         s = self.store
         s.kv_set("heartbeat", now())
         self.handle_commands()
-        await asyncio.to_thread(self.process_approved)
+        if self._merge_task is not None and self._merge_task.done():
+            try:
+                self._merge_task.result()
+            except Exception as e:
+                s.event("system", "error", f"Merge worker failed: {e}", significant=False)
+            self._merge_task = None
+        if self._merge_task is None:
+            self._merge_task = asyncio.create_task(asyncio.to_thread(self.process_approved))
         paused = bool(s.kv_get("paused", False))
         if not paused:
             self.dispatch()
@@ -219,12 +232,70 @@ class Engine:
         return self.store.task(t["id"]) or t
 
     def process_approved(self) -> None:
+        if not self._merge_lock.acquire(blocking=False):
+            return
+        try:
+            self._process_approved()
+        finally:
+            self.store.kv_set("checking_task", None)
+            self._merge_lock.release()
+
+    def check_failed(self, task: dict, output: str) -> None:
+        note = f"Checks failed on #{task['id']}:\n{output}"
+        self.store.update_task(task["id"], actor="system", status="in_progress", next_attempt_at=0,
+                               review_notes=note, event_text=f"Checks failed on #{task['id']}")
+        self.store.kv_set(f"check_failed.{task['id']}", True)
+        if task["assignee"]:
+            self.store.send("system", task["assignee"], note + "\nFix the failure and call complete_task for QA review.",
+                            subject=f"#{task['id']} checks failed", task_id=task["id"], kind="system")
+
+    def _process_approved(self) -> None:
         s = self.store
         for t in s.tasks(("approved",)):
+            if self._stop.is_set():
+                return
+            if any(w.task and w.task["id"] == t["id"] for _, _, w in list(self.running.values())):
+                continue
             if not t["branch"]:
                 s.update_task(t["id"], actor="system", status="done", event_text=f"#{t['id']} done")
                 continue
-            ok, out = gitops.merge_branch(self.cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
+            cfg = self.cfg
+            if cfg.git.check:
+                s.kv_set("checking_task", t["id"])
+                tree = Path(t["worktree"]) if t["worktree"] else None
+                try:
+                    if tree is None or not tree.exists():
+                        self.check_failed(t, "Task worktree is missing; restore it and resubmit.")
+                        continue
+                    main_head, task_head = gitops.prepare_check(cfg.root, tree, t["branch"])
+                    log_path = cfg.state_dir / "checks" / f"t{t['id']}.log"
+                    passed, outcome = gitops.run_check(tree, cfg.git.check, cfg.git.check_timeout, log_path, self._stop)
+                    current = s.task(t["id"])
+                    if self._stop.is_set() or not current or current["status"] != "approved":
+                        continue
+                    if not passed:
+                        with log_path.open(errors="replace") as log:
+                            tail = "".join(deque(log, maxlen=50))[-12000:]
+                        self.check_failed(t, tail or outcome)
+                        continue
+                    ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
+                                                   f"Merge #{t['id']}: {t['title']}", self._stop)
+                    if self._stop.is_set():
+                        continue
+                    if not ok and out.startswith("Repository changed"):
+                        with log_path.open("a") as log:
+                            log.write(out + "\n")
+                        self.check_failed(t, out)
+                        continue
+                except gitops.GitError as e:
+                    ok, out = False, str(e)
+                except OSError as e:
+                    self.check_failed(t, f"Could not run checks: {e}")
+                    continue
+                finally:
+                    s.kv_set("checking_task", None)
+            else:
+                ok, out = gitops.merge_branch(cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
                 try:
                     if t["worktree"]:

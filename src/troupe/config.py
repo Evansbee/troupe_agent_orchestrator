@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,6 +52,15 @@ class Backends:
 @dataclass
 class GitSettings:
     setup: str = ""
+    check: str = ""
+    check_timeout: float = 600
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.setup, str) or not isinstance(self.check, str):
+            raise ValueError("troupe.toml: git.setup and git.check must be strings")
+        if (isinstance(self.check_timeout, bool) or not isinstance(self.check_timeout, (int, float))
+                or not math.isfinite(self.check_timeout) or self.check_timeout < 0):
+            raise ValueError("troupe.toml: git.check_timeout must be a non-negative number")
 
 
 @dataclass
@@ -108,6 +118,8 @@ local_api_key = "lm-studio"
 [git]
 autocommit = true         # commit doc/spec changes in the main tree after each non-builder run
 setup = ""               # command run once in each new worktree, e.g. "uv sync"
+# check = "uv run pytest" # optional merge gate; omitted/empty means no gate
+check_timeout = 600      # seconds
 
 # ── The team ─────────────────────────────────────────────────────────────
 # backend: claude | codex | local.  model: backend-specific ("" = backend default).
@@ -211,5 +223,5 @@ def load(root: Path) -> Config:
         budget=Budget(**{k: v for k, v in b.items() if k in Budget.__dataclass_fields__}),
         backends=Backends(**{k: v for k, v in be.items() if k in Backends.__dataclass_fields__}),
         git_autocommit=raw.get("git", {}).get("autocommit", True),
-        git=GitSettings(setup=raw.get("git", {}).get("setup", "")),
+        git=GitSettings(**{k: v for k, v in raw.get("git", {}).items() if k in GitSettings.__dataclass_fields__}),
     )

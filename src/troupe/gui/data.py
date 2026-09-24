@@ -77,6 +77,11 @@ class Data:
         self.agents = s.agents()
         self.agent_by_id = {a["id"]: a for a in self.agents}
         self.tasks = s.tasks(limit=800)
+        checking = s.kv_get("checking_task")
+        failed = {r["key"] for r in s.q("SELECT key FROM kv WHERE key LIKE 'check_failed.%' AND value='true'")}
+        for task in self.tasks:
+            task["merge_check"] = ("checking…" if task["id"] == checking else
+                                   "checks failed" if f"check_failed.{task['id']}" in failed else "")
         self.questions = s.questions("open")
         self.events = s.events(limit=300)
         answer_event = s.max_event_id()

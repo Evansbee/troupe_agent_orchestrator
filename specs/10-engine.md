@@ -194,7 +194,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   the Lead's: moving a task that has a branch to **Done** sets it `approved` (the engine merges it and then marks it
   done, REQ-ENG-033); moving one to **Review** wakes QA. Moving a task out of `in_progress` while its run is live
   does not kill the run; the assignee sees the new status in its next prompt.
-- **REQ-ENG-040 [ ]** Merge gate: a configured check must pass before a task merges into main. (#15, human
+- **REQ-ENG-040 [x]** Merge gate: a configured check must pass before a task merges into main. (#15, human
   approved idea #1)
   - Config `[git] check = "<cmd>"` (troupe itself uses `"uv run pytest"`) and `[git] check_timeout` (seconds,
     default 600). Empty `check` = today's behavior (merge straight after approval).

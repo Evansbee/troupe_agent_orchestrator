@@ -36,6 +36,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-ENG-035 | E `unfinished_task_backs_off_then_escalates`: first retry delayed 45s, configured attempt cap blocks and mails Lead. |
 | REQ-ENG-036 | E `main_checkout_autocommit_policy` (builder/spec): idle builder gets no-edit instruction and no automatic commit; spec changes are committed. |
 | REQ-ENG-038 | `tests/test_worktree_setup.py`: real temporary git repositories verify config default/command, setup once across restart, stdout/stderr and exit logging, failure note/prompt with provider continuation, responsive event loop and stop during setup, merged branch deletion, and startup removal of closed/missing trees while preserving open/external worktrees. |
+| REQ-ENG-040 | `tests/test_merge_gate.py`: temp-git pass/fail/timeout/empty/no-branch, current main integrated before check, conflict bounce, unchanged main on failure, output tail/full log, stale-tree protection, worker responsiveness/chat/single-check, stop, config validation, and cached chip reset. Board checking/failed chips visually inspected in `/tmp/troupe-t15-board.png`. |
 
 ## Safety — specs/05-safety.md
 
