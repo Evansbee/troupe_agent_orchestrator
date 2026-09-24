@@ -62,6 +62,7 @@ class ChatPane(Widget):
     DEFAULT_CSS = f"""
     ChatPane {{
         layout: vertical;
+        height: 1fr;
         border: round {C.BORDER};
         border-title-align: left;
     }}

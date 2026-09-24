@@ -88,6 +88,9 @@ class NeedsYouPane(Widget):
     `d` dismisses a regular card; on a safety card it asks "Reject #N? y/N" first, the same
     confirm-before-protected-action pattern as the kill switch (`s`, REQ-TUI-020)."""
 
+    PANE_TITLE = "Needs you"  # #77: shown as this pane's 80x24 tab title (tui/app.py); was falling
+    # back to the raw class name
+
     DEFAULT_CSS = """
     NeedsYouPane { height: 1fr; }
     NeedsYouPane > #ny-status { height: 1; color: $error; }
