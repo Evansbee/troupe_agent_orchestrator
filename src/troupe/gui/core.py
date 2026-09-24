@@ -537,11 +537,20 @@ class UI:
         rl.set_clipboard_text(text or "")
         self.copied_text = text
 
+    def copy_button_active(self, r: Rect, show: bool) -> bool:
+        """Whether a copy_button at `r` should be visible/interactive this frame: `show` is normally
+        the parent element's hover state, but the pointer being directly over `r` always counts too.
+        `r` often sits just outside (or straddling the edge of) the rect `show` is computed from, so
+        without that a button positioned that way would vanish the moment the pointer actually reached
+        it: `show` only tracks the *other* rect, which the pointer has by then left. Split out from
+        copy_button() so the decision is testable without an open window (the rest of copy_button
+        draws, which needs one)."""
+        return show or self.hover(r)
+
     def copy_button(self, r: Rect, show: bool, tip: str = "Copy") -> bool:
-        """A small hover-revealed "Copy" affordance. `show` is typically the parent element's hover
-        state, so the button appears while hovering anywhere over it, not just the button itself.
+        """A small hover-revealed "Copy" affordance — see copy_button_active() for when it's shown.
         Returns True on click; the caller copies the relevant text and shows its own "Copied" toast."""
-        if not show:
+        if not self.copy_button_active(r, show):
             return False
         hov = self.hover(r)
         self.rect(r, T.PANEL3 if hov else alpha(T.PANEL2, 0.92), 5)
