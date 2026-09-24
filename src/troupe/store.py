@@ -216,6 +216,8 @@ class Store:
 
     def update_task(self, task_id: int, actor: str = "", event_text: str = "", significant: bool = True,
                     **fields: Any) -> None:
+        if fields.get("status") == "review":
+            self.kv_set(f"check_failed.{task_id}", False)
         if "depends_on" in fields and not isinstance(fields["depends_on"], str):
             fields["depends_on"] = json.dumps(fields["depends_on"])
         fields["updated"] = now()
