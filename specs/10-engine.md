@@ -163,6 +163,9 @@ Client reporting does not depend on the deferred service supervisor shipping.
     - **Skip is decided up front.** Only a positive "no display" detection made before the clients launch may
       skip, for example a window-open probe or raylib/GLFW's own no-display error. A client killed by a
       signal (negative exit code, such as a segfault) or any other non-zero exit is a failure, never a skip.
+      (#112) A probe that itself raises a traceback or times out is also a failure; only its positive
+      "no display" result skips. On a gate timeout, the whole process group (clients and any engine they
+      started) is killed.
     - **Nothing of the human's is touched.** `HOME` (and XDG dirs) point into the temp dir for `troupe init`
       and both clients, so `~/.troupe/projects.json` and the human's live project are never modified.
     - **Cleanup always runs.** Clients and any engine they start are stopped in a `finally`, even if setup or
