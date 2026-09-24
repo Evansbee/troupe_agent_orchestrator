@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+import pytest
+
 from tui_fixture import FixtureServer
 
 from troupe.tui.app import TroupeApp
@@ -251,6 +253,221 @@ def test_empty_tasks_pane_shows_one_line_not_squashed_into_the_glyph_column(proj
                 table = tasks_pane._table
                 assert table.columns[0]._cells == [""]  # glyph column: not squashed into here
                 assert table.columns[2]._cells[0].plain == "nothing in flight"  # title column
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_long_chat_history_reaches_the_bottom_in_the_real_five_pane_layout(project):
+    """#85 live repro (/tmp/rt/demo/recipe-box): the chat thread only got a small fraction of the
+    terminal's height once squeezed into the real five-pane layout (Team/Tasks/Needs-you/Comms/
+    Chat), and long/markdown history needed more than one layout pass to reach its final wrapped
+    size — scroll_end() called after just one deferred refresh landed short of the true bottom.
+    The human saw the last message's bare sender label with its body clipped, and later messages
+    never appeared. An isolated ChatPane test (test_tui_chat.py) doesn't reproduce this — it gets
+    the whole terminal to itself and settles in a single pass — so this needs the full TroupeApp."""
+    from textual.widgets import Markdown
+
+    from troupe.tui.panes.chat import ChatPane
+
+    cfg, _store = project
+    table = "| step | tool |\n|---|---|\n| 1 | oven |\n| 2 | mixer |\n| 3 | pan |"
+    code = "```python\n" + "\n".join(f"step_{i}()" for i in range(8)) + "\n```"
+    messages = []
+    for i in range(1, 26):
+        sender, recipient = ("pm", "human") if i % 2 else ("human", "pm")
+        if i % 5 == 0:
+            body = f"reply {i} with a table:\n\n{table}"
+        elif i % 7 == 0:
+            body = f"reply {i} with code:\n\n{code}"
+        else:
+            body = f"reply {i} " * 20  # long enough to soft-wrap across several visual lines
+        messages.append(dict(id=i, sender=sender, recipient=recipient, kind="chat", body=body, ts=0))
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES, messages=messages)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(150, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                chat = app.query_one(ChatPane)
+                thread = chat.query_one("#chat-thread")
+                await _wait_until(lambda: len(list(thread.query(Markdown))) == len(messages))
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                assert thread.max_scroll_y > 0, "test needs overflow to be meaningful"
+                assert thread.is_vertical_scroll_end  # the last message's body is the visible bottom
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_startup_focuses_the_chat_composer_and_typing_system_opens_no_modal(project):
+    """#83: the TUI used to start with nothing focused, so plain typing fell through to
+    app-level bindings — typing "system" opened the kill-switch confirm live in tmux."""
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+
+                await pilot.press(*"system")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(app.screen_stack) == 1  # no confirm modal pushed
+                await _wait_until(
+                    lambda: ("chat", dict(agent="pm", text="system")) in server.commands)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_slash_focuses_the_chat_composer_from_another_pane(project):
+    from textual.widgets import ListView
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                app.query_one("#ny-cards", ListView).focus()
+                await pilot.pause()
+                assert not isinstance(app.focused, Composer)
+
+                await pilot.press("/")
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("source_tab, focus_target", [
+    ("tab-TeamPane", "Tabs"),
+    ("tab-NeedsYouPane", "#ny-cards"),
+    ("tab-FeedPane", "FeedPane"),
+])
+def test_slash_switches_to_the_chat_tab_in_compact_mode(project, source_tab, focus_target):
+    from textual.widgets import TabbedContent
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tabs = app.query_one(TabbedContent)
+                tabs.active = source_tab
+                await pilot.pause()
+                source = app.query_one(focus_target)
+                source.focus()
+                await pilot.pause()
+                assert app.focused is source
+                assert not isinstance(app.focused, Composer)
+
+                await pilot.press("/")
+                await pilot.pause()
+                assert tabs.active == "tab-ChatPane"
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_resize_round_trip_restores_focus_to_the_composer(project):
+    from textual.widgets import TabbedContent
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                assert app.query(TabbedContent)
+                assert isinstance(app.focused, Composer)
+
+                await pilot.resize_terminal(140, 42)
+                await pilot.pause()
+                assert not app.query(TabbedContent)
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(140, 42), (80, 24)])
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
+    from troupe.tui.app import ConfirmScreen
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, engine=ENGINE)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=size) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                for key, method in [("s", "stop_now"), ("R", "resume")]:
+                    if key == "R":
+                        await server.push_event("engine.state", {
+                            "engine": dict(ENGINE, state="stopped", stopped=True)})
+                        await _wait_until(lambda: app._engine_stopped)
+                        assert "STOPPED" in app._stopped_banner.content
+                    app.set_focus(None)
+                    await pilot.press(key)
+                    await _wait_until(lambda: isinstance(app.screen, ConfirmScreen))
+                    await pilot.press(answer)
+                    await pilot.pause()
+                    assert len(app.screen_stack) == 1
+                    assert isinstance(app.focused, Composer)
+                    assert any(m == method for m, _ in server.commands) == (answer == "y")
         finally:
             await server.stop()
 

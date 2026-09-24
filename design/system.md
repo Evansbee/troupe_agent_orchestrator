@@ -10,6 +10,25 @@ Midnight command center. Dark, dense, a little bit alive — glows and particles
 working even when you're not looking directly at it. Never flashy for its own sake: motion always
 carries a signal (running, new, selected, stale).
 
+## Countdown copy: relative, never clock time (#105)
+
+Human (13:55, 2026-09-24): usage/cap resets must say the time *until* reset, not the time *of* reset —
+"in 4 hours", not "2:15pm". This is a system-wide copy rule, not GUI-only: every countdown anywhere in the
+app — usage/rate-limit resets, pacing ("next check-in in 9m"), retry backoff — uses the same format,
+whether it renders in the raylib GUI, the TUI, `troupe status`, or an OS notification.
+
+Format, recomputed live (not frozen at render time):
+- **under 1h:** minutes only — `in 12m`
+- **1h–6h:** hours + minutes — `in 4h 20m`
+- **6h+:** hours only, drop the minutes — `in 4h`
+
+Same idea as the existing `ago()` helper (relative, not absolute) just pointed at the future — a
+`countdown()`-style helper belongs next to `ago()` (`team.py`) so every surface computes it the same way
+instead of each one formatting `reset_at - now` by hand. Task #105 (P2, backlog, after the TUI cutover)
+wires this into the TUI/GUI/status/notifications; this section is the copy contract it implements against.
+Every existing example string in this doc and `design/tui.md` that showed a clock-time reset (`14:05`) has
+been updated to this format already, so there's nothing left to reconcile when #105 lands.
+
 ## Color
 
 ### Base surfaces (`theme.py`)
@@ -229,7 +248,7 @@ reuse "needs you" for a card whose only button is "OK".
 | `check_failed` | "*&lt;assignee&gt;*'s task failed its check" | task title | **Open task** (primary) | `1` Open task | `ORANGE` |
 | `backoff` / `stalled` / `timeout` | "*&lt;agent&gt;* needs a nudge" | the notifier's own text (already agent-facing, e.g. "Repeated runs failed; retry backoff reached its cap") | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `ORANGE` |
 | `crash_loop` | "*&lt;agent&gt;* keeps crashing" | same notifier text | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `RED` (worse than a plain backoff) |
-| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited until 14:05" (existing text) | **OK** | `1` OK | `ORANGE` |
+| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited · resets in 4h" | **OK** | `1` OK | `ORANGE` |
 | `throttle` | *(heads-up title)* | the throttle reason (existing text) | **OK** | `1` OK | `ORANGE` |
 | `providers` | *(heads-up title)* | "All of &lt;agent&gt;'s providers are unavailable" (existing text) | **OK** | `1` OK | `RED` (strictly worse than one rate-limited provider, matches `pulse.md`'s severity ordering) |
 | `concern` | "troupe needs you" (no reporter, no agent name — see below) | "An agent raised a concern. Run `troupe concerns` to read it." (existing text, unchanged) | **Got it** | `1` Got it | `RED` (matches the Concerns badge color already decided for #78) |
@@ -373,10 +392,11 @@ controls that don't get used in time.
   pill) verbatim — same shape, same `alpha(color, 0.14)` fill + colored dot + label — one instance per
   currently-limited backend, laid out in a row immediately after the engine-state pill. Color: `ORANGE`
   (matches "Throttled" convention already established for capacity pressure; reserve `RED` for
-  failure/blocked states, not rate limiting). Label: `"<backend> limited · resets HH:MM"`. A pill
-  disappears the frame its backend's limit clears — no exit animation needed, these are low-frequency.
+  failure/blocked states, not rate limiting). Label: `"<backend> limited · resets in 4h"` (countdown
+  format, #105 — matches specs/10-engine.md REQ-ENG-016's canonical wording). A pill disappears the frame
+  its backend's limit clears — no exit animation needed, these are low-frequency.
 - In Chat, a working bubble for an agent on a limited backend shows the same limited-until copy inline
-  (`_typing`'s existing bubble, swap the activity line for `"Claude limited until 14:05"` in place of
+  (`_typing`'s existing bubble, swap the activity line for `"Claude limited · resets in 4h"` in place of
   `"thinking…"`) rather than a separate banner — one state, shown where the user is already looking.
 
 ## Header rows: space allocation rule

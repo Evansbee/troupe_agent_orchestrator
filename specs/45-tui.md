@@ -127,7 +127,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - Test: the badge appears on a new concern; each action's effect; the red KILLED screenshot; resume asks first.
 
 ## Keys
-- **REQ-TUI-020 [~]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `s`'s STOPPED/Resume detail and Comms' `f`/`d`/`[`/`]` filters done, #69; `/` is #68):
+- **REQ-TUI-020 [x]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `s`'s STOPPED/Resume detail and Comms' `f`/`d`/`[`/`]` filters done, #69; `/` done, #83):
 
   | key | action |
   |---|---|

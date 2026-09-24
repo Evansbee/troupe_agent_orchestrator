@@ -6,6 +6,7 @@ Built against the shared pane interface (#66's note): ``Pane(client)`` with ``as
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from rich.markup import escape
@@ -130,7 +131,7 @@ class ChatPane(Widget):
         for m in reversed(result.get("items", [])):
             await self._mount_message(thread, m)
             self._last_sender = m.get("sender")
-        thread.scroll_end(animate=False)
+        self._scroll_to_end(thread)
         self._pm_running = pm.get("state") == "running"
         self._pm_activity = pm.get("activity") or ""
         self._refresh_working()
@@ -161,9 +162,30 @@ class ChatPane(Widget):
         was_at_bottom = thread.is_vertical_scroll_end
         mounted = await self._mount_message(thread, m)
         if mounted and was_at_bottom:
-            thread.scroll_end(animate=False)
+            self._scroll_to_end(thread)
         self._last_sender = m.get("sender")
         self._refresh_working()
+
+    def _scroll_to_end(self, thread: VerticalScroll) -> None:
+        """Wait for the just-mounted Markdown's layout to land in the full pane before scrolling."""
+        self.run_worker(self._settle_scroll(thread), exclusive=False)
+
+    async def _settle_scroll(self, thread: VerticalScroll) -> None:
+        # `thread.wait_for_refresh()` resolves once this node's own message queue drains, which is
+        # not the same as "the compositor has computed this content's real height" (#85 live repro:
+        # max_scroll_y read back as a flat 0/0 for several such "refreshes" in a row — read as
+        # converged — while the mounted Markdown's virtual_size was still Size(0, 0); the view then
+        # never caught up once layout did land, since nothing rescrolled after this worker exited).
+        # Polling on a real clock instead gives the compositor's own paint cycle room to actually
+        # run between checks, which is what a passing live repro needed in practice.
+        last = None
+        for i in range(30):  # ~600ms worst case; converges in a handful of iterations in practice
+            await asyncio.sleep(0.02)
+            current = thread.max_scroll_y
+            if current == last and i >= 3:
+                break
+            last = current
+        thread.scroll_end(animate=False)
 
     async def _mount_message(self, thread: VerticalScroll, m: dict) -> bool:
         mid = m.get("id")
@@ -174,12 +196,23 @@ class ChatPane(Widget):
         human = m.get("sender") == "human"
         who = "you" if human else self.pm_name
         color = HUMAN_COLOR if human else self.pm_color
+        # A message must never render as a bare sender label (#85): fall back to subject, then to
+        # an explicit placeholder, so an unexpected empty body is visibly a message, not nothing.
+        body = m.get("body") or m.get("subject") or "*(empty message)*"
+        markdown = Markdown()
         row = Vertical(
             Static(f"[bold {color}]{escape(who)}[/]"),
-            Markdown(m.get("body", "")),
+            markdown,
             classes="chat-message",
         )
         await thread.mount(row)
+        # Markdown parses and mounts its own block widgets (headings, paragraphs, tables, ...)
+        # asynchronously from `_on_mount`, not synchronously during construction/mount — passing
+        # `body` to the constructor and trusting that internal call left `_settle_scroll` racing
+        # against content that didn't exist yet (#85). `update()` is Textual's own documented
+        # await-to-ensure-mounted signal; calling it here ourselves, on an initially-empty Markdown,
+        # makes this message's content unconditionally real before the caller moves on.
+        await markdown.update(body)
         return True
 
     def _refresh_working(self) -> None:

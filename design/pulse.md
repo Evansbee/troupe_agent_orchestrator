@@ -158,7 +158,8 @@ whose they are, rather than all blending into one reviewer-colored knot.
 Small fixed badges — one per backend actually in use (claude / codex / local), positioned along the
 scene's outer edge (evenly spaced, bottom arc, so they don't compete with the agent ring for the
 center). Normally just a quiet glyph + label. When REQ-ENG-016 rate-limits that backend, its badge
-lights `T.ORANGE` and shows the reset countdown ("resets 14:05"); if every backend an agent can fall
+lights `T.ORANGE` and shows the reset countdown ("resets in 4h", relative-time rule — `design/system.md`
+#105); if every backend an agent can fall
 back to is out (the `providers` kind), that agent's tethers fan out to all of its badges at once, each
 lit however that individual backend currently reads (some may be `T.ORANGE`/limited, others just
 generically unavailable). This supersedes `design/stage.md`'s earlier plain "desaturate toward cyan"

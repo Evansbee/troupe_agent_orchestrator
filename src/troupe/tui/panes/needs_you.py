@@ -6,6 +6,7 @@ built in parallel) — swap in the real `TuiClient` once it lands, no changes ne
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from rich.markup import escape
@@ -29,17 +30,107 @@ def split_decision(text: str) -> tuple[str, str]:
     return head.strip().lower(), note.strip()
 
 
+def _diff_named_list(before: list | None, after: list | None) -> str:
+    """+/- the actual item names, not counts (QA #85 round 2: a bare "+1 -0" hides *what* changed —
+    a new push remote or a path losing protection is exactly the thing the human must see before
+    approving)."""
+    before_set, after_set = set(before or []), set(after or [])
+    added = [f"+{x}" for x in sorted(after_set - before_set)]
+    removed = [f"−{x}" for x in sorted(before_set - after_set)]
+    return ", ".join(added + removed)
+
+
+def _diff_roles(previous: dict | None, proposed: dict | None) -> list[str]:
+    """Per-role diff: added/removed roles in full, and changed keys within a role shown as
+    before -> after — a role quietly gaining e.g. network access must be visible by name."""
+    prev_roles, next_roles = previous or {}, proposed or {}
+    lines = []
+    for role in sorted(set(next_roles) - set(prev_roles)):
+        lines.append(f"+{role} {json.dumps(next_roles[role], sort_keys=True)}")
+    for role in sorted(set(prev_roles) - set(next_roles)):
+        lines.append(f"−{role}")
+    for role in sorted(set(prev_roles) & set(next_roles)):
+        before, after = prev_roles[role] or {}, next_roles[role] or {}
+        if before == after:
+            continue
+        for key in sorted(set(before) | set(after)):
+            bv, av = before.get(key), after.get(key)
+            if bv != av:
+                lines.append(f"{role}.{key}: {json.dumps(bv)} → {json.dumps(av)}")
+    return lines
+
+
+def _safety_baseline_changes(previous: dict, proposed: dict) -> list[str] | None:
+    """Summarize gates.py guard_config's previous vs. proposed safety/merge-check config as a
+    handful of human-readable fragments — never a bare count, since the human is approving a
+    change, not being handed a raw diff to parse themselves.
+
+    Returns `None` (not `[]`) when the two payloads are genuinely identical, so the caller can
+    tell "no changes" apart from "changes we don't know how to summarize" (#85 round 2: the old
+    code conflated the two and silently hid unrecognized changes behind "no changes detected")."""
+    if previous == proposed:
+        return None
+    prev_safety = (previous or {}).get("safety") or {}
+    next_safety = (proposed or {}).get("safety") or {}
+    changes = []
+    for field, label in (("protected", "protected"), ("remotes", "remotes"),
+                         ("secret_allow", "secret_allow")):
+        diff = _diff_named_list(prev_safety.get(field), next_safety.get(field))
+        if diff:
+            changes.append(f"{label}: {diff}")
+    role_diff = _diff_roles(prev_safety.get("roles"), next_safety.get("roles"))
+    if role_diff:
+        changes.append("roles: " + "; ".join(role_diff))
+    for field in ("check", "check_timeout"):
+        before, after = (previous or {}).get(field), (proposed or {}).get(field)
+        if before != after:
+            changes.append(f"{field}: {json.dumps(before)} → {json.dumps(after)}")
+    return changes
+
+
 def render_card(question: dict) -> str:
     """Markup tags (`[b]`, `[dim]`, ...) are ours; every field that came from a question or a task
     result is escaped, since it can contain a literal `[...]` (a spec ref, a path, agent prose)."""
     q = question
     lines = [f"[b]#{q['id']}[/b] " + ("[bold red]⚠ SAFETY APPROVAL[/bold red]" if is_safety(q) else q["kind"].upper())]
     lines.append(escape(q["question"]))
+    skip_context = False
     if is_safety(q):
         approval = q.get("approval") or {}
         if approval.get("paths"):
             lines.append("[dim]protected:[/dim] " + escape(", ".join(approval["paths"])))
-    if q.get("context"):
+        if "previous" in approval:
+            # The safety/merge-check baseline approval (gates.py guard_config) — its `context` is
+            # a raw "Approved:\n<json>\nProposed:\n<json>" dump that renders "Approved:\nnull" when
+            # there's no previous baseline (#85); replace it with real copy instead of showing it.
+            skip_context = True
+            previous, proposed = approval.get("previous"), approval.get("proposed") or {}
+            if previous is None:
+                lines.append("[dim]baseline:[/dim] first approval — nothing to compare against yet")
+                proposed_safety = proposed.get("safety") or {}
+                for field, label in (("protected", "protected"), ("remotes", "remotes"),
+                                     ("secret_allow", "secret_allow")):
+                    items = proposed_safety.get(field) or []
+                    if items:
+                        lines.append(f"[dim]{label}:[/dim] " + escape(", ".join(sorted(items))))
+                roles = proposed_safety.get("roles") or {}
+                if roles:
+                    lines.append("[dim]roles:[/dim] " + escape(json.dumps(roles, sort_keys=True)))
+                check = proposed.get("check")
+                if check:
+                    lines.append("[dim]check:[/dim] " + escape(str(check)))
+            else:
+                changes = _safety_baseline_changes(previous, proposed)
+                if changes is None:
+                    lines.append("[dim]baseline:[/dim] re-approval requested (no changes detected)")
+                elif changes:
+                    lines.append("[dim]changed:[/dim] " + escape("; ".join(changes)))
+                else:
+                    # The payloads differ but nothing here recognizes how (#85 round 2: silently
+                    # summarizing this as "no changes" let a real change through unseen) — fall
+                    # back to the raw context dump rather than hide an unrecognized change.
+                    skip_context = False
+    if q.get("context") and not skip_context:
         lines.append(escape(q["context"]))
     for i, opt in enumerate(q.get("options") or [], start=1):
         if i <= 9:
