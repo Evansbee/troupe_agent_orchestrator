@@ -39,9 +39,38 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
   | `forbidden` | the human isn't allowed to do this (e.g. dismissing an approval) |
   | `conflict` | the target changed state (question already answered, reload already running) |
   | `resync_required` | the requested event history is gone; re-fetch `snapshot` (REQ-API-062) |
+  | `unavailable` | the method is in the contract but its feature hasn't shipped; `data: {req, task}` (REQ-API-006) |
   | `internal` | server bug; the message has a one-line reason, the traceback goes to `engine.log` |
 - **REQ-API-004 [ ]** Multi-project: a client opens one connection per project listed in `~/.troupe/projects.json`
   (REQ-ENG-008). There are no cross-project methods in v0. Each connection is independent.
+- **REQ-API-006 [ ]** Staged availability. The contract is complete now, but some features ship in other tasks.
+  #48 does **not** build those features. Instead:
+  - **Reads:** every object shape is served from day one. Fields whose feature hasn't shipped get neutral defaults:
+    `milestones: []`, `milestone_id: null`, `waiting_on: null`, `mail_reading: 0`, `major/pinned: false`, memory
+    `status: "active"`, `comments: []`, `room: null`. Clients render them without special cases.
+  - **Commands and events:** these return `unavailable` with `data: {req, task}` until the owning task ships. That
+    task wires its method, fields and events into the API as part of its own acceptance (a test calling it over
+    the socket).
+    | method / data | owning REQ → task |
+    |---|---|
+    | `room_message`, `room` field | COM-024 → #4 |
+    | `stop_team`, `mark_seen human_last_seen` catch-up, `troupe start` | ENG-006, GUI-028 → #24 |
+    | `reload`, `service.json`, Engine `reloading` | ENG-009/042, API-074 → #28 |
+    | `stop_now`, approval questions (`decision`) | SAFE-010/020 → #42 (wire in #48 if #42 has merged first) |
+    | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
+    | `comment_decision`, `comments`, `decisions_seen_at` | COM-035..037 → #27 |
+    | `update_config` | ENG-019 + SAFE-021 → #5 |
+    | `milestones`, `milestone_id`, `waiting_on`, `mail_reading`, `milestone.changed` | ENG-045/046 → #50 |
+  - **Must land in #48:**
+    - transport, handshake, error codes and security (API-001..006, 010, 011);
+    - `snapshot` and every read for data that exists in main;
+    - the commands backed by today's GUI actions: `chat`, `mark_chat_read`, `answer_question`,
+      `dismiss_question`, `wake`, `stop_run`, `set_agent_enabled`, `new_session`, `pause`/`resume`, `create_task`,
+      `update_task`, `add_task_note`, and `mark_seen` storing the kv keys;
+    - `subscribe` with resume, backpressure and the latency target;
+    - the non-functional REQs, `troupe api`, and `tests/test_api.py`.
+  - Test: each staged method returns `unavailable` with its `req`/`task`, and a snapshot on current main has every
+    field present.
 - **REQ-API-005 [ ]** Security: anyone who can open the socket is the human (file permissions are the auth).
   The API never returns secret values. Config values whose key matches `key|token|secret|password`
   (case-insensitive) are returned as `"***"`, as is anything read from the environment.
@@ -256,3 +285,5 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
 - 2026-09-23 — `stopped` engine state (kill switch), `mail_reading`, client `notifications` presence, `update_config`
   (Settings go through the API, so validation stays in one place), and `service.json` for crash/restart visibility
   (closes former open questions 3 and 4).
+- 2026-09-24 — API-006 staged availability + `unavailable` error: #48 ships the full contract shape, owning tasks light
+  up their methods (builder-2 msg #293).

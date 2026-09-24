@@ -12,7 +12,7 @@ from ..config import Config
 from ..roles import get_role
 from ..team import ago
 from . import theme as T
-from .core import UI, Rect, alpha, mix
+from .core import ZOOM_DEFAULT, ZOOM_STEP, UI, Rect, alpha, mix
 from .data import Data
 
 TABS = ["Chat", "Pulse", "Board", "Mail", "Memory", "Docs", "Agent"]
@@ -50,6 +50,7 @@ class App:
         rl.set_window_min_size(1120, 720)
         rl.set_exit_key(0)
         self.ui.dpi = max(1.0, rl.get_window_scale_dpi().x)
+        self.ui.set_zoom(self.data.store.kv_get("gui_zoom", ZOOM_DEFAULT))
         rl.set_target_fps(60)
         self.data.refresh(force=True)
         fps = 60
@@ -113,6 +114,11 @@ class App:
         self.toasts.append((time.time(), text, color))
         self.toasts = self.toasts[-4:]
 
+    def set_zoom(self, zoom: float) -> None:
+        if self.ui.set_zoom(zoom):
+            self.data.store.kv_set("gui_zoom", self.ui.zoom)
+            self.toast(f"Zoom {round(self.ui.zoom * 100)}%")
+
     # ── layout ────────────────────────────────────────────────────────────
     def frame(self) -> None:
         ui = self.ui
@@ -134,10 +140,17 @@ class App:
 
     def shortcuts(self) -> None:
         ui = self.ui
+        K = rl.KeyboardKey
         if ui.cmd and ui.focus is None:
             for i, name in enumerate(TABS):
-                if rl.is_key_pressed(rl.KeyboardKey.KEY_ONE + i):
+                if rl.is_key_pressed(K.KEY_ONE + i):
                     self.tab = name
+            if ui.key(K.KEY_EQUAL) or ui.key(K.KEY_KP_ADD):
+                self.set_zoom(ui.zoom + ZOOM_STEP)
+            elif ui.key(K.KEY_MINUS) or ui.key(K.KEY_KP_SUBTRACT):
+                self.set_zoom(ui.zoom - ZOOM_STEP)
+            elif ui.key(K.KEY_ZERO, False) or ui.key(K.KEY_KP_0, False):
+                self.set_zoom(ZOOM_DEFAULT)
         if ui.cmd and rl.is_key_pressed(rl.KeyboardKey.KEY_P) and ui.focus is None:
             self.data.set_paused(not self.data.paused)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
@@ -151,7 +164,7 @@ class App:
     # ── top bar ───────────────────────────────────────────────────────────
     def draw_top(self, r: Rect) -> None:
         ui, d = self.ui, self.data
-        rl.draw_rectangle_gradient_v(0, 0, int(r.w), int(r.h), T.BG2, T.BG)
+        ui.gradient_v(r, T.BG2, T.BG)
         ui.hline(0, r.b - 1, r.w, alpha(T.BORDER, 0.7))
         # logo: a little constellation mark
         cx, cy = r.x + 30, r.cy
@@ -335,6 +348,7 @@ class App:
         bar, body = r.cut_top(46)
         x = bar.x + 10
         unread_total = sum(d.chat_unread.values())
+        ui.push_clip(bar)  # at high zoom the tab row can outgrow the panel; clip rather than bleed into the inbox
         for i, name in enumerate(TABS):
             label = name if name != "Agent" else d.name_of(self.sel_agent)
             has_badge = name == "Chat" and unread_total
@@ -362,6 +376,7 @@ class App:
             if ui.hover(tr) and name in TABS[:7]:
                 ui.tip(f"{name}  ⌘{i + 1}")
             x += w + 2
+        ui.pop_clip()
         ui.hline(r.x + 1, bar.b, r.w - 2, T.BORDER)
         from . import views
 
