@@ -1,0 +1,282 @@
+"""REQ-TUI-010 (Needs-you)/020 (`a` answering). Pilot tests against a fixture API — a fake client that
+replays api.py's own rules (dismiss forbidden for approval-kind, decision required for it) — since
+#66's real TuiClient/app.py don't exist yet (built in parallel; see tui/panes/needs_you.py's docstring).
+
+No async test functions: the rest of this suite drives asyncio with `asyncio.run()` inside plain
+`def test_...()`, not a pytest-asyncio/anyio marker, so this follows the same convention.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from textual.app import App, ComposeResult
+from textual.widgets import Input, ListView
+
+from troupe.tui.panes.needs_you import NeedsYouPane, QuestionCard
+
+
+class ApiError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class FakeClient:
+    """Mimics just enough of the real API's `questions`/`answer_question`/`dismiss_question` (REQ-API-040/042)
+    to drive the pane: approval-kind questions require `decision`, and can't be dismissed."""
+
+    def __init__(self, questions: list[dict]):
+        self.questions = {q["id"]: dict(q) for q in questions}
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call(self, method: str, timeout: float = 5.0, **params) -> dict:
+        self.calls.append((method, dict(params)))
+        if method == "questions":
+            return {"items": [q for q in self.questions.values() if q["status"] == "open"]}
+        if method == "answer_question":
+            q = self.questions[params["id"]]
+            if q["status"] != "open":
+                raise ApiError("conflict", "already answered")
+            if q["kind"] in ("approval", "safety"):
+                if params.get("decision") not in ("approve", "reject"):
+                    raise ApiError("bad_request", "decision must be approve or reject")
+            elif "decision" in params:
+                raise ApiError("bad_request", "decision only applies to approval questions")
+            q["status"] = "answered"
+            q["answer"] = params.get("text") or params.get("decision", "")
+            return {"question": q}
+        if method == "dismiss_question":
+            q = self.questions[params["id"]]
+            if q["kind"] in ("approval", "safety"):
+                raise ApiError("forbidden", "approval questions cannot be dismissed")
+            q["status"] = "dismissed"
+            return {"question": q}
+        raise ApiError("unknown_method", method)
+
+
+def question(id, kind="question", options=None, context="", **extra):
+    return dict(id=id, ts=0, asker="lead", kind=kind, question=f"Q{id}?",
+               context=context, options=options or ["Yes", "No"], status="open",
+               answer=None, answered_at=None, task_id=None, **extra)
+
+
+def safety_question(id, paths=("src/troupe/runners.py",)):
+    return question(id, kind="safety", options=["Approve", "Reject"],
+                    context=f"Protected files:\n{chr(10).join(paths)}\nAdded / removed lines:\n+3 -1",
+                    approval=dict(task_id=99, branch="troupe/t99", paths=list(paths)))
+
+
+class NeedsYouTestApp(App):
+    """A standalone harness App — not tui/app.py (#66's territory) — that mounts only this pane."""
+
+    def __init__(self, client: FakeClient):
+        super().__init__()
+        self.client = client
+
+    def compose(self) -> ComposeResult:
+        yield NeedsYouPane(self.client)
+
+    async def on_mount(self) -> None:
+        await self.query_one(NeedsYouPane).load()
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_load_renders_open_questions_and_safety_cards():
+    async def body():
+        client = FakeClient([question(1), safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            cards = pilot.app.query(QuestionCard)
+            assert {c.question["id"] for c in cards} == {1, 2}
+            safety_card = next(c for c in cards if c.question["id"] == 2)
+            assert safety_card.is_safety
+            assert "safety-card" in safety_card.classes
+            regular_card = next(c for c in cards if c.question["id"] == 1)
+            assert not regular_card.is_safety and "safety-card" not in regular_card.classes
+
+    run(body())
+
+
+def test_answer_by_number_key_after_pressing_a():
+    async def body():
+        client = FakeClient([question(1, options=["Yes", "No"])])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            assert pane.answering is True
+            await pilot.press("2")
+            await pilot.pause()
+            assert client.calls[-1] == ("answer_question", {"id": 1, "text": "No"})
+            assert pane.answering is False  # answering mode closes after submitting
+
+    run(body())
+
+
+def test_digits_do_not_fire_while_reply_box_is_focused():
+    async def body():
+        client = FakeClient([question(1, options=["Yes", "No"])])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            answer_input = pane.query_one("#ny-answer", Input)
+            assert pilot.app.focused is answer_input
+            await pilot.press("3")  # typed into the box — must not answer (there is no option 3 anyway)
+            await pilot.pause()
+            assert not any(m == "answer_question" for m, _ in client.calls)
+            assert answer_input.value == "3"
+
+    run(body())
+
+
+def test_free_text_reply_submits_custom_answer():
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press(*"Sounds good")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert client.calls[-1] == ("answer_question", {"id": 1, "text": "Sounds good"})
+
+    run(body())
+
+
+def test_dismiss_on_regular_question_calls_dismiss_question():
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("d")
+            await pilot.pause()
+            assert client.calls[-1] == ("dismiss_question", {"id": 1})
+            assert client.questions[1]["status"] == "dismissed"
+
+    run(body())
+
+
+def test_dismiss_on_safety_card_rejects_instead_of_dismissing():
+    async def body():
+        client = FakeClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("d")
+            await pilot.pause()
+            method, params = client.calls[-1]
+            assert method == "answer_question"
+            assert params["id"] == 2 and params["decision"] == "reject"
+            assert client.questions[2]["status"] == "answered"
+
+    run(body())
+
+
+def test_safety_card_approve_uses_decision_param():
+    async def body():
+        client = FakeClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press("1")
+            await pilot.pause()
+            method, params = client.calls[-1]
+            assert method == "answer_question"
+            assert params["id"] == 2 and params["decision"] == "approve"
+
+    run(body())
+
+
+def test_safety_cards_are_never_batch_answered():
+    """Two open safety cards; answering the focused one must never touch the other."""
+    async def body():
+        client = FakeClient([safety_question(2), safety_question(3)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            list_view = pane.query_one("#ny-cards", ListView)
+            list_view.focus()
+            list_view.index = 0
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.press("1")
+            await pilot.pause()
+            answer_calls = [p for m, p in client.calls if m == "answer_question"]
+            assert len(answer_calls) == 1
+            answered_ids = {q["id"] for q in client.questions.values() if q["status"] == "answered"}
+            assert len(answered_ids) == 1
+            assert any(q["status"] == "open" for q in client.questions.values())
+
+    run(body())
+
+
+def test_escape_cancels_answering_without_calling_the_api():
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            assert pane.answering is True
+            await pilot.press("escape")
+            await pilot.pause()
+            assert pane.answering is False
+            assert not any(m == "answer_question" for m, _ in client.calls)
+
+    run(body())
+
+
+def test_on_troupe_event_adds_and_removes_cards_live():
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.on_troupe_event({"event": "question.new", "data": {"question": question(5)}})
+            await pilot.pause()
+            assert {c.question["id"] for c in pane.query(QuestionCard)} == {1, 5}
+            answered = question(1)
+            answered["status"] = "answered"
+            pane.on_troupe_event({"event": "question.answered", "data": {"question": answered}})
+            await pilot.pause()
+            assert {c.question["id"] for c in pane.query(QuestionCard)} == {5}
+
+    run(body())
+
+
+def test_unavailable_response_shows_status_and_never_crashes():
+    class UnavailableClient(FakeClient):
+        async def call(self, method, timeout=5.0, **params):
+            if method == "answer_question" and "decision" in params:
+                raise ApiError("unavailable", "answer_question is not available yet (task #57)")
+            return await super().call(method, timeout=timeout, **params)
+
+    async def body():
+        client = UnavailableClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press("1")
+            await pilot.pause()
+            assert "Not available yet" in pane.status
+            # card is untouched — the pane didn't pretend the approval went through
+            assert client.questions[2]["status"] == "open"
+            assert {c.question["id"] for c in pane.query(QuestionCard)} == {2}
+
+    run(body())
+
+
+def test_snapshot_renders_without_error(tmp_path):
+    async def body():
+        client = FakeClient([question(1), safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            svg = pilot.app.export_screenshot()
+            assert "<svg" in svg
+            (tmp_path / "needs_you.svg").write_text(svg)
+
+    run(body())
