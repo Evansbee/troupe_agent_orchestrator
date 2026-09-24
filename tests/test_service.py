@@ -92,6 +92,87 @@ def test_detach_concurrent_start_stale_and_registry(project):
     assert next(p for p in projects() if p["name"] == "Gone")["state"] == "missing"
 
 
+def test_legacy_pid_alive_fresh_heartbeat_reports_running_and_skips_spawn(project, monkeypatch):
+    """REQ-ENG-003: a pre-#24 engine (bare-int pid, no lock) is adopted, not duplicated."""
+    cfg = project
+    store = Store(cfg.db_path)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (cfg.state_dir / "engine.pid").write_text(str(child.pid))
+        store.kv_set("heartbeat", time.time())
+
+        status = service_status(cfg.root)
+        assert status["state"] == "running"
+        assert status["pid"] == child.pid
+        assert status["legacy"] is True
+
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda *a, **k: pytest.fail("start_service must not spawn a child for a live legacy engine"),
+        )
+        result = start_service(cfg)
+        assert result["state"] == "running"
+        assert result["pid"] == child.pid
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_legacy_pid_dead_or_stale_heartbeat_is_stale_and_start_service_spawns(project):
+    cfg = project
+    store = Store(cfg.db_path)
+
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=5)
+    (cfg.state_dir / "engine.pid").write_text(str(dead.pid))
+    store.kv_set("heartbeat", time.time())
+    status = service_status(cfg.root)
+    assert status["state"] == "stale"
+    assert status["pid"] is None
+    assert status["legacy"] is False
+
+    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (cfg.state_dir / "engine.pid").write_text(str(alive.pid))
+        store.kv_set("heartbeat", time.time() - 10)  # stale (REQ-ENG-005: >5s)
+        status = service_status(cfg.root)
+        assert status["state"] == "stale"
+        assert status["pid"] is None
+        assert status["legacy"] is False
+
+        result = start_service(cfg)  # spawns and becomes ready, same as today
+        assert result["state"] == "running"
+        assert result["legacy"] is False
+        assert result["pid"] != alive.pid
+    finally:
+        alive.terminate()
+        alive.wait(timeout=5)
+
+
+def test_stop_service_sigterms_legacy_engine_and_waits_for_heartbeat(project):
+    cfg = project
+    store = Store(cfg.db_path)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    (cfg.state_dir / "engine.pid").write_text(str(child.pid))
+    store.kv_set("heartbeat", time.time())
+
+    assert stop_service(cfg, timeout=5) is True
+    assert child.wait(timeout=5) is not None  # SIGTERM actually reached the process
+    assert not (cfg.state_dir / "engine.pid").exists()
+    assert service_status(cfg.root)["state"] != "running"
+
+
+def test_stop_service_never_signals_a_dead_legacy_pid(project):
+    cfg = project
+    store = Store(cfg.db_path)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=5)
+    (cfg.state_dir / "engine.pid").write_text(str(dead.pid))
+    store.kv_set("heartbeat", time.time())  # fresh heartbeat, but the recorded pid is already dead
+
+    assert stop_service(cfg, timeout=1) is False  # never adopted, so nothing gets signalled
+
+
 def test_api_stop_and_crash_recovery(project):
     from troupe.api_client import Client
 

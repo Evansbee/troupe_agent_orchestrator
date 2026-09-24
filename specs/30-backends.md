@@ -27,19 +27,30 @@ Code: `src/troupe/runners.py`.
     fields. The Settings view will show "not supported" next to level for local agents (#5).
   - Test: argv built for each provider/level pair.
 
-- **REQ-BE-015 [ ]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
+- **REQ-BE-015 [x]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
   2026-09-24: agents inherited `~/.codex/config.toml` plugins, including computer-use, browser, app tools and a notify
   hook into the Computer Use app. Those could drive the human's desktop and apps, and are a likely cause of the hangs.
   - Codex runs with `CODEX_HOME=.troupe/codex-home/<agent>`. That directory has a minimal generated `config.toml`
     (model/level from team.yaml plus the troupe MCP server, **no plugins, no notify**) and a symlink to the human's
     `~/.codex/auth.json` for login only.
+  - **Allowlist, not just omission** (QA rejection of the first cut, 2026-09-24): a bare CODEX_HOME with no
+    `[features]` section still auto-enables `apps`/`plugins` from the account linked via the symlinked auth, which
+    sync in the human's ChatGPT-account connectors (Gmail send/delete/forward, Canva, ...) as tools. The generated
+    config explicitly sets `apps`, `plugins`, `remote_plugin`, `computer_use`, `browser_use`, `browser_use_external`,
+    `in_app_browser` and `tool_suggest` to `false` under `[features]`. The same names are repeated as
+    `-c features.<name>=false` launch argv, so a stale or hand-edited `config.toml` in the home can't re-enable them.
+    Only `mcp_servers.troupe` is configured — no other MCP server.
   - Session resume (`exec resume`) keeps working, because sessions live under the new home. BE-014 usage reading
     looks in these homes (and the app-server fallback).
   - This is the first layer of the codex sandbox (REQ-SAFE-050, #43). `runners.py` is protected, so the human
     approves the merge (REQ-SAFE-020).
   - Test:
     - the launch env sets `CODEX_HOME`;
-    - the generated config has no `plugins` or `notify`;
+    - the generated config has no `plugins` or `notify`, and explicitly disables every feature above with
+      `mcp_servers` containing only `troupe` (parsed with `tomllib`);
+    - the launch argv repeats the same feature disables as `-c` overrides;
+    - live (skipped without a logged-in `codex` CLI): a real isolated CODEX_HOME shows nothing enabled in
+      `codex plugin list` and every listed feature above as `false` in `codex features list`;
     - live: during a codex run, `ps` shows no ChatGPT.app, cua_node or node_repl children;
     - login and resume work.
 
@@ -59,6 +70,19 @@ should be able to move to codex or even local models as defined in the setup yam
   - A provider that reports nothing is treated as uncapped, with a one-time event saying so. Local is never capped.
   - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
   - Test: parsing each backend's usage events into per-window %, and cap comparison.
+- **REQ-BE-016 [ ]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
+  - `[budget] claude_cap_percent` (default 50; 0 = off) in `troupe.toml`. If the latest Claude usage in the 5h or 7d
+    window is ≥ the cap, no new **autonomous** runs start for claude-backed agents. Codex and local agents are
+    unaffected, and in-flight runs finish.
+  - Chat with the human still runs, since they're present and can decide, but it's labeled as over the cap. This
+    differs from real rate limits (REQ-ENG-016), which block chat, because the cap is troupe's own seatbelt.
+  - It reuses the ENG-016 per-backend limit state with reason `cap` and resets when the window resets. Affected agents
+    show `waiting_on` kind `providers` (REQ-ENG-046).
+  - A feed event and a needs-help notification (REQ-ENG-047) fire when it engages. The API usage snapshot exposes the
+    cap and "capped until HH:MM" for the TUI header (REQ-TUI-010).
+  - When #38 ships, `provider_limits.claude` (BE-011) replaces this key. A present `claude_cap_percent` is migrated
+    to it once, with an event.
+  - Test: above, below and off; the reset clears it; codex/local are unaffected; chat is allowed.
 - **REQ-BE-012 [ ]** Provider selection at each wake.
   - A provider is **available** when it is under all its caps, not rate-limited (REQ-ENG-016), and up. Up means its
     CLI is present and, for local, the server answers.
@@ -122,6 +146,7 @@ should be able to move to codex or even local models as defined in the setup yam
 - 2026-09-23 — BE-014 Codex usage from rollout `rate_limits` (#52, human request).
 - 2026-09-24 — BE-011 shared window names (five_hour/seven_day/window_<minutes>) and stale-sample rule (#52/#38).
 - 2026-09-24 — BE-015 isolated CODEX_HOME for agents (#62).
+- 2026-09-24 — BE-016 MVP Claude cap (#72).
 
 ## Open questions
 - Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52

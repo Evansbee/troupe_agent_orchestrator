@@ -105,18 +105,18 @@ class TeamAPI:
 
     # ── mail ──────────────────────────────────────────────────────────────
     def send_message(self, to: str, body: str, subject: str = "", reply_to: int | None = None,
-                     task_id: int | None = None) -> str:
+                     task_id: int | None = None, fyi: bool = False) -> str:
         """Send a message to a teammate's mailbox; it wakes them up.
 
         `to`: a full/local handle or legacy agent id, a role (e.g. "builder" = every builder), "team"
         (everyone), or "human" (the project owner — for decisions prefer ask_human). Keep it concise and
-        specific, one topic per message. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
+        specific, one topic per message. Set fyi=True unless you need action or a reply. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
         message ids (reply_to) so the recipient has full context."""
         try:
             recipients = self._resolve(to)
         except ValueError as e:
             return f"ERROR: {e}"
-        ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id)
+        ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id, fyi=fyi)
                for r in recipients]
         return f"Sent to {', '.join(self.names.name(r) for r in recipients)} (msg {', '.join('#' + str(i) for i in ids)})."
 

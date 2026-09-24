@@ -16,6 +16,7 @@ from pathlib import Path
 from . import gitops, config as config_mod
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
+from .triage import MailTriage, fyi_message, mandatory, changed_without_pending_mail
 from .gates import MergeGateMixin
 from .safety import audit, fingerprint, kill_group
 from .runners import RunSpec, make_runner, Runner, usage_limit, reported_reset
@@ -56,6 +57,7 @@ class Engine(MergeGateMixin):
         self.running: dict[str, tuple[Runner, asyncio.Task, Wake]] = {}
         self.failures: dict[str, tuple[int, float]] = {}  # agent -> (count, retry_after)
         self.pokes: set[str] = set()
+        self.mail_triage = MailTriage()
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
         self._merge_task: asyncio.Task | None = None
@@ -480,8 +482,9 @@ class Engine(MergeGateMixin):
                 if mine:
                     out.append(Wake(1, a, "review", mine[0]))
                     continue
-            real_mail = [m for m in unread if m["kind"] != "system" or m["sender"] != "system"]
-            if unread and t_now - unread[-1]["ts"] >= MESSAGE_DEBOUNCE and real_mail:
+            real_mail = [m for m in unread if m["kind"] != "system" or m["sender"] != "system" or mandatory(m, a, s)]
+            if (unread and t_now - unread[-1]["ts"] >= MESSAGE_DEBOUNCE and real_mail
+                    and self.mail_triage.should_wake(self.cfg, s, a, real_mail, self.current_task(a))):
                 out.append(Wake(2, a, "messages", self.current_task(a)))
                 continue
             task = self.current_task(a)
@@ -489,7 +492,7 @@ class Engine(MergeGateMixin):
                 out.append(Wake(3, a, "task", task))
                 continue
             if (a.idle_seconds > 0 and t_now - (row["last_run_at"] or 0) >= a.idle_seconds
-                    and s.world_changed_for(a.id, row["last_event_seen"] or 0)):
+                    and changed_without_pending_mail(s, a.id, row["last_event_seen"] or 0, unread)):
                 out.append(Wake(5, a, "proactive", task))
         return out
 
@@ -511,6 +514,8 @@ class Engine(MergeGateMixin):
         if role.works_in_task_tree and task and task.get("worktree") and Path(task["worktree"]).exists():
             cwd = Path(task["worktree"])
         msgs = s.unread(a.id)
+        self.mail_triage.forget(a.id)
+        s.mark_read([m["id"] for m in msgs])
         if any(m["sender"] == "human" and m["kind"] == "chat" for m in msgs):
             w.reason = "chat"  # whatever woke them, the human gets a live reply
         row = s.agent(a.id) or {}
@@ -717,11 +722,13 @@ class Engine(MergeGateMixin):
         s = self.store
         names = HandleBook(self.cfg.project, self.cfg.agents)
         p: list[str] = [f"# Wake-up · {time.strftime('%Y-%m-%d %H:%M')} · {REASONS[w.reason]}"]
-        if msgs:
-            p.append(f"\n## New messages ({len(msgs)})")
-            for m in msgs:
-                tag = " [LIVE CHAT]" if m["sender"] == "human" and m["kind"] == "chat" else ""
-                p.append(fmt_message(m, names) + tag + "\n")
+        for label, group in (("New messages", [m for m in msgs if not fyi_message(m, a, s)]),
+                             ("FYI since last time", [m for m in msgs if fyi_message(m, a, s)])):
+            if group:
+                p.append(f"\n## {label} ({len(group)})")
+                for m in group:
+                    tag = " [LIVE CHAT]" if m["sender"] == "human" and m["kind"] == "chat" else ""
+                    p.append(fmt_message(m, names) + tag + "\n")
         if task:
             label = "Task to review" if w.reason == "review" else "Your current task"
             p.append(f"\n## {label}\n" + fmt_task_full(s, task, names))

@@ -42,6 +42,7 @@ class Data:
         self.kv: dict = {}
         self.cost_24h = 0.0
         self.runs_1h = 0
+        self.work_tokens_1h = {"coordination": 0, "work": 0}
         self.new_messages: list[dict] = []
         self.new_questions: list[dict] = []
         self.new_chat_answers: list[dict] = []
@@ -163,6 +164,11 @@ class Data:
                 "WHERE e.id>? AND e.id<=? AND e.kind='answer' AND q.answered_via='chat' ORDER BY e.id",
                 self._answer_event, answer_event)
         self._answer_event = answer_event
+        totals = s.q("SELECT CASE WHEN task_id IS NOT NULL OR reason IN ('task','review') THEN 'work' "
+                     "ELSE 'coordination' END AS category, SUM(tokens) AS tokens FROM runs "
+                     "WHERE started>? AND chat=0 GROUP BY category", now - 3600)
+        self.work_tokens_1h = {"coordination": 0, "work": 0}
+        self.work_tokens_1h.update({r["category"]: r["tokens"] or 0 for r in totals})
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
         self.kv = {k: s.kv_get(k) for k in ("paused", "stopped", "heartbeat", "throttled", "claude_ratelimit",
