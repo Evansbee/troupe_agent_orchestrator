@@ -183,6 +183,8 @@ class Engine:
         if runs:
             await asyncio.sleep(0.5)
             for runner, task, _w in runs:
+                if runner.proc and runner.proc.returncode is None:
+                    groups[id(runner)] = runner.proc.pid
                 if id(runner) in groups:
                     try:
                         os.killpg(groups[id(runner)], signal.SIGKILL)

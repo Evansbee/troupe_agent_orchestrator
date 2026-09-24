@@ -131,7 +131,8 @@ def test_up_and_gui_never_stop_service(project, monkeypatch):
     assert service_status(project.root)["pid"] == pid
 
 
-def test_shutdown_requeues_mail_and_kills_process_group(project, monkeypatch):
+@pytest.mark.parametrize("spawn_delay", [0, .3])
+def test_shutdown_requeues_mail_and_kills_process_group(project, monkeypatch, spawn_delay):
     from troupe.engine import Engine, Wake
     from troupe.runners import Runner, RunResult
 
@@ -143,6 +144,7 @@ def test_shutdown_requeues_mail_and_kills_process_group(project, monkeypatch):
 
     class Slow(Runner):
         async def run(self, spec, emit):
+            await asyncio.sleep(spawn_delay)
             self.proc = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-c",

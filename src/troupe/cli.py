@@ -43,10 +43,10 @@ def cmd_init(args: argparse.Namespace) -> Path:
     root = Path(args.dir).resolve() if getattr(args, "dir", None) else Path.cwd().resolve()
     root.mkdir(parents=True, exist_ok=True)
     from .service import register_project
-    register_project(root, getattr(args, "name", None) or root.name)
     cfgfile = root / config_mod.STATE_DIR / config_mod.CONFIG_FILE
     if cfgfile.exists():
-        config_mod.load(root)  # migrate a legacy roster even when init is repeated
+        cfg = config_mod.load(root)  # migrate a legacy roster even when init is repeated
+        register_project(root, cfg.project)
         print(f"Already initialized: {cfgfile}")
         return root
     name = getattr(args, "name", None) or root.name
@@ -54,6 +54,7 @@ def cmd_init(args: argparse.Namespace) -> Path:
     config_mod.write_default(root, name, local_model)
     gitops.ensure_repo(root)
     cfg = config_mod.load(root)
+    register_project(root, cfg.project)
     store = Store(cfg.db_path)
     store.sync_agents(cfg.agents)
     store.send(next(a.id for a in cfg.agents if a.role == "pm"), "human", PM_GREETING, kind="chat")

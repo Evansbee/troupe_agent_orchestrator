@@ -289,7 +289,8 @@ class App:
             return
         ui.modal = ui.layer = "catchup"
         ui.rect(Rect(0, 0, ui.w, ui.h), (0, 0, 0, 165))
-        r = Rect((ui.w - min(720, ui.w - 80)) / 2, 65, min(720, ui.w - 80), min(650, ui.h - 130))
+        height = min(240 if self.confirm_stop else 650, ui.h - 130)
+        r = Rect((ui.w - min(720, ui.w - 80)) / 2, (ui.h - height) / 2, min(720, ui.w - 80), height)
         ui.panel(r, T.PANEL, 14, T.BORDER_HI)
         ui.text(r.x + 24, r.y + 22, "Stop the team?" if self.confirm_stop else "While you were away", 22, T.TEXT, "bold")
         if self.confirm_stop:

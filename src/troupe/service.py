@@ -1,10 +1,21 @@
-"""Small on-disk status contract for clients when the socket is unavailable."""
+"""Detached per-project services, lifetime ownership, registry and recovery."""
 
+# Lock ownership, rather than the pid file alone, is the authority for a live service.
+import asyncio
+import fcntl
 import json
+import logging
 import os
+import signal
+import subprocess
+import sys
 import tempfile
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+from . import __version__
+from .store import HandleBook, Store
 
 
 def write_service_state(
@@ -26,17 +37,6 @@ def write_service_state(
         Path(name).unlink(missing_ok=True)
 
 
-# Lock ownership, rather than the pid file alone, is the authority for a live service.
-import asyncio
-import fcntl
-import logging
-import signal
-import subprocess
-import sys
-from logging.handlers import RotatingFileHandler
-
-from . import __version__
-from .store import HandleBook, Store
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -119,6 +119,7 @@ def service_status(root: Path) -> dict:
         version=record.get("version", ""),
         started_at=record.get("started_at", 0),
         uptime=max(0, time.time() - record.get("started_at", time.time())),
+        heartbeat=heartbeat,
         heartbeat_age=time.time() - heartbeat if heartbeat else None,
     )
 
@@ -126,19 +127,15 @@ def service_status(root: Path) -> dict:
 def start_service(cfg, timeout: float = 10) -> dict:
     register_project(cfg.root, cfg.project)
     status = service_status(cfg.root)
-    if status["state"] == "running":
-        return status
-    # Children contend for the lifetime lock; losing children exit without touching the winner's pid.
-    with (cfg.state_dir / "engine.log").open("ab") as log:
-        child = subprocess.Popen(
-            [sys.executable, "-m", "troupe.cli", "engine"],
-            cwd=cfg.root,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            close_fds=True,
-        )
+    child = None
+    if status["state"] != "running":
+        # Children contend for the lifetime lock; losers never touch the winner's pid.
+        with (cfg.state_dir / "engine.log").open("ab") as log:
+            child = subprocess.Popen(
+                [sys.executable, "-m", "troupe.cli", "engine"], cwd=cfg.root,
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True, close_fds=True,
+            )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = service_status(cfg.root)
@@ -146,9 +143,10 @@ def start_service(cfg, timeout: float = 10) -> dict:
             status["state"] == "running"
             and status["heartbeat_age"] is not None
             and status["heartbeat_age"] < 2
+            and status["heartbeat"] >= status["started_at"]
         ):
             return status
-        if child.poll() not in (None, 0):
+        if child is not None and child.poll() not in (None, 0):
             break
         time.sleep(0.05)
     tail = (cfg.state_dir / "engine.log").read_text(errors="replace").splitlines()[-30:]
@@ -282,6 +280,7 @@ def run_foreground(cfg) -> bool:
         try:
             asyncio.run(run())
         finally:
+            eng.store.kv_set("heartbeat", 0)
             logger.info("Engine stopped")
             logger.removeHandler(handler)
             handler.close()
