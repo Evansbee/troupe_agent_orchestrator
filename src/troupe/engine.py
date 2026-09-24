@@ -340,7 +340,7 @@ class Engine:
         if res.extra.get("limit_until"):
             limited = True
             self.record_limit(a.backend, res.extra["limit_until"])
-        elif not res.ok and a.backend in ("claude", "codex") and usage_limit(res.error):
+        elif not limited and not res.ok and a.backend in ("claude", "codex") and usage_limit(res.error):
             limited = True
             self.record_limit(a.backend, limit_reset({"message": res.error}, now()))
         status = "limited" if limited else "ok" if res.ok else ("stopped" if runner.cancelled else "failed")

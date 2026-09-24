@@ -186,7 +186,8 @@ def chat_view(app: "App", r: Rect) -> None:
         y = _chat_empty(app, a, convo, y)
     for m in thread:
         y = _bubble(app, m, convo, y, maxw) + 14
-    waiting = (a["state"] == "running" or bool(d.limit_label(a["backend"]))) and (not thread or thread[-1]["sender"] == "human")
+    waiting = (a["state"] == "running" and (not thread or thread[-1]["sender"] == "human")) or (
+        bool(d.limit_label(a["backend"])) and bool(thread) and thread[-1]["sender"] == "human")
     if waiting:
         y = _typing(app, a, convo, y, maxw) + 14
     ui.scroll_end(sc, y + sc.offset - convo.y + 8)

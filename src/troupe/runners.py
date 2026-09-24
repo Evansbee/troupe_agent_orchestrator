@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import time
-from datetime import datetime
 import os
 import re
 import signal
 import subprocess
 import sys
+import time
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import logging
@@ -46,7 +47,6 @@ class RunResult:
     tokens: int = 0
     error: str = ""
     extra: dict = field(default_factory=dict)
-
 
 
 def limit_reset(info: dict, at: float) -> float:
@@ -88,6 +88,26 @@ def limit_reset(info: dict, at: float) -> float:
     delay = re.search(r"(?:try again|retry|resets?) in\s+(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?|s|m|h)\b", text, re.I)
     if delay:
         return at + float(delay[1]) * {"s": 1, "m": 60, "h": 3600}[delay[2][0].lower()]
+    dated = re.search(r"try again at ([A-Za-z]+ \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2}\s*[AP]M)", text, re.I)
+    if dated:
+        value = re.sub(r"(\d)(st|nd|rd|th)", r"\1", dated[1], flags=re.I)
+        for fmt in ("%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
+            try:
+                return datetime.strptime(value, fmt).timestamp()
+            except ValueError:
+                pass
+    clock = re.search(r"resets? (\d{1,2})(?::(\d{2}))?\s*([ap]m)\s*\(([^)]+)\)", text, re.I)
+    if clock:
+        try:
+            zone = ZoneInfo(clock[4])
+            local = datetime.fromtimestamp(at, zone)
+            hour = int(clock[1]) % 12 + (12 if clock[3].lower() == "pm" else 0)
+            reset = local.replace(hour=hour, minute=int(clock[2] or 0), second=0, microsecond=0)
+            if reset.timestamp() <= at:
+                reset += timedelta(days=1)
+            return reset.timestamp()
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
     return at + 900
 
 
@@ -98,9 +118,13 @@ def usage_limit(error: object) -> bool:
 
 
 def report_limit(state: dict, info: dict, emit: Emit) -> None:
-    reset = limit_reset(info, time.time())
+    at = time.time()
+    reset = limit_reset(info, at)
+    if reset == at + 900 and state.get("limit_until"):
+        return  # a generic error must not replace an already reported reset
     state["limit_until"] = max(state.get("limit_until", 0), reset)
     emit("backend_limit", json.dumps({"until": state["limit_until"]}))
+
 
 def child_env(cfg: Config, agent_id: str) -> dict[str, str]:
     env = dict(os.environ)

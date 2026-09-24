@@ -2,6 +2,7 @@
 import asyncio
 import time
 from pathlib import Path
+from datetime import datetime
 
 import pytest
 
@@ -39,6 +40,8 @@ def test_provider_events(project, monkeypatch, runner_cls, event, limited):
 
 
 def test_reset_formats():
+    assert limit_reset({"message": "try again at Sep 24th, 2026 10:00 AM."}, 1000) == datetime(2026, 9, 24, 10).timestamp()
+    assert limit_reset({"message": "resets 11pm (UTC)"}, 1790200800) == 1790204400
     assert limit_reset({"message": "Usage limit; try again in 3 minutes"}, 1000) == 1180
     assert limit_reset({"message": "resets at 2026-09-23T22:00:00Z"}, 1000) == 1790200800
     assert limit_reset({"reset_at": "2026-09-23T22:00:00Z"}, 1000) == 1790200800

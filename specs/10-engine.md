@@ -51,7 +51,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
 - **REQ-ENG-015 [x]** Failed runs back off exponentially per agent (30s → 10m) and their mail is re-queued.
-- **REQ-ENG-016 [ ]** Rate-limit awareness: when a backend reports a usage/rate limit, back off that backend
+- **REQ-ENG-016 [x]** Rate-limit awareness: when a backend reports a usage/rate limit, back off that backend
   globally until its reset time and surface it in the GUI. (#2)
   - Detection: claude `rate_limit_event` with status ≠ `allowed`, or a failed run whose error text mentions a
     rate/usage limit; codex error events mentioning a rate/usage limit.
