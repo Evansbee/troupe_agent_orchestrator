@@ -49,6 +49,7 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
 | **Builder(s)** | Write code, one task at a time, each in its own worktree. |
 | **Architect** | Keeps the codebase sustainable: owns `docs/architecture.md` + ADRs, reviews risky changes (schema, deps, contracts, new modules), runs health checks and files tech-debt tasks. |
 | **QA** | Verifies things work and meet spec; approves or rejects every task before merge. |
+| **Researcher** | Combs the web for domain knowledge (`research/`, every claim sourced), asks the team sharp questions about how we work, takes research tasks. Cheap local model by default; reaches the human only via the PM. |
 | **Gadfly** | The pesky one: "the spec says X — does that mean Y? what about Z?" — to the human and the agents. |
 
 ## Non-goals (for now)
@@ -78,3 +79,4 @@ territories for parallel builders, reviewers on a different runtime than writers
 - 2026-09-23 — added the Architect role (human): sustainability owner; gates only risky changes.
 - 2026-09-23 — GUI goes native: SwiftUI app in `mac/`, client of a per-project local engine API
   (`specs/50-api.md`); raylib GUI retired at parity (human chose "commit now").
+- 2026-09-23 — added the Researcher role (human).
