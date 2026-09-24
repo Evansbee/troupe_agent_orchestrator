@@ -70,6 +70,54 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 - Out of scope: auto-start at login (launchd) and one machine-wide service for all projects (human chose one service
   per project, with one GUI attached to all of them, REQ-GUI-040).
 
+## Crash reporting (#91)
+Scope decision: human via PM, 2026-09-24 (msg #814): report both client and engine crashes and auto-file P0 work.
+Client reporting does not depend on the deferred service supervisor shipping.
+- **REQ-ENG-056 [ ]** Every troupe process entrypoint captures an unhandled crash in a report file under the
+  affected project's `.troupe/crashes/`, including GUI, TUI and engine startup and runtime failures.
+  - The report is persisted even when the engine is offline, so the human never has to copy a traceback to the
+    team. Normal quit, intentional stop and reload are not crashes.
+  - Reports contain the crash details and the fields specified in #91; secrets and private data must not be
+    exposed through reports or the tasks, notifications and messages derived from them (Principle 0).
+  - **Editorial dependency:** transcribe and verify #91's exact report-field list before implementation review.
+    The PM's scope message is available, but task/memory reads were denied by the session's tool approval policy
+    when this section was written; the field list has not been verified.
+  - Acceptance: inject an exception during startup and during normal operation of each entrypoint; each produces
+    a report, including with no engine running. Compare report fields against #91. A normal exit produces none.
+- **REQ-ENG-057 [ ]** The engine consumes pending crash reports on startup and while running, automatically
+  files a **P0** task with the crash details/report reference, sends messages to both PM and lead, and emits a
+  human-facing notification of kind `crash` (REQ-ENG-047).
+  - Dedupe survives engine restarts: consuming the same report again never creates another task or repeats its
+    messages/notification. Repeated occurrences of the same crash attach to the existing open crash task rather
+    than flooding the board with duplicates; a different crash creates its own task.
+  - `crash` is must-deliver alongside #89's kinds: neither `[notify] enabled = false` nor `quiet` can silence it.
+    A crashed client must not remain the notification destination merely because its focus/connection state is
+    stale; delivery must reach the human through the available notification path.
+  - Acceptance: a saved client report produces a P0, both messages and a notification; replay it across an engine
+    restart and verify no duplicate delivery/task. Repeat the crash and verify one open task; inject a distinct
+    crash and verify a second task. Disable notifications and quiet `crash`; the crash notification still arrives.
+- **REQ-ENG-058 [ ]** Engine crashes use the same report and ingestion path as client crashes. A report saved
+  before engine exit is consumed when the engine next starts, including after supervisor restart (ENG-042/#28).
+  - When the supervisor observes an unexpected exit that could not write its own report (for example `kill -9`),
+    it records the observed failure for the same path; it does not invent an unavailable traceback or file a
+    second report for a failure already captured by the engine.
+  - Acceptance: crash the engine and restart it; the saved report produces the ENG-057 outcomes once. With the
+    #28 supervisor enabled, exercise a killed child and verify the same reporting and dedupe behavior.
+  - Engine restart policy, backoff and crash-loop limits remain ENG-042/#28, which is deferred. Reporting does
+    not re-enable supervision or change TUI engine ownership (REQ-TUI-001).
+- **REQ-ENG-059 [ ]** The merge gate for changes to GUI/TUI code includes a headless launch smoke test of the
+  affected client, using the candidate merged tree (REQ-ENG-040).
+  - Exercise actual startup and at least one render/update cycle, then clean shutdown in a disposable project;
+    an import-only check is insufficient. A startup exception, non-zero exit or timeout blocks the merge through
+    the normal ENG-040 failure path. The check leaves no client or engine processes running.
+  - Acceptance: inject the #90 failure (GUI calls a missing `Data.notify`) and verify the gate refuses the merge;
+    inject a TUI startup exception and verify the same. Healthy clients pass and exit cleanly. The check runs
+    headlessly without interacting with the human's live project.
+
+### Out of scope
+- Automatically restarting or relaunching the human-facing client. Engine restart remains ENG-042/#28.
+- Agent-run stalls and timeouts, already covered by ENG-050.
+
 ## Wake-ups (who runs, when, why)
 Each agent run is one session of a backend CLI. Agents never loop; they are woken with a reason.
 - **REQ-ENG-010 [x]** Reasons, in priority order: `chat` (human messaged them) > `poke` (human clicked Wake)
@@ -329,6 +377,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       the reset time;
     - an agent whose failure backoff has reached its cap;
     - a crash loop (REQ-ENG-042);
+    - a process crash report (REQ-ENG-057, notification kind `crash`, #91);
     - a run watchdog stall or timeout kill (REQ-ENG-050);
     - a budget throttle;
     - safety events (REQ-SAFE-040).
@@ -342,11 +391,12 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     - the GUI's own osascript path is removed.
   - Titles use full handles plus the project, e.g. "qa_1@troupe needs you".
   - Config: `[notify] enabled = true` and a `quiet` list of event kinds to mute.
-  - **Must-deliver kinds** (#89, found by QA): `safety`, `crash_loop`, `concern` and `kill` ignore `quiet` and
+  - **Must-deliver kinds** (#89, found by QA; `crash` added by #91, pending): `safety`, `crash_loop`, `concern`,
+    `kill` and `crash` ignore `quiet` and
     `enabled`, so no config edit can silence them. `[notify]` also joins the human-approved config (REQ-SAFE-021),
     so an agent's edit to it isn't enforced until the human approves the card. #89's diff adds `[notify]` to the
     SAFE-021 text, which is protected, so the human approves it. Test: with every kind in `quiet` and
-    `enabled = false`, the four must-deliver kinds still notify.
+    `enabled = false`, all five must-deliver kinds still notify.
   - Delivery for now is osascript, with safe escaping. There's no click-through until the Mac app (REQ-MAC).
   - Test: coalescing, dedupe, focus suppression and `quiet`, with delivery mocked. Manual: GUI closed + a question →
     a notification within about 5 s.
@@ -472,14 +522,14 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
     - an unmapped tier uses the default.
 
 ## Open questions
-- The human requested "a crash watcher" after reporting a traceback (2026-09-24, 12:55 wake). PM/lead must
-  establish whether this means detecting/reporting a client crash, an engine crash, or both, and whether
-  automatic restart is wanted. ENG-050 covers agent-run stalls only; the older ENG-042 supervisor remains
-  deferred until its scope is reconciled with TUI ownership (TUI-001). This request is outstanding.
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-056..059: crash reports, deduplicated P0 filing/PM+lead mail, must-deliver `crash`, engine
+  restart ingestion and GUI/TUI launch smoke gate (#91, PM msg #814). Resolved the crash-watcher scope question:
+  both client and engine, no client auto-relaunch, engine supervision remains deferred under #28. Exact report
+  fields still need transcription from #91 (task/memory tools denied by approval policy).
 - 2026-09-24 — ENG-040 retry exhaustion clarified; recorded the new crash-watcher request without assuming
   that the deferred background-service supervisor is its intended implementation.
 - 2026-09-23 — written from the bootstrap implementation.
