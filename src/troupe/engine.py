@@ -154,6 +154,16 @@ class Engine:
             self.store.event("system", "error", f"Worktree cleanup failed: {e}", significant=False)
 
     async def main(self) -> None:
+        from .api import APIServer
+
+        self.api = APIServer(self.cfg, self)
+        try:
+            self.api.start()
+            await self._serve()
+        finally:
+            self.api.stop()
+
+    async def _serve(self) -> None:
         self.recover()
         self.store.event("system", "engine", "Engine started", significant=False)
         while not self._stop.is_set():
