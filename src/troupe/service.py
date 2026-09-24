@@ -304,6 +304,10 @@ def stop_service(cfg, timeout: float = 15) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _locked(cfg.state_dir):
+            # #113: the engine's own shutdown (run_foreground's finally) should already have
+            # written "stopped" by the time it releases this lock, but writing it here too means
+            # stop_service's own success is never dependent on that timing having landed first.
+            write_service_state(cfg.state_dir, "stopped", "Stopped")
             return True
         time.sleep(0.05)
     # Recheck identity before signalling: a recycled pid is never a valid stop target.
@@ -361,6 +365,14 @@ def run_foreground(cfg) -> bool:
             identity=_identity(os.getpid()),
         )
         _atomic_json(cfg.state_dir / "engine.pid", record)
+        # #113: self-register as our own "service" owner immediately -- a standalone `troupe
+        # engine` has no launcher to ever call set_owner for it, so without this it keeps
+        # whatever owner happened to be recorded from a previous, unrelated run (e.g. a dead
+        # TUI's stale "tui" record), which a later `ensure_engine` would misread as an orphan to
+        # re-adopt -- and then kill on its own Ctrl-C. `start_service`'s own post-heartbeat
+        # set_owner call (tui/up/service, with the *launcher's* pid) always lands after this and
+        # overwrites it when this process actually is that kind of spawn.
+        set_owner(cfg.state_dir, os.getpid(), "service")
         handler = RotatingFileHandler(
             cfg.state_dir / "engine.log", maxBytes=10 * 1024 * 1024, backupCount=3
         )
@@ -440,6 +452,14 @@ def run_foreground(cfg) -> bool:
             # abort the rest of the block -- either way, unlinking last made the guarantee only
             # probabilistic instead of ordered.
             (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+            # #113: unconditional on every exit path (SIGTERM, SIGINT, a crash out of run()).
+            # api.py's own serve() finally already writes "stopped" and clears the owner, but that
+            # runs on the API thread's own event loop with only a bounded join (api.stop()) -- if
+            # it hasn't landed by the time this process is on its way out, service.json would
+            # otherwise keep showing "running" plus a now-stale owner forever (#113: a TUI's
+            # Ctrl-C left exactly that behind, and a later `ensure_engine` adopted and killed an
+            # unrelated foreground engine because of it).
+            write_service_state(cfg.state_dir, "stopped", "Engine process exited")
             try:
                 eng.store.kv_set("heartbeat", 0)
             except Exception:
