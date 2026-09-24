@@ -12,10 +12,16 @@ from ..config import Config
 from ..roles import get_role
 from ..team import ago
 from . import theme as T
-from .core import UI, Rect, alpha, mix
+from .core import ZOOM_DEFAULT, ZOOM_STEP, UI, Rect, alpha, mix
 from .data import Data
 
 TABS = ["Chat", "Pulse", "Board", "Mail", "Memory", "Docs", "Agent"]
+
+
+def window_title(project: str, n_questions: int) -> str:
+    """REQ-GUI-027: '(N) troupe — project' while N questions are open, else plain."""
+    base = f"troupe — {project}"
+    return f"({n_questions}) {base}" if n_questions else base
 
 
 class App:
@@ -35,6 +41,7 @@ class App:
         self.expanded: set[str] = set()
         self.toasts: list[tuple[float, str, tuple]] = []
         self.new_task_open = False
+        self.confirm_stop = False
         self.shot_requested: str | None = None
         from .views import PulseState
 
@@ -46,14 +53,16 @@ class App:
                  | rl.ConfigFlags.FLAG_MSAA_4X_HINT | rl.ConfigFlags.FLAG_VSYNC_HINT)
         rl.set_config_flags(flags)
         rl.set_trace_log_level(rl.TraceLogLevel.LOG_ERROR)
-        rl.init_window(1560, 980, f"troupe — {self.cfg.project}")
+        rl.init_window(1560, 980, window_title(self.cfg.project, 0))
         rl.set_window_min_size(1120, 720)
         rl.set_exit_key(0)
         self.ui.dpi = max(1.0, rl.get_window_scale_dpi().x)
+        self.ui.set_zoom(self.data.store.kv_get("gui_zoom", ZOOM_DEFAULT))
         rl.set_target_fps(60)
         self.data.refresh(force=True)
         fps = 60
         frames = 0
+        title_n = -1  # sentinel: forces the first title update even when 0 questions are open
         auto_shot = os.environ.get("TROUPE_SHOT")
         if os.environ.get("TROUPE_TAB") in TABS:
             self.tab = os.environ["TROUPE_TAB"]
@@ -61,7 +70,12 @@ class App:
             self.sel_task = int(os.environ["TROUPE_TASK"])
         while not rl.window_should_close():
             self.data.refresh()
+            self.data.focus_changed(rl.is_window_focused())
             self.handle_notifications()
+            n = len(self.data.questions)
+            if n != title_n:  # REQ-GUI-027: "(N) " prefix, live as questions arrive/get answered
+                title_n = n
+                rl.set_window_title(window_title(self.cfg.project, n))
             busy = self.data.running_count() > 0 or self.pulse.particles or self.toasts
             want = 60 if (self.ui.activity < 4 or busy) else 20
             if want != fps:
@@ -81,12 +95,22 @@ class App:
             if auto_shot and frames == int(os.environ.get("TROUPE_SHOT_FRAME", "90")):
                 screenshot(auto_shot)
                 break
+        self.data.focus_changed(False)
+        self.data.human_seen()
         rl.close_window()
 
     def handle_notifications(self) -> None:
         d = self.data
+        if d.service_error:
+            self.toast(d.service_error, T.RED)
+            d.service_error = ""
         from .views import on_new_messages
 
+        if d.new_help:
+            if rl.is_window_focused():
+                for event in d.new_help:
+                    self.toast(f"{d.name_of(event['agent'])}: {d.names.event_text(event['text'])[:100]}", T.ORANGE)
+            d.new_help = []
         if d.new_messages:
             on_new_messages(self, d.new_messages)
             for m in d.new_messages:
@@ -95,8 +119,6 @@ class App:
                     d.notify("troupe · Safety needs attention", m["body"])
                 if m["recipient"] == "human" and m["kind"] == "chat" and m["sender"] != self.chat_with_visible():
                     self.toast(f"{d.name_of(m['sender'])}: {m['body'][:90]}", d.color_of(m["sender"]))
-                    if not rl.is_window_focused():
-                        d.notify(f"troupe · {d.name_of(m['sender'])}", m["body"])
             d.new_messages = []
         if d.new_chat_answers:
             for q in d.new_chat_answers:
@@ -105,8 +127,6 @@ class App:
         if d.new_questions:
             for q in d.new_questions:
                 self.toast(f"{d.name_of(q['asker'])} needs you: {q['question'][:90]}", d.color_of(q["asker"]))
-                if not rl.is_window_focused():
-                    d.notify(f"troupe · {d.name_of(q['asker'])} asks", q["question"])
             d.new_questions = []
 
     def chat_with_visible(self) -> str | None:
@@ -116,10 +136,17 @@ class App:
         self.toasts.append((time.time(), text, color))
         self.toasts = self.toasts[-4:]
 
+    def set_zoom(self, zoom: float) -> None:
+        if self.ui.set_zoom(zoom):
+            self.data.store.kv_set("gui_zoom", self.ui.zoom)
+            self.toast(f"Zoom {round(self.ui.zoom * 100)}%")
+
     # ── layout ────────────────────────────────────────────────────────────
     def frame(self) -> None:
         ui = self.ui
         self.shortcuts()
+        if self.data.catchup or self.confirm_stop:
+            ui.modal = "catchup"
         full = Rect(0, 0, ui.w, ui.h)
         top, rest = full.cut_top(T.TOP_H)
         body = rest.inset(T.GAP, 0)
@@ -134,18 +161,30 @@ class App:
         from .views import draw_modals
 
         draw_modals(self)
+        self.draw_service_modal()
 
     def shortcuts(self) -> None:
         ui = self.ui
-        if ui.cmd and (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT) or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT)) and rl.is_key_pressed(rl.KeyboardKey.KEY_PERIOD):
+        K = rl.KeyboardKey
+        if ui.cmd and (rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT)) and rl.is_key_pressed(K.KEY_PERIOD):
             self.data.stop_now()
         if ui.cmd and ui.focus is None:
             for i, name in enumerate(TABS):
-                if rl.is_key_pressed(rl.KeyboardKey.KEY_ONE + i):
+                if rl.is_key_pressed(K.KEY_ONE + i):
                     self.tab = name
+            if ui.key(K.KEY_EQUAL) or ui.key(K.KEY_KP_ADD):
+                self.set_zoom(ui.zoom + ZOOM_STEP)
+            elif ui.key(K.KEY_MINUS) or ui.key(K.KEY_KP_SUBTRACT):
+                self.set_zoom(ui.zoom - ZOOM_STEP)
+            elif ui.key(K.KEY_ZERO, False) or ui.key(K.KEY_KP_0, False):
+                self.set_zoom(ZOOM_DEFAULT)
         if ui.cmd and rl.is_key_pressed(rl.KeyboardKey.KEY_P) and ui.focus is None:
             self.data.set_paused(not self.data.paused)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
+            if self.data.catchup or self.confirm_stop:
+                self.data.dismiss_catchup()
+                self.confirm_stop = False
+                return
             if self.sel_task is not None:
                 self.sel_task = None
             elif self.new_task_open:
@@ -156,7 +195,7 @@ class App:
     # ── top bar ───────────────────────────────────────────────────────────
     def draw_top(self, r: Rect) -> None:
         ui, d = self.ui, self.data
-        rl.draw_rectangle_gradient_v(0, 0, int(r.w), int(r.h), T.BG2, T.BG)
+        ui.gradient_v(r, T.BG2, T.BG)
         ui.hline(0, r.b - 1, r.w, alpha(T.BORDER, 0.7))
         # logo: a little constellation mark
         cx, cy = r.x + 30, r.cy
@@ -168,6 +207,11 @@ class App:
         x = r.x + 48
         x += ui.text(x, r.cy - 11, "troupe", 19, T.TEXT, "bold") + 12
         x += ui.text(x, r.cy - 8, self.cfg.project, 14, T.TEXT_DIM, "med") + 22
+        control_label = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
+        controls_width = ui.button_w(control_label) + 16 + ui.button_w("+ Task") + ui.button_w("Stop everything") + 8
+        if d.engine_alive:
+            controls_width += ui.button_w("Stop team") + 8
+        metrics_right = r.r - T.GAP - controls_width - 16
         # engine state pill
         if d.kv.get("stopped"):
             label, col = "Stopped", T.RED
@@ -205,6 +249,8 @@ class App:
         open_n = sum(1 for t in d.tasks if t["status"] not in ("done", "cancelled"))
         stats.append((str(open_n), "open tasks"))
         for val, lab in stats:
+            if x + ui.measure(val, 15, "bold") + ui.measure(lab, 12) + 23 > metrics_right:
+                break
             x += ui.text(x, r.cy - 9, val, 15, T.TEXT, "bold") + 5
             x += ui.text(x, r.cy - 7, lab, 12, T.TEXT_FAINT) + 18
         rlim = d.kv.get("claude_ratelimit") or {}
@@ -213,6 +259,8 @@ class App:
             w = wins.get(key)
             if not w:
                 continue
+            if x + ui.measure(f"claude {lab}", 11) + 76 > metrics_right:
+                break
             u = float(w.get("utilization") or 0)
             ui.text(x, r.cy - 7, f"claude {lab}", 11, T.TEXT_FAINT)
             bx = x + ui.measure(f"claude {lab}", 11) + 6
@@ -224,12 +272,20 @@ class App:
             x = bar.r + 16
         # right buttons
         bx = r.r - T.GAP
-        lbl = "Resume" if d.paused else "Pause"
+        lbl = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
         bw = ui.button_w(lbl) + 8
         bx -= bw
         if ui.button("pause", Rect(bx, r.cy - 16, bw, 32), lbl, "primary" if d.paused else "default",
                      tip="Pause autonomous work (chat still answered)  ⌘P"):
-            d.set_paused(not d.paused)
+            if not d.engine_alive:
+                d.start_team()
+            else:
+                d.set_paused(not d.paused)
+        if d.engine_alive:
+            bw = ui.button_w("Stop team")
+            bx -= bw + 8
+            if ui.button("stopteam", Rect(bx, r.cy - 16, bw, 32), "Stop team"):
+                self.confirm_stop = True
         bw = ui.button_w("Stop everything")
         bx -= bw + 8
         if ui.button("stop_now", Rect(bx, r.cy - 16, bw, 32), "Stop everything", tip="Stop all agents, including chat  ⌘⇧."):
@@ -239,6 +295,65 @@ class App:
         if ui.button("newtask", Rect(bx, r.cy - 16, bw, 32), "+ Task", tip="Add a task to the board"):
             self.new_task_open = True
             ui.focus = "nt_title"
+
+    def navigate_run(self, agent_id: str, run_id: int) -> None:
+        self.tab = "Agent"
+        self.sel_agent = self._runs_agent = agent_id
+        self.sel_run = run_id
+        self.data.request_run(agent_id, run_id)
+
+    def draw_service_modal(self) -> None:
+        d, ui = self.data, self.ui
+        if not d.catchup and not self.confirm_stop:
+            return
+        ui.modal = ui.layer = "catchup"
+        ui.rect(Rect(0, 0, ui.w, ui.h), (0, 0, 0, 165))
+        height = min(240 if self.confirm_stop else 650, ui.h - 130)
+        r = Rect((ui.w - min(720, ui.w - 80)) / 2, (ui.h - height) / 2, min(720, ui.w - 80), height)
+        ui.panel(r, T.PANEL, 14, T.BORDER_HI)
+        ui.text(r.x + 24, r.y + 22, "Stop the team?" if self.confirm_stop else "While you were away", 22, T.TEXT, "bold")
+        if self.confirm_stop:
+            ui.text_block(r.x + 24, r.y + 72, "Running agents will be interrupted. You can start the team again later.", r.w - 48, 15, T.TEXT_DIM)
+            if ui.button("confirmstop", Rect(r.x + 24, r.b - 56, 130, 34), "Stop team", "primary"):
+                d.command("stop_team")
+                self.confirm_stop = False
+            if ui.button("cancelstop", Rect(r.r - 134, r.b - 56, 110, 34), "Cancel"):
+                self.confirm_stop = False
+        else:
+            ui.text(r.x + 24, r.y + 56, f"${d.catchup_cost:.2f} spent since your last visit", 13, T.TEXT_DIM)
+            body = Rect(r.x + 24, r.y + 92, r.w - 48, r.h - 170)
+            sc = ui.scroll_begin("catchupitems", body)
+            y = body.y - sc.offset
+            if d.catchup_detail:
+                item = d.catchup_detail
+                y += ui.text_block(body.x, y, item['label'], body.w, 17, T.TEXT, 'bold') + 16
+                y += ui.text_block(body.x, y, item['body'] or 'No additional details.', body.w, 14, T.TEXT_DIM)
+            else:
+                for group, items in list(d.catchup.items()):
+                    ui.text(body.x, y, f"{group} ({len(items)})", 14, T.ACCENT, "bold")
+                    y += 30
+                    for item in items:
+                        row = Rect(body.x, y, body.w, 32)
+                        ui.text_fit(row.x + 8, row.y + 8, item['label'], row.w - 16, 13, T.TEXT)
+                        if ui.click(row):
+                            kind, _, ident = item['ref'].partition(':')
+                            if kind == 'task':
+                                self.tab = 'Board'
+                                self.sel_task = int(ident)
+                                d.dismiss_catchup()
+                            elif kind == 'run':
+                                self.navigate_run(item['agent'], int(ident))
+                                d.dismiss_catchup()
+                            else:
+                                d.catchup_detail = item
+                        y += 36
+                    y += 12
+            ui.scroll_end(sc, y + sc.offset - body.y)
+            if ui.button("catchupdone", Rect(r.r - 134, r.b - 56, 110, 34), "Got it", "primary"):
+                d.dismiss_catchup()
+            if d.catchup_detail and ui.button("catchupback", Rect(r.x + 24, r.b - 56, 110, 34), "Back"):
+                d.catchup_detail = None
+        ui.layer = None
 
     # ── team sidebar ──────────────────────────────────────────────────────
     def draw_sidebar(self, r: Rect) -> None:
@@ -327,17 +442,29 @@ class App:
             sub = "Questions and ideas from the team land here."
             ui.text(body.cx - ui.measure(sub, 12) / 2, cy + 62, sub, 12, T.TEXT_FAINT)
             return
-        from .views import question_card, question_card_height
+        from .views import answer_question_option, keyboard_answer_target, question_card, question_card_height
 
         sc = ui.scroll_begin("inbox", body.inset(0, 4))
         y = body.y + 8 - sc.offset
         w = body.w - 24
+        hovered = None
         for q in d.questions:
             h = question_card_height(self, q, w)
             if y + h > body.y - 20 and y < body.b + 20:
-                question_card(self, q, Rect(body.x + 12, y, w, h))
+                card_r = Rect(body.x + 12, y, w, h)
+                if ui.hover(card_r):
+                    hovered = q
+                question_card(self, q, card_r)
             y += h + 10
         ui.scroll_end(sc, y + sc.offset - body.y + 4)
+        # keyboard answering (REQ-COM-025): 1-9 picks that option on the hovered card, else the top one
+        target = keyboard_answer_target(self, hovered)
+        if target is not None:
+            K = rl.KeyboardKey
+            for i in range(9):
+                if rl.is_key_pressed(K.KEY_ONE + i):
+                    answer_question_option(self, target, i)
+                    break
 
     # ── center ────────────────────────────────────────────────────────────
     def draw_center(self, r: Rect) -> None:
@@ -346,6 +473,7 @@ class App:
         bar, body = r.cut_top(46)
         x = bar.x + 10
         unread_total = sum(d.chat_unread.values())
+        ui.push_clip(bar)  # at high zoom the tab row can outgrow the panel; clip rather than bleed into the inbox
         for i, name in enumerate(TABS):
             label = name if name != "Agent" else d.name_of(self.sel_agent)
             has_badge = name == "Chat" and unread_total
@@ -373,6 +501,7 @@ class App:
             if ui.hover(tr) and name in TABS[:7]:
                 ui.tip(f"{name}  ⌘{i + 1}")
             x += w + 2
+        ui.pop_clip()
         ui.hline(r.x + 1, bar.b, r.w - 2, T.BORDER)
         from . import views
 

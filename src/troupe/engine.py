@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import threading
 import time
 import traceback
@@ -135,8 +137,8 @@ class Engine(MergeGateMixin):
         self.sync_config_agents(self.cfg)
         for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
             s.kv_set(f"config_error.{name}", "")
-        s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
-        s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
+        from .service import recover_interrupted
+        recover_interrupted(s)
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
         s.kv_set("checking_task", None)
@@ -161,6 +163,22 @@ class Engine(MergeGateMixin):
             self.store.event("system", "error", f"Worktree cleanup failed: {e}", significant=False)
 
     async def main(self) -> None:
+        from .api import APIServer
+        from .notify import Notifier
+
+        self.api = APIServer(self.cfg, self)
+        notifier_task = None
+        try:
+            self.api.start()
+            notifier_task = asyncio.create_task(Notifier(self.store).run(self))
+            await self._serve()
+        finally:
+            if notifier_task:
+                notifier_task.cancel()
+                await asyncio.gather(notifier_task, return_exceptions=True)
+            self.api.stop()
+
+    async def _serve(self) -> None:
         self.recover()
         self.store.event("system", "engine", "Engine started", significant=False)
         while not self._stop.is_set():
@@ -170,9 +188,27 @@ class Engine(MergeGateMixin):
                 self.store.event("system", "error", "engine tick failed: " + traceback.format_exc()[-600:],
                                  significant=False)
             await asyncio.sleep(TICK)
-        for runner, _task, _w in list(self.running.values()):
+        runs = list(self.running.values())
+        groups = {id(runner): runner.proc.pid for runner, _, _ in runs
+                  if runner.proc and runner.proc.returncode is None}
+        for runner, _task, _w in runs:
             runner.kill()
-        await asyncio.sleep(0.5)
+        if runs:
+            await asyncio.sleep(0.5)
+            for runner, task, _w in runs:
+                if runner.proc and runner.proc.returncode is None:
+                    groups[id(runner)] = runner.proc.pid
+                if id(runner) in groups:
+                    try:
+                        os.killpg(groups[id(runner)], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await runner.proc.wait()
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for _, task, _ in runs), return_exceptions=True)
+        self.store.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
+        self.store.x("UPDATE agents SET state='idle',current_run=NULL,activity='' WHERE state='running'")
         if self._merge_task is not None:
             await self._merge_task
 
@@ -182,6 +218,8 @@ class Engine(MergeGateMixin):
         s.kv_set("heartbeat", now())
         self.reload_config()
         self.handle_commands()
+        if self._stop.is_set():
+            return
         if s.kv_get("stopped"):
             for runner, running_task, _ in list(self.running.values()):
                 runner.kill()
@@ -222,6 +260,70 @@ class Engine(MergeGateMixin):
             elif n_auto >= self.cfg.budget.max_concurrent or not self.budget_ok():
                 continue
             await self.launch(w)
+        self.publish_wait_states(wakes)
+
+    def publish_wait_states(self, wakes: list[Wake] | None = None) -> dict[str, dict]:
+        """Publish scheduler-owned wait reasons; clients consume the stored snapshot."""
+        s, stamp = self.store, now()
+        names = HandleBook(self.cfg.project, self.cfg.agents)
+        tasks = s.tasks(limit=1000000)
+        task_by_id = {t['id']: t for t in tasks}
+        questions = s.questions(limit=1000000)
+        agents = {a['id']: a for a in s.agents()}
+        previous = s.wait_states()
+        queued = {r['recipient']: r['n'] for r in s.q('SELECT recipient,count(*) n FROM messages WHERE read_at IS NULL GROUP BY recipient')}
+        pending = [w for w in (wakes or []) if w.agent.id not in self.running]
+        slots = {}
+        n_auto = sum(not w.chat for _, _, w in self.running.values())
+        for wake in pending:
+            full = len(self.running) >= self.cfg.budget.max_concurrent + 2 if wake.chat else n_auto >= self.cfg.budget.max_concurrent
+            if full:
+                slots[wake.agent.id] = len(slots) + 1
+        states = {}
+        for cfg in self.cfg.agents:
+            row = agents.get(cfg.id)
+            if not row:
+                continue
+            waiting = None
+            mine = [t for t in tasks if t['assignee'] == cfg.id and t['status'] not in ('done', 'cancelled')]
+            if row['state'] != 'running':
+                human = [q for q in questions if q['asker'] == cfg.id or
+                         (q['kind'] in ('approval', 'safety') and any(t['id'] == q['task_id'] for t in mine))]
+                reviews = [t for t in mine if t['status'] == 'review']
+                dependencies = sorted({dep for t in mine for dep in t['depends_on']
+                                       if dep in task_by_id and task_by_id[dep]['status'] not in ('done', 'cancelled')})
+                blocked = [t for t in mine if t['status'] == 'blocked']
+                providers = list(dict.fromkeys(p.provider for p in cfg.providers)) or [cfg.backend]
+                limits = {p: s.kv_get(f'limit.{p}', 0) or 0 for p in providers}
+                if human:
+                    waiting = dict(kind='human', targets=['human'], detail='Awaiting questions ' + ', '.join(f"#{q['id']}" for q in human))
+                elif reviews:
+                    reviewers = sorted({names.name(t['reviewer']) for t in reviews if t['reviewer']})
+                    if not reviewers:
+                        reviewers = [names.name(a.id) for a in self.cfg.agents if a.role == 'qa' and a.enabled]
+                    waiting = dict(kind='review', targets=reviewers, detail='Review of ' + ', '.join(f"#{t['id']}" for t in reviews))
+                elif dependencies:
+                    waiting = dict(kind='dependency', targets=dependencies, detail='Waiting for prerequisite tasks')
+                elif blocked:
+                    t = blocked[0]
+                    notes = s.task_notes(t['id'])
+                    reason = notes[-1]['text'] if notes else t['review_notes'] or t['description'] or 'Task is blocked'
+                    waiting = dict(kind='blocked', targets=[t['id']], detail=reason)
+                elif limits and all(reset > stamp for reset in limits.values()):
+                    waiting = dict(kind='providers', targets=providers, detail='All configured providers are limited', reset_at=min(limits.values()))
+                elif (s.kv_get(f'limit.{row["backend"]}', 0) or 0) > stamp:
+                    waiting = dict(kind='rate_limit', targets=[row['backend']], detail='Current provider is limited', reset_at=s.kv_get(f'limit.{row["backend"]}'))
+                elif cfg.id in slots:
+                    waiting = dict(kind='slot', targets=[], detail='Waiting for a run slot', queue_position=slots[cfg.id])
+                elif row['enabled'] and any(t['status'] in ('ready', 'in_progress') for t in mine) and stamp-(row['last_run_at'] or 0)>180:
+                    waiting = dict(kind='parked', targets=[], detail='Idle while owing work')
+                if waiting:
+                    old = previous.get(cfg.id, {}).get('waiting_on')
+                    waiting['since'] = old['since'] if old and old['kind'] == waiting['kind'] else stamp
+            states[cfg.id] = dict(waiting_on=waiting, mail_queued=queued.get(cfg.id, 0),
+                mail_reading=len(s.kv_get(f'run_mail.{row["current_run"]}', [])) if row['state'] == 'running' else 0)
+        s.publish_wait_states(states)
+        return states
 
     def budget_ok(self) -> bool:
         b, s = self.cfg.budget, self.store
@@ -252,6 +354,8 @@ class Engine(MergeGateMixin):
                 s.kv_set("stopped", False)
                 s.kv_set("paused", False)
                 audit(s, "Human resumed the troupe", notify=False)
+            elif cmd == "stop_team":
+                self.stop()
             elif cmd == "stop" and arg in self.running:
                 self.running[arg][0].kill()
                 s.event("human", "control", f"You stopped {arg}'s run", significant=False)
@@ -407,7 +511,6 @@ class Engine(MergeGateMixin):
         if role.works_in_task_tree and task and task.get("worktree") and Path(task["worktree"]).exists():
             cwd = Path(task["worktree"])
         msgs = s.unread(a.id)
-        s.mark_read([m["id"] for m in msgs])
         if any(m["sender"] == "human" and m["kind"] == "chat" for m in msgs):
             w.reason = "chat"  # whatever woke them, the human gets a live reply
         row = s.agent(a.id) or {}
@@ -422,6 +525,8 @@ class Engine(MergeGateMixin):
         s.kv_set(f"session_prompt.{a.id}", system_hash)
         run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat,
                              prompt=prompt, system=system)
+        s.kv_set(f"run_mail.{run_id}", [m["id"] for m in msgs])
+        s.mark_read([m["id"] for m in msgs])
         s.set_agent(a.id, state="running", current_run=run_id, activity=REASONS[w.reason], last_run_at=now(),
                     last_event_seen=seen)
         s.event(a.id, "run", f"{a.id} woke up: {REASONS[w.reason]}", ref=f"run:{run_id}", significant=False)
@@ -507,7 +612,8 @@ class Engine(MergeGateMixin):
         except asyncio.CancelledError:
             from .runners import RunResult
             runner.kill()
-            res = RunResult(ok=False, error="interrupted")
+            error = "interrupted" if (s.kv_get("stopped") or self._stop.is_set()) else "service shutdown"
+            res = RunResult(ok=False, error=error)
         except Exception as e:
             from .runners import RunResult
             res = RunResult(ok=False, error=repr(e))
@@ -521,9 +627,11 @@ class Engine(MergeGateMixin):
             limited = True
             reset = reported_reset({"message": res.error}, now())
             self.record_limit(a.backend, now() + 900 if reset is None else reset, reset is not None)
-        status = "limited" if limited else "ok" if res.ok else (("interrupted" if s.kv_get("stopped") else "stopped") if runner.cancelled else "failed")
+        status = "limited" if limited else "ok" if res.ok else (
+            ("interrupted" if (s.kv_get("stopped") or self._stop.is_set()) else "stopped") if runner.cancelled else "failed")
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])
+        s.x("DELETE FROM kv WHERE key=?", f"run_mail.{run_id}")
         row = s.agent(a.id) or {}
         fields = dict(state="idle", current_run=None, activity="", runs=(row.get("runs") or 0) + 1,
                       cost=(row.get("cost") or 0) + res.cost, tokens=(row.get("tokens") or 0) + res.tokens)
@@ -625,6 +733,11 @@ class Engine(MergeGateMixin):
             done = s.tasks(("done",), limit=400)
             p.append(f"\n## Board ({len(open_tasks)} open, {len(done)} done)\n"
                      + ("\n".join(fmt_task_line(t, names) for t in open_tasks[:60]) or "(empty board)"))
+        if a.role in ('lead', 'pm'):
+            milestones = [m for m in s.milestones() if m['status'] == 'active']
+            if milestones:
+                p.append("\n## Active milestones\n" + "\n".join(
+                    f"- #{m['id']} {m['name']}: {m['done']}/{m['total']} done — {m['goal']}" for m in milestones))
         pending_q = s.q("SELECT * FROM questions WHERE asker=? AND status='open'", a.id)
         if pending_q:
             heading = ("Your open questions (did the human just answer one? if so, resolve_question)"

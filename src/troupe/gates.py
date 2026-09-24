@@ -180,6 +180,8 @@ class MergeGateMixin:
             self._merge_lock.release()
 
     def check_failed(self, task: dict, output: str) -> None:
+        key = f"check_failures.{task['id']}"
+        self.store.kv_set(key, (self.store.kv_get(key, 0) or 0) + 1)
         note = f"Checks failed on #{task['id']}:\n{output}"
         self.store.update_task(task["id"], actor="system", status="in_progress", next_attempt_at=0,
                                review_notes=note, event_text=f"Checks failed on #{task['id']}")
@@ -220,6 +222,7 @@ class MergeGateMixin:
                             tail = "".join(deque(log, maxlen=50))[-12000:]
                         self.check_failed(t, tail or outcome)
                         continue
+                    s.kv_set(f"check_failures.{t['id']}", 0)
                     if not task_gate(cfg, s, s.task(t["id"])):
                         continue
                     ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
@@ -241,6 +244,7 @@ class MergeGateMixin:
             else:
                 ok, out = gitops.merge_branch(cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
+                s.kv_set(f"check_failures.{t['id']}", 0)
                 try:
                     if t["worktree"]:
                         gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))

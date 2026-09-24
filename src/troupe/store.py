@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS commands(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, cmd TEXT, arg TEXT DEFAULT '', done INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS milestones(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, goal TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0, status TEXT DEFAULT 'active', created REAL
+);
+CREATE TABLE IF NOT EXISTS agent_wait(
+  agent TEXT PRIMARY KEY, waiting_on TEXT, mail_queued INTEGER DEFAULT 0, mail_reading INTEGER DEFAULT 0
+);
 """
 
 OPEN_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "approved")
@@ -131,6 +138,9 @@ class Store:
             columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
             if "answered_via" not in columns:
                 self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
+            task_columns = {r["name"] for r in self.q("PRAGMA table_info(tasks)")}
+            if "milestone_id" not in task_columns:
+                self.conn.execute("ALTER TABLE tasks ADD COLUMN milestone_id INTEGER")
             run_columns = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
             if "prompt" not in run_columns:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
@@ -246,29 +256,37 @@ class Store:
             t["depends_on"] = json.loads(t["depends_on"] or "[]")
         return t
 
-    def tasks(self, statuses: tuple[str, ...] | None = None, limit: int = 1000) -> list[dict]:
+    def tasks(self, statuses: tuple[str, ...] | None = None, limit: int = 1000, milestone_id: int | None = None) -> list[dict]:
+        where, args = [], []
         if statuses:
-            rows = self.q(f"SELECT * FROM tasks WHERE status IN ({','.join('?' * len(statuses))}) "
-                          "ORDER BY priority, id LIMIT ?", *statuses, limit)
-        else:
-            rows = self.q("SELECT * FROM tasks ORDER BY priority, id LIMIT ?", limit)
+            where.append(f"status IN ({','.join('?' * len(statuses))})")
+            args.extend(statuses)
+        if milestone_id is not None:
+            where.append("milestone_id=?")
+            args.append(milestone_id)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        rows = self.q("SELECT * FROM tasks" + clause + " ORDER BY priority,id LIMIT ?", *args, limit)
         for t in rows:
             t["depends_on"] = json.loads(t["depends_on"] or "[]")
         return rows
 
     def add_task(self, title: str, description: str = "", acceptance: str = "", territory: str = "",
                  status: str = "backlog", priority: int = 2, role: str = "builder", assignee: str | None = None,
-                 created_by: str = "human", depends_on: list[int] | None = None) -> int:
+                 created_by: str = "human", depends_on: list[int] | None = None, milestone_id: int | None = None) -> int:
         title, description, acceptance = redact(title), redact(description), redact(acceptance)
+        if milestone_id is not None and not self.milestone(milestone_id):
+            raise ValueError(f"Unknown milestone #{milestone_id}")
         tid = self.x("""INSERT INTO tasks(created,updated,title,description,acceptance,territory,status,priority,
-                        role,assignee,created_by,depends_on) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        role,assignee,created_by,depends_on,milestone_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      now(), now(), title, description, acceptance, territory, status, priority, role, assignee,
-                     created_by, json.dumps(depends_on or []))
+                     created_by, json.dumps(depends_on or []), milestone_id)
         self.event(created_by, "task", f"{created_by} created #{tid} {title} [{status}]", ref=f"task:{tid}")
         return tid
 
     def update_task(self, task_id: int, actor: str = "", event_text: str = "", significant: bool = True,
                     **fields: Any) -> None:
+        if fields.get("milestone_id") is not None and not self.milestone(fields["milestone_id"]):
+            raise ValueError(f"Unknown milestone #{fields['milestone_id']}")
         if fields.get("status") == "review":
             self.kv_set(f"check_failed.{task_id}", False)
         if "depends_on" in fields and not isinstance(fields["depends_on"], str):
@@ -285,6 +303,60 @@ class Store:
 
     def task_notes(self, task_id: int) -> list[dict]:
         return self.q("SELECT * FROM task_notes WHERE task_id=? ORDER BY id", task_id)
+
+    # ── milestones and engine-owned wait snapshot ─────────────────────────
+    def milestones(self) -> list[dict]:
+        return self.q("""SELECT m.*, m.sort_order AS 'order',
+            count(t.id) AS total, sum(CASE WHEN t.status='done' THEN 1 ELSE 0 END) AS done
+            FROM milestones m LEFT JOIN tasks t ON t.milestone_id=m.id AND t.status!='cancelled'
+            GROUP BY m.id ORDER BY m.sort_order,m.id""")
+
+    def milestone(self, milestone_id: int) -> dict | None:
+        return next((m for m in self.milestones() if m['id'] == milestone_id), None)
+
+    def add_milestone(self, name: str, goal: str = '', order: int = 0, status: str = 'active', actor: str = 'human') -> int:
+        mid = self.x("INSERT INTO milestones(name,goal,sort_order,status,created) VALUES(?,?,?,?,?)",
+                     name, goal, order, status, now())
+        self.event(actor, 'milestone', f"{actor} created milestone #{mid}: {name}", ref=f"milestone:{mid}")
+        return mid
+
+    def update_milestone(self, milestone_id: int, actor: str = 'human', **fields) -> None:
+        if not fields:
+            return
+        fields = {('sort_order' if key == 'order' else key): value for key, value in fields.items()}
+        if fields.keys() - {'name', 'goal', 'sort_order', 'status'}:
+            raise ValueError('Invalid milestone field')
+        self.x("UPDATE milestones SET " + ','.join(f"{key}=?" for key in fields) + " WHERE id=?",
+               *fields.values(), milestone_id)
+        self.event(actor, 'milestone', f"{actor} updated milestone #{milestone_id}", ref=f"milestone:{milestone_id}")
+
+    def wait_states(self) -> dict[str, dict]:
+        return {row['agent']: dict(waiting_on=json.loads(row['waiting_on']),
+                                  mail_queued=row['mail_queued'], mail_reading=row['mail_reading'])
+                for row in self.q('SELECT * FROM agent_wait')}
+
+    def publish_wait_states(self, states: dict[str, dict]) -> None:
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            previous = self.wait_states()
+            for agent, state in states.items():
+                if state == previous.get(agent):
+                    continue
+                self.x("""INSERT INTO agent_wait(agent,waiting_on,mail_queued,mail_reading) VALUES(?,?,?,?)
+                          ON CONFLICT(agent) DO UPDATE SET waiting_on=excluded.waiting_on,
+                          mail_queued=excluded.mail_queued,mail_reading=excluded.mail_reading""",
+                       agent, json.dumps(state['waiting_on']), state['mail_queued'], state['mail_reading'])
+            for removed in previous.keys() - states.keys():
+                self.x('DELETE FROM agent_wait WHERE agent=?', removed)
+        except Exception:
+            if owns_transaction:
+                self.conn.rollback()
+            raise
+        else:
+            if owns_transaction:
+                self.conn.commit()
 
     # ── questions for the human ───────────────────────────────────────────
     def ask(self, asker: str, question: str, context: str = "", options: list[str] | None = None,

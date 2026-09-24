@@ -174,6 +174,16 @@ otherwise — animations must stay legible at both.
 - **Card** — no single `ui.card()`; task cards (`views._task_card`) and memory cards
   (`views.memory_view`) share the pattern: `PANEL2`→`PANEL3` on hover, `BORDER`→`BORDER_HI`, a 3px
   colored accent bar on the left edge when status/kind matters.
+- **Question card** (`views._q_layout`) — the "Needs you" panel's base unit: avatar + asker name,
+  question/idea text, option buttons, a free-text reply input, dismiss control. Everything the human
+  is asked to weigh in on that isn't a full task/decision reuses this shell rather than inventing a
+  new one.
+- **Approval card** (REQ-SAFE-020/021, `#42`) — a question-card variant for protected-path diff
+  approval: same shell (avatar/title/dismiss position), with the free-text reply and option buttons
+  replaced by a diff summary (protected files, +/− counts), an "Open full diff" link, and Approve /
+  Reject-with-note in place of generic options. Reusing the question-card shell here is deliberate,
+  not incidental — a safety-critical approval should look like the same kind of thing the human
+  already knows how to act on, not a novel, unfamiliar control.
 - **Chat bubble** (`views._bubble`) — right-aligned accent-tinted for the human, left-aligned
   `PANEL2` for agents; shrink-wraps to content width for short single-line messages instead of
   filling the max bubble width.
@@ -300,6 +310,67 @@ controls that don't get used in time.
 - In Chat, a working bubble for an agent on a limited backend shows the same limited-until copy inline
   (`_typing`'s existing bubble, swap the activity line for `"Claude limited until 14:05"` in place of
   `"thinking…"`) rather than a separate banner — one state, shown where the user is already looking.
+
+## Header rows: space allocation rule
+
+Surfaced by #23's zoom work hitting the same bug twice (Board's assignee-vs-timestamp, then the Agent
+header's name-vs-buttons) — there was no documented rule for how a row of mixed elements (identity text,
+pills, buttons) shares width when the logical canvas shrinks (zoom, a small window, or a long name), so
+each fix patched one collision without a shared principle, and QA found the next one. This is the rule,
+for every such row in the app (Agent header, Board task cards, and any future one):
+
+1. **Compute reserved blocks first, from actual content, never an assumed width.** Buttons/controls
+   block: sum real button widths (`ui.button_w`, which already accounts for the current label — "Stop"
+   only exists in `running` state, so the block is *wider* while running, not the same every time).
+   Fixed badges/pills: same, measured, not guessed.
+2. **Priority order when space is short, tightest first:** primary identity text (name/title) is what
+   the row exists to show — it never gets silently covered by a sibling. Everything else yields to it
+   in this order: decorative/secondary pills (role, backend/model, status) truncate or drop before the
+   name does; controls/buttons are the one thing that never shrinks or disappears (a missing "Stop"
+   button while an agent is running is worse than a truncated name) — they're sized off their real
+   content and get first claim on the row's width, and the *rest* of the row budgets around them, not
+   the other way around.
+3. **The identity text always gets an explicit budget, computed live.** Not `ui.text` (no limit at
+   all — this was the actual bug: `views.py agent_view`'s name draw has zero width budget, so the
+   right-hand button block can grow over it) — use `ui.text_fit`/`ui.ellipsize` with
+   `row_width - reserved_left - reserved_right - padding`, recomputed every frame from whatever's
+   actually being drawn that frame (state-dependent button sets included), never a static guess made
+   once.
+4. **Below the documented minimum window (1120×720, REQ-GUI-008) or at extreme zoom, wrap rather than
+   overlap** if even a one-character-ellipsized identity plus the reserved blocks don't fit — two lines
+   is legible, overlapping text never is. This should be rare if rule 3 is followed correctly; it's the
+   fallback, not the primary mechanism.
+
+**Immediate application:** the Agent header (`views.py agent_view`, ~line 807) draws the agent name via
+bare `ui.text` with no budget at all, then separately computes the button block from the right edge —
+the two never coordinate, which is exactly QA's current #23 repro (Stop button, which only appears while
+`running`, covers the name's suffix). Fix per rule 3: compute the button block's total width first
+(already state-aware, since `buttons` already conditionally includes `"stop"`), then draw the name with
+`ui.text_fit`/ellipsize against `head.w - reserved_left - reserved_right`, where `reserved_right`
+includes that frame's actual button block width — not a fixed constant, so it correctly shrinks further
+whenever Stop is showing.
+
+## App icon (REQ-GUI-027)
+
+`src/troupe/assets/icon/troupe-1024.png` (master), `troupe.iconset/` (standard macOS size set) and
+`troupe.icns` (built via `iconutil`) — regenerate with `design/icon/build-icns.sh <svg>` from the
+1024px source SVG. The iconset's file naming matches Xcode's `AppIcon.appiconset` convention exactly,
+so the same PNGs drop into a SwiftUI asset catalog if/when that's needed — no separate Mac-app asset
+work required.
+
+**Direction ("Orb"), chosen by the human from 3 options (question #9):** a single luminous indigo
+sphere (`ACCENT`-family gradient, bright specular highlight top-left per current Apple icon lighting
+convention) on the midnight squircle background, with a thin orbit ring and one small green
+satellite dot — the calmest, most premium-reading of the three explorations, and the most legible at
+menu-bar/Dock scale since it resolves to one dominant shape rather than several small ones. The other
+two explored directions (a three-orb "Triad" evolving the in-app logo mark literally, and a bold
+abstract "T" monogram) are kept in `design/icon/` for reference; all three were verified legible at
+32px and 16px before presenting them (`design/icon/legibility-check.png`; final shipped-asset check
+at `design/icon/final-legibility-check.png`).
+
+Rendered from hand-authored SVG via `qlmanage -t` (no new runtime dependency — `qlmanage`/`sips`/
+`iconutil` are all macOS built-ins) rather than a raster tool, so the source stays editable and
+resolution-independent.
 
 ## Known gaps (feeds the polish backlog below)
 

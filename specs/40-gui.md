@@ -26,18 +26,29 @@ the Mac app.
 - **REQ-GUI-008 [ ]** (#55) Minimum window 1120×720: all seven tabs render without overlap or clipping at zoom 1.0 and
   1.15, and nothing regresses at 1560×980. Board card height grows with wrapped titles at any width (unit test on the
   height calculation). Verified by TROUPE_SHOT at both sizes.
-- **REQ-GUI-009 [ ]** (#23; human: "a bit larger") Global UI zoom.
-  - ⌘+ / ⌘- / ⌘0 change it live. The default is 1.15, and ⌘0 resets to it. The range is 0.8 up to the largest step
-    at which all seven tabs render without overlap or clipping at the reference window of 1560×980. The builder
-    records the actual maximum here when shipping.
-  - Zoom persists across restarts, and idle stays at 20 fps.
-  - At 1120×720 with zoom 1.0, rendering is unchanged from before zoom existed. Small-window fixes are REQ-GUI-008.
+- **REQ-GUI-009 [x]** (#23; human: "a bit larger") Global UI zoom, not per-widget font bumping: one factor scales the
+  whole logical coordinate system (fonts *and* layout metrics — `TOP_H`/`SIDEBAR_W`/`GAP`/`RADIUS`/etc.), so
+  everything stays proportional.
+  - ⌘+ / ⌘- / ⌘0 change it live, in 5% steps. The default is 1.15, and ⌘0 resets to it. A toast ("Zoom 115%")
+    confirms each change. The range is 0.8 up to **1.20**, the largest step at which all seven tabs render without
+    overlap or clipping at the reference window of 1560×980 — verified at 0.8, 1.15 and 1.20 via TROUPE_SHOT. Above
+    1.20, several views' fixed-width chrome (Board's 5 columns, Agent's header, Pulse's node orbit) run out of
+    absolute room as the logical canvas shrinks; raising the ceiling further needs a responsive pass across those
+    views, not a zoom change.
+  - Fonts are rasterized at `size × dpi × zoom` so zoomed text is real texture detail, not a blown-up bitmap; text
+    stays crisp on Retina at any zoom level.
+  - Zoom persists across restarts (`kv.gui_zoom`), and idle stays at 20 fps (font atlases are cached per rasterized
+    px size and evicted, not endlessly accumulated, on an actual zoom change — never per frame).
+  - At 1120×720 with zoom 1.0, the zoom mechanism itself (core.py) is unchanged from before it existed. Two small,
+    unconditional views.py fixes made to reach a usable 1560×980 max (Board's assignee/timestamp row, Agent's header
+    button reservation) incidentally improve — never worsen — the pre-existing small-window gaps REQ-GUI-008 tracks,
+    since they aren't zoom-gated.
   - The Mac app gets zoom natively (REQ-MAC).
 
 ## Views
 - **REQ-GUI-010 [x]** Chat: partner list (PM, Spec, Lead first), markdown bubbles, live "is working" bubble with
   current activity, suggestions on empty threads, multi-line composer (Enter send, Shift+Enter newline).
-- **REQ-GUI-017 [ ]** (#33; human: "make sure our chat always stays scrolled to the bottom") Stick to the bottom.
+- **REQ-GUI-017 [x]** (#33; human: "make sure our chat always stays scrolled to the bottom") Stick to the bottom.
   - Chat and the Agent transcript follow new content while the view is at the bottom, even when content grows
     by hundreds of pixels in one frame (a streaming reply, a long message). Stickiness changes only on user scroll,
     never on content growth.
@@ -98,17 +109,18 @@ the Mac app.
   - Searching must not block the frame: it runs over the `gui/data.py` snapshot, not direct DB queries per keystroke.
 - **REQ-GUI-025 [ ]** Usage view: cost/tokens per agent over time (charts).
 - **REQ-GUI-026 [ ]** Docs: show what changed in each spec recently (git diff), and who changed it.
-- **REQ-GUI-027 [ ]** App icon + window title with needs-you count; dock badge.
+- **REQ-GUI-027 [~]** App icon + window title with needs-you count; dock badge. (Title shipped with #12; the icon is #34,
+  and the dock badge comes with the Mac app, REQ-MAC.)
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
-    second of a question arriving or being answered. (Title part: #12. Icon and dock badge: not yet tasked.)
-- **REQ-GUI-028 [ ]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+    second of a question arriving or being answered.
+- **REQ-GUI-028 [x]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
     rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions
     that arrived (still open ones first). Each group shows a count; each item is clickable and navigates to it.
   - "Got it" or Esc closes the panel and advances `human_last_seen`. Nothing notable → no panel.
   - Test: selecting catch-up items from a fixture DB for a given `last_seen` is a pure function with unit tests.
-- **REQ-GUI-029 [ ]** Service states in the engine pill:
+- **REQ-GUI-029 [~]** Service states in the engine pill:
   - (#24) "Engine offline" with **Start team** (REQ-ENG-001).
   - (#28) "Reloading… 2 runs draining" during a reload (REQ-ENG-009) and "Restarting…" after a crash (REQ-ENG-042).
   - (#28) "Crashed — see engine.log" with **Start team** after a crash loop.
@@ -243,3 +255,5 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   treatment, and `providers` must be distinct from `rate_limit`.
 - 2026-09-24 — new GUI-008 minimum window (#55), GUI-009 zoom (#23), GUI-017 stick-to-bottom (#33), GUI-043 text
   selection (#47). GUI-022 gains older-run paging (#54). GUI-023 shipped (#7/#53). GUI-005 OS notifications move to ENG-047.
+- 2026-09-24 — GUI-027 marked partial (title shipped, #12). COM-025 shipped.
+- 2026-09-24 — GUI-017 shipped (#33 merged; the builder hadn't flipped the marker).

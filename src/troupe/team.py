@@ -84,7 +84,7 @@ class TeamAPI:
 
     def tools(self) -> list:
         return [self.send_message, self.check_inbox, self.ask_human, self.resolve_question, self.propose_idea, self.create_task,
-                self.update_task, self.list_tasks, self.get_task, self.complete_task, self.review_task,
+                self.update_task, self.list_tasks, self.milestone, self.get_task, self.complete_task, self.review_task,
                 self.remember, self.recall, self.set_status, self.team]
 
     # ── helpers ───────────────────────────────────────────────────────────
@@ -177,10 +177,47 @@ class TeamAPI:
                              kind="idea")
         return f"Idea #{qid} sent to the human. Their answer will arrive in your mailbox."
 
+    def milestone(self, action: Literal['create', 'update'], milestone_id: int | None = None,
+                  name: str | None = None, goal: str | None = None, order: int | None = None,
+                  status: Literal['active', 'done'] | None = None) -> str:
+        """Lead/human milestone management. Updating requires milestone_id; progress is computed from tasks."""
+        if not self._is_lead():
+            return 'ERROR: only the lead or human may create/edit milestones.'
+        if action not in ('create', 'update'):
+            return 'ERROR: action must be create or update.'
+        if status is not None and status not in ('active', 'done'):
+            return 'ERROR: status must be active or done.'
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            return 'ERROR: name must be non-empty text.'
+        if goal is not None and not isinstance(goal, str):
+            return 'ERROR: goal must be text.'
+        if order is not None and type(order) is not int:
+            return 'ERROR: order must be an integer.'
+        if action == 'create':
+            if not name:
+                return 'ERROR: name is required.'
+            milestone_id = self.store.add_milestone(name, goal or '', order or 0, status or 'active', self.me)
+        else:
+            if not self.store.milestone(milestone_id):
+                return 'ERROR: unknown milestone_id; create a milestone first.'
+            self.store.update_milestone(milestone_id, actor=self.me,
+                **{k: v for k, v in dict(name=name, goal=goal, order=order, status=status).items() if v is not None})
+        m = self.store.milestone(milestone_id)
+        return f"Milestone #{m['id']}: {m['name']} [{m['status']}] — {m['done']}/{m['total']} done."
+
+    def _milestone_id(self, milestone: int) -> int | None:
+        if not self._is_lead():
+            raise ValueError('Only the lead or human can assign task milestones.')
+        if type(milestone) is not int or milestone < 0:
+            raise ValueError('milestone must be an id, or 0 to clear it.')
+        if milestone and not self.store.milestone(milestone):
+            raise ValueError(f'Unknown milestone #{milestone}.')
+        return milestone or None
+
     # ── tasks ─────────────────────────────────────────────────────────────
     def create_task(self, title: str, description: str, acceptance: str = "", territory: str = "",
                     role: str = "builder", assignee: str | None = None, priority: int = 2,
-                    depends_on: list[int] | None = None) -> str:
+                    depends_on: list[int] | None = None, milestone: int | None = None) -> str:
         """Create a task. Write it as a complete brief a teammate can execute without asking:
         `description` (goal + context paths: spec sections, files), `acceptance` (testable criteria),
         `territory` (files/dirs it owns, e.g. "src/auth/, tests/test_auth.py").
@@ -199,16 +236,20 @@ class TeamAPI:
                 role = assigned_role or role
             except ValueError as e:
                 return f"ERROR: {e}"
+        try:
+            milestone_id = self._milestone_id(milestone) if milestone is not None else None
+        except ValueError as e:
+            return f"ERROR: {e}"
         status = "ready" if self._is_lead() else "backlog"
         tid = self.store.add_task(title, description, acceptance, territory, status=status,
                                   priority=max(0, min(3, priority)), role=role, assignee=assignee or None,
-                                  created_by=self.me, depends_on=depends_on)
+                                  created_by=self.me, depends_on=depends_on, milestone_id=milestone_id)
         return f"Created task #{tid} [{status}]."
 
     def update_task(self, task_id: int, status: str | None = None, note: str = "", priority: int | None = None,
                     assignee: str | None = None, title: str | None = None, description: str | None = None,
                     acceptance: str | None = None, territory: str | None = None,
-                    depends_on: list[int] | None = None) -> str:
+                    depends_on: list[int] | None = None, milestone: int | None = None) -> str:
         """Update a task and/or add a note to it.
 
         Statuses: backlog, ready, in_progress, blocked, review, done, cancelled. The lead can change
@@ -218,6 +259,11 @@ class TeamAPI:
         if not t:
             return f"ERROR: no task #{task_id}"
         fields: dict = {}
+        if milestone is not None:
+            try:
+                fields['milestone_id'] = self._milestone_id(milestone)
+            except ValueError as e:
+                return f"ERROR: {e}"
         mine = t["assignee"] == self.me
         if status:
             if status not in ALL_STATUSES:
@@ -250,7 +296,7 @@ class TeamAPI:
             self.store.event(self.me, "task", f"{self.me} noted on #{task_id}: {note[:100]}", ref=f"task:{task_id}")
         return f"Task #{task_id} updated."
 
-    def list_tasks(self, status: str = "open", assignee: str = "") -> str:
+    def list_tasks(self, status: str = "open", assignee: str = "", milestone: int | None = None) -> str:
         """List tasks. `status`: "open" (default: everything not done/cancelled), "all", or one status.
         `assignee`: filter by agent id ("me" for yours)."""
         if status == "open":
@@ -265,9 +311,15 @@ class TeamAPI:
             except ValueError as e:
                 return f"ERROR: {e}"
             rows = [t for t in rows if t["assignee"] in ids]
+        milestones = {m['id']: m for m in self.store.milestones()}
+        if milestone is not None:
+            if milestone not in milestones:
+                return f"ERROR: unknown milestone #{milestone}."
+            rows = [t for t in rows if t['milestone_id'] == milestone]
         if not rows:
             return "No matching tasks."
-        return "\n".join(fmt_task_line(t, self.names) for t in rows)
+        return "\n".join(fmt_task_line(t, self.names) +
+            (f" · milestone #{t['milestone_id']} {milestones[t['milestone_id']]['name']}" if t['milestone_id'] in milestones else '') for t in rows)
 
     def get_task(self, task_id: int) -> str:
         """Full details of a task: brief, acceptance criteria, notes, review history."""
