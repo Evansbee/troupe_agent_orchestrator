@@ -52,6 +52,22 @@ def test_read_and_request_guards(tmp_path):
     assert fake not in redact('token: ' + fake)
 
 
+@pytest.mark.parametrize('tool,arg_key,path,blocked', [
+    ('Write', 'file_path', '.troupe/troupe.db', True),
+    ('Edit', 'file_path', '.troupe/troupe.db-wal', True),
+    ('MultiEdit', 'file_path', '.troupe/troupe.db-shm', True),
+    ('NotebookEdit', 'notebook_path', '.troupe/api.sock', True),
+    ('Read', 'file_path', '.troupe/troupe.db', True),
+    ('write_file', 'path', '.troupe/troupe.db', True),
+    ('Write', 'file_path', '.troupe/runs/42.log', False),
+    ('Write', 'file_path', 'notes/troupe.db', False),
+])
+def test_write_tools_cannot_reach_db_or_socket(tool, arg_key, path, blocked, tmp_path):
+    (tmp_path / '.troupe').mkdir()
+    args = {arg_key: str(tmp_path / path)}
+    assert bool(guard(tool, args, tmp_path, policy())) == blocked
+
+
 def test_secrets_block_commit_and_redact_events(project):
     cfg, store = project
     fake = 'AKIA' + 'B' * 16

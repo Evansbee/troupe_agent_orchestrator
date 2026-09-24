@@ -7,9 +7,13 @@ write outside them is denied, not prompted), and "none" makes anything that *wou
 (no interactive surface in `-p` mode) fail immediately instead of hanging.
 
 Claude has no native OS-level sandbox for Bash itself, though — verified empirically that "auto"
-mode lets a Bash-run `echo ... > ~/outside` through untouched. The real enforcement for Bash is the
-macOS sandbox-exec wrap (macos.py) plus the existing PreToolUse guard() hook (secrets, remotes, now
-troupe.db/api.sock).
+mode lets a Bash-run `echo ... > ~/outside` through untouched, and this is NOT fixed by anything in
+this file. `macos.py`'s sandbox-exec wrap was built and evaluated but is deliberately NOT applied
+here (wrapping the process breaks tools that self-sandbox internally, e.g. `swift build`/`codex
+exec` — see docs/adr/005). The only thing standing between a Claude Bash command and an unrestricted
+write is the existing PreToolUse guard() hook (secrets, remotes, troupe.db/api.sock) — text
+inspection, not a kernel boundary; a path built from string pieces or run through an intermediate
+script is not caught. Don't read this module as meaning Claude Bash is sandboxed — it isn't.
 """
 from __future__ import annotations
 

@@ -1,17 +1,29 @@
 """Least-privilege sandbox profiles (#43, REQ-SAFE-050/051).
 
-Per-role write/network policy, plus the two backend-specific enforcement layers:
+Per-role write/network policy, plus the two backends' actual enforcement:
 - Codex: its own native Seatbelt-backed `--sandbox workspace-write`, driven with `-c` overrides
-  computed here (see `codex.py`).
-- Claude: no native OS sandbox for Bash exists, so a macOS `sandbox-exec` profile (see `macos.py`)
-  is the real enforcement; `--permission-mode`/`--permission-prompts` (see `claude.py`) additionally
-  scope its own Read/Write/Edit tools and fail fast instead of prompting.
-Both backends run the same `python -m troupe.safety` PreToolUse hook (REQ-SAFE-034) — codex's hook
-protocol turned out to be wire-compatible with Claude's (same payload/response shape), closing the
-gap the #42 ADR flagged ("codex has no equivalent interception wired").
+  computed here (see `codex.py`) — real OS-level write scoping.
+- Claude: `--permission-mode`/`--permission-prompts` (see `claude.py`) scope its own Read/Write/
+  Edit tools (denied outside the allowed roots, by Claude's own code) and fail fast instead of
+  prompting. **Claude's Bash tool has no OS-level write scoping — `sandbox/macos.py` was built and
+  evaluated but is NOT applied** (verified: wrapping the whole process breaks any tool that
+  self-sandboxes internally, e.g. `swift build`/`codex exec` — see that module's docstring and
+  docs/adr/005). For Claude, Bash is only covered by the guard() hook below, which is text
+  inspection, not a boundary.
+Both backends run the same `python -m troupe.safety` PreToolUse guard() hook (REQ-SAFE-034) —
+codex's hook protocol turned out to be wire-compatible with Claude's (same payload/response
+shape), closing the gap the #42 ADR flagged ("codex has no equivalent interception wired"). This
+hook is **command-text/path inspection, not a kernel boundary**: it recognizes known-bad shapes
+(a literal secret-store path, a literal `troupe.db`/`api.sock` reference) but cannot see through an
+arbitrary script, an encoded command, a path built from string pieces, or a renamed/aliased tool —
+verified escapable this way in #43's own review. `.troupe/` (including troupe.db) is writable at
+the OS level for every role on both backends, because the in-sandbox MCP server needs it to serve
+the agent's own tool calls; there is no OS-level way to give the MCP server that access while
+denying it to the agent's own Bash/Write calls in the same sandboxed process tree (see docs/adr/005
+"troupe.db / api.sock"). A real OS boundary for this is filed as #84, not built here.
 
-See docs/adr/005-least-privilege-sandbox.md for the verification behind these choices and the
-known gaps.
+See docs/adr/005-least-privilege-sandbox.md for the verification behind these choices and the full
+list of known gaps.
 """
 from __future__ import annotations
 

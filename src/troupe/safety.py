@@ -77,6 +77,17 @@ def secret_path(path: str, cwd: Path) -> bool:
     return p in [home / x for x in ('.aws/credentials', '.config/gh/hosts.yml', '.netrc', '.docker/config.json')]
 
 
+def state_path(path: str, cwd: Path) -> bool:
+    """True if `path` resolves into a `.troupe/` dir's troupe.db (incl. -wal/-shm) or api.sock —
+    same files the Bash-command regex below blocks, but reached via a file-editing tool's own path
+    argument instead of a shell command (e.g. Claude's Write/Edit tools, not just Bash)."""
+    if not path:
+        return False
+    p = Path(os.path.expandvars(os.path.expanduser(path)))
+    p = (cwd / p).resolve()
+    return p.parent.name == '.troupe' and (p.name == 'api.sock' or p.name.startswith('troupe.db'))
+
+
 def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
     """Conservative command inspection, not an OS sandbox (see safety ADR)."""
     raw = json.dumps(args)
@@ -85,6 +96,13 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
     if tool in ('Read', 'Edit', 'Write', 'read_file', 'write_file'):
         if secret_path(args.get('file_path', args.get('path', '')), cwd):
             return 'Reading or modifying a secret store'
+    if tool in ('Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'read_file', 'write_file'):
+        # The Bash regex below blocks cat/sqlite3/nc/curl access to these same files; a file-editing
+        # tool's own path argument is an equally direct route and must be blocked the same way,
+        # for both reads (leaking kv contents) and writes (clobbering the DB or socket).
+        path = args.get('file_path', args.get('notebook_path', args.get('path', '')))
+        if state_path(path, cwd):
+            return "Direct access to troupe's database or local API socket; use the provided tools"
     if tool != 'Bash':
         return None
     command = args.get('command', '')

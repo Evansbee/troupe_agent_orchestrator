@@ -1,6 +1,12 @@
-"""macOS sandbox-exec (Seatbelt) profile builder — evaluated for REQ-SAFE-050's "macOS outer
-layer" and NOT currently wired into any backend's actual launch. Built, verified correct on its
-own, and kept for the record and any narrower future use — see the "why not applied" note below.
+"""UNUSED / EXPERIMENTAL — not wired into any backend's launch. Nothing in runners.py imports or
+calls this module. Kept only because its functions are independently correct and tested (see
+tests/test_sandbox.py), as the evidence backing docs/adr/005's "why not applied" finding, and in
+case a narrower future use (e.g. a fresh-process re-exec, which does nest fine) becomes worthwhile.
+If you're looking for what actually restricts a Claude or codex run today, see claude.py/codex.py
+and safety.guard() instead — this file restricts nothing at runtime.
+
+macOS sandbox-exec (Seatbelt) profile builder — evaluated for REQ-SAFE-050's "macOS outer layer".
+See the "why not applied" note below.
 
 **Not applied to Claude** (the backend that would benefit most, since it has no native sandbox of
 its own — verified its Bash tool applies no directory restriction at all): wrapping the whole
