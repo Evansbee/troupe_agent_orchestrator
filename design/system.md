@@ -178,6 +178,87 @@ otherwise — animations must stay legible at both.
 - **Modal** (`views._task_modal`, `_new_task_modal`) — centered panel over a scrim, dismiss on
   click-outside or Esc.
 
+## Upcoming interactions (visual treatment)
+
+Specced behavior for REQ-GUI-020/022/023/024/027, REQ-COM-024, and REQ-ENG-016. Each reuses existing
+components/primitives — no new visual language.
+
+### REQ-GUI-020 — board drag-and-drop
+- Below the 4px move threshold it's a click (opens the task modal, unchanged). Past it, the grabbed
+  card becomes a **ghost**: the same `_task_card` render, at `alpha 0.92`, following the cursor with
+  a fixed grab-point offset, plus a soft `ui.glow` behind it in the card's status color so it reads
+  as "lifted" off the board. The card's original slot in its column collapses (siblings reflow) —
+  don't leave a dashed placeholder, that's extra chrome for no signal.
+- The column currently under the cursor gets the same "active" treatment chips use: background tint
+  `alpha(ACCENT, 0.06)` over the column rect (`T.BG2` base) plus a `1px` `alpha(ACCENT, 0.4)` inner
+  stroke. Only one column highlights at a time.
+- Esc cancels: ghost eases back to its origin card position (reuse `ui.ease`) and fades out; no status
+  change, no event.
+- On drop: log the event exactly as existing task events render in Pulse's activity feed ("human moved
+  #6 Ready → In progress") — same `d.color_of`/mono-timestamp styling as other feed rows.
+
+### REQ-GUI-022 — prompt inspector
+- A two-way toggle, **Transcript | Prompt**, rendered as two `ui.chip`s immediately right of the run
+  chips strip (`views.agent_view`, same row, right-aligned). Selection persists per session (a field on
+  `App`, not per-run) — switching runs keeps you on whichever tab you were viewing.
+- Prompt view reuses the transcript pane's rect. Two collapsible sections, **System prompt** and **Wake
+  prompt**, each a header row (chevron `▸`/`▾` + label, `TEXT_FAINT` bold 10.5 — same treatment as
+  Memory/Agent-side section labels) followed by a `CODE_BG`-filled monospace block (same look as
+  markdown code fences: `radius 6`, `CODE_TEXT` @ `12.5–13`). Collapsed by default is fine for Wake
+  prompt (usually short-lived context); System prompt defaults open.
+
+### REQ-GUI-023 — copy affordance
+- Every chat bubble, transcript text block, tool-result block, and doc code fence gets a small ghost
+  icon button in its top-right corner, hidden until hover — identical interaction pattern to the "×"
+  dismiss control in question cards (`views._q_layout`): `18×18` hit target, `T.HOVER` wash on hover,
+  hand cursor, tooltip "Copy". Use a simple two-rectangle "copy" glyph (or the existing `⧉`-style
+  monospace glyph if the font covers it) at `13–14px`, `TEXT_DIM` → `TEXT` on hover.
+- On click: copy raw text/markdown to clipboard via `rl.set_clipboard_text`, and fire the existing toast
+  system with `"Copied"` at `GREEN`. No new toast variant needed — same shape, just a short-lived,
+  low-emphasis message.
+
+### REQ-GUI-024 — search palette (⌘K)
+- A modal, but **top-anchored** rather than centered (command-palette convention, distinct from the
+  centered task/new-task modals so it doesn't feel like "opening a record") — panel starts ~15% down
+  from the top, same `T.PANEL` / `BORDER_HI` / `radius 14` treatment as other modals, `560–640px` wide.
+- A single `ui.text_input`-style field at the top (no placeholder box chrome beyond the input itself —
+  no separate "search" label). Below it, grouped results: a `TEXT_FAINT` bold 10.5 group header (Tasks
+  / Messages / Memories / Docs / Agents — same label style as Memory/Docs section headers), then up to
+  5 rows per group. Row = icon-or-avatar + primary label + faint secondary metadata, same row anatomy
+  as the sidebar/doc-list selected-row pattern (`alpha(ACCENT,0.14)` background on keyboard-selected
+  row, `T.HOVER` on mouse-hover). ↑/↓ move the keyboard selection; Enter activates it; Esc or an
+  outside click closes, matching the existing modal dismiss pattern.
+
+### REQ-GUI-027 — window title
+- Not a drawn surface — `rl.set_window_title`. Format: `troupe — <project>`, or `(N) troupe — <project>`
+  when `N` questions are open (`len(d.questions)`, the same count driving the inbox badge). Update
+  wherever `d.questions` changes, not every frame.
+
+### REQ-COM-024 — Team room bubble color
+- "Team" is a new first entry in the Chat partner list (same row treatment as any agent row, but its
+  avatar is a small constellation glyph — reuse the top-bar logo mark at avatar scale — rather than
+  initials, since it represents no single agent).
+- Room bubbles are a **colored variant** of the existing agent chat bubble (`views._bubble`): instead
+  of a flat `PANEL2` fill, use `alpha(sender_color, 0.14)` fill + `alpha(sender_color, 0.32)` stroke —
+  the same formula already used for the human's `ACCENT`-tinted bubble, just keyed to whichever
+  teammate spoke. Name label keeps rendering in the role color as it already does; this just extends
+  that identity cue to the bubble body so a fast-scrolling room thread stays scannable by color, not
+  just by re-reading names.
+- `@mentions` inside room message text render as `ACCENT`-colored inline text (treat as an implicit
+  markdown span, styled like the `link` inline style in `ui._spans`) — including unknown mentions,
+  which still render colored even though they're inert.
+
+### REQ-ENG-016 — rate-limited backend pill
+- Reuses the existing top-bar engine-state pill component (`app.draw_top`'s Live/Paused/Throttled
+  pill) verbatim — same shape, same `alpha(color, 0.14)` fill + colored dot + label — one instance per
+  currently-limited backend, laid out in a row immediately after the engine-state pill. Color: `ORANGE`
+  (matches "Throttled" convention already established for capacity pressure; reserve `RED` for
+  failure/blocked states, not rate limiting). Label: `"<backend> limited · resets HH:MM"`. A pill
+  disappears the frame its backend's limit clears — no exit animation needed, these are low-frequency.
+- In Chat, a working bubble for an agent on a limited backend shows the same limited-until copy inline
+  (`_typing`'s existing bubble, swap the activity line for `"Claude limited until 14:05"` in place of
+  `"thinking…"`) rather than a separate banner — one state, shown where the user is already looking.
+
 ## Known gaps (feeds the polish backlog below)
 
 - No real type-scale or radius-scale constants — both are "whatever the nearest call site used."
