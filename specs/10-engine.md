@@ -209,6 +209,58 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     REQ-ENG-034 path.
   - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
     output, a timeout counts as a failure, and an empty check merges directly.
+- **REQ-ENG-043 [ ]** (#36) Architecture review for **risky changes only** (human's answer). A task needs the architect's
+  approval in addition to QA's when its diff (against its merge base) matches any of these:
+  - **schema:** added or removed lines containing `CREATE TABLE`, `ALTER TABLE` or `CREATE INDEX`, or files under a
+    `migrations/` dir or `*.sql`;
+  - **dependency:** any change to a manifest (`pyproject.toml`, `requirements*.txt`, `package.json`, `Cargo.toml`,
+    `go.mod`, `Package.swift`);
+  - **new top-level module:** a new file directly in a source root (`src/<pkg>/`, `mac/Sources/<target>/`), or a new
+    directory at that level;
+  - **contract:** any path in `[review] arch_paths`. troupe's own list is `src/troupe/mcp_server.py`,
+    `src/troupe/team.py`, `src/troupe/api*`, `specs/50-api.md` and the commands handling in `src/troupe/store.py`;
+  - **flag:** the lead set `arch_review` on the task (`update_task(arch_review=True)`).
+  Rules:
+  - When such a task enters `review`, QA and the architect are both woken, and the board card shows an "arch ✓ / arch
+    pending" chip. Merging needs both approvals. Either rejection sends the task back with that reviewer's notes, and
+    both review again after the fix.
+  - Order after both approve: human approval if protected paths are touched (REQ-SAFE-020), then the merge gate
+    (REQ-ENG-040).
+  - With no enabled architect, the gate is skipped and the approval notes say so.
+  - The detection is a pure function of the diff and flag.
+  - Test: a `store.py` schema change or a `pyproject.toml` dependency needs both approvals; a `gui/views.py`-only change
+    merges on QA alone; an architect reject sends it back.
+- **REQ-ENG-045 [ ]** Milestones are first-class (human: Pulse should show the major work and how close the goal is).
+  - Additive schema: a `milestones` table (`id, name, goal, sort_order, status active|done, created`) and
+    `tasks.milestone_id`.
+  - Tools:
+    - the lead (or human) creates and edits milestones with `milestone(action=create|update, name, goal, order,
+      status)`;
+    - `create_task` and `update_task` accept `milestone`;
+    - `list_tasks(milestone=…)` filters by it.
+  - Progress = done / (total − cancelled) tasks in the milestone, computed, never stored. Only the lead or human marks
+    a milestone `done`.
+  - The lead's and pm's wake prompts show the active milestones with progress. The API exposes milestones
+    (specs/50-api.md), and Pulse shows them (REQ-GUI-038).
+  - The first milestone is "Ready for a test project" (#1, #2, #3, #15, #20, #23, #24, #25, plus the lead's additions).
+    The lead creates it with the tool, not a code seed.
+  - Test: create, assign and filter; progress excludes cancelled tasks; non-lead edits return `ERROR:`.
+- **REQ-ENG-046 [ ]** The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
+  columns or kv, exposed by the API), so Pulse (REQ-GUI-038) doesn't infer it.
+  - `waiting_on` = `{kind, target, since, reset_at?, queue_position?}` or null. Kinds, in precedence order:
+    - `human`: the agent's open question, or its task awaiting a human approval card. Target is `human`.
+    - `review`: its task is in review. Targets are the reviewer handles.
+    - `dependency`: its assigned task has unmet `depends_on`. Target is the dependency task id(s).
+    - `blocked`: its task is `blocked`. Target is the task id plus the reason from the task note.
+    - `providers`: every provider in its list is unavailable (REQ-BE-012). `reset_at` is the earliest reset.
+    - `rate_limit`: its current provider is limited (REQ-ENG-016). Target is the provider, plus `reset_at`.
+    - `slot`: it has a wake candidate but no run slot is free. `queue_position` is its 1-based position in the order
+      the tick would launch.
+    - `parked`: idle while owing work (today's derived diagnosis, REQ-GUI-002).
+  - `since` = when the current kind began. It persists across ticks while the kind doesn't change.
+  - Mail: `mail_queued` = unread messages not yet delivered. `mail_reading` = messages delivered to the currently
+    running run.
+  - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
@@ -223,5 +275,8 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-23 — service process model: ENG-001/003 rewritten, new ENG-006/007/008. Default roster: ENG-041 (the
   roster open question is resolved).
 - 2026-09-23 — tagged: service → #24, roster → #20.
+- 2026-09-23 — ENG-019: ordered `providers` list per agent (human). ENG-041: roster as preference lists, plus architect_1,
+  researcher_1 and default provider_limits. New ENG-043 architect gate for risky changes (#36), ENG-045 milestones, and
+  ENG-046 agent wait state + mail backlog as engine data (for Pulse, #32).
 - 2026-09-23 — human chose one service per project (open question closed). New ENG-009 graceful/auto reload and
   ENG-042 crash supervision (#28). ENG-006 version warning replaced by auto reload.
