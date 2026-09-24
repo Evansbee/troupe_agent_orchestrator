@@ -6,6 +6,7 @@ built in parallel) — swap in the real `TuiClient` once it lands, no changes ne
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from rich.markup import escape
@@ -29,17 +30,58 @@ def split_decision(text: str) -> tuple[str, str]:
     return head.strip().lower(), note.strip()
 
 
+def _safety_baseline_changes(previous: dict, proposed: dict) -> list[str]:
+    """Summarize gates.py guard_config's previous vs. proposed safety/merge-check config as a
+    handful of `label +A -R` / `field: before -> after` fragments — never a bare value, since the
+    human is approving a change, not being handed a raw diff to parse themselves."""
+    prev_safety = (previous or {}).get("safety") or {}
+    next_safety = (proposed or {}).get("safety") or {}
+    changes = []
+    for field, label in (("protected", "protected paths"), ("remotes", "remotes"),
+                         ("secret_allow", "secret_allow")):
+        before, after = set(prev_safety.get(field) or []), set(next_safety.get(field) or [])
+        added, removed = len(after - before), len(before - after)
+        if added or removed:
+            changes.append(f"{label} +{added} −{removed}")
+    for field in ("check", "check_timeout"):
+        before, after = (previous or {}).get(field), (proposed or {}).get(field)
+        if before != after:
+            changes.append(f"{field}: {json.dumps(before)} → {json.dumps(after)}")
+    return changes
+
+
 def render_card(question: dict) -> str:
     """Markup tags (`[b]`, `[dim]`, ...) are ours; every field that came from a question or a task
     result is escaped, since it can contain a literal `[...]` (a spec ref, a path, agent prose)."""
     q = question
     lines = [f"[b]#{q['id']}[/b] " + ("[bold red]⚠ SAFETY APPROVAL[/bold red]" if is_safety(q) else q["kind"].upper())]
     lines.append(escape(q["question"]))
+    skip_context = False
     if is_safety(q):
         approval = q.get("approval") or {}
         if approval.get("paths"):
             lines.append("[dim]protected:[/dim] " + escape(", ".join(approval["paths"])))
-    if q.get("context"):
+        if "previous" in approval:
+            # The safety/merge-check baseline approval (gates.py guard_config) — its `context` is
+            # a raw "Approved:\n<json>\nProposed:\n<json>" dump that renders "Approved:\nnull" when
+            # there's no previous baseline (#85); replace it with real copy instead of showing it.
+            skip_context = True
+            previous, proposed = approval.get("previous"), approval.get("proposed") or {}
+            if previous is None:
+                lines.append("[dim]baseline:[/dim] first approval — nothing to compare against yet")
+                protected_paths = (proposed.get("safety") or {}).get("protected") or []
+                if protected_paths:
+                    lines.append("[dim]protected:[/dim] " + escape(", ".join(protected_paths)))
+                check = proposed.get("check")
+                if check:
+                    lines.append("[dim]check:[/dim] " + escape(str(check)))
+            else:
+                changes = _safety_baseline_changes(previous, proposed)
+                if changes:
+                    lines.append("[dim]changed:[/dim] " + escape("; ".join(changes)))
+                else:
+                    lines.append("[dim]baseline:[/dim] re-approval requested (no changes detected)")
+    if q.get("context") and not skip_context:
         lines.append(escape(q["context"]))
     for i, opt in enumerate(q.get("options") or [], start=1):
         if i <= 9:

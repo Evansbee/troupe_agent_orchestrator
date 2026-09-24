@@ -255,3 +255,50 @@ def test_empty_tasks_pane_shows_one_line_not_squashed_into_the_glyph_column(proj
             await server.stop()
 
     asyncio.run(scenario())
+
+
+def test_long_chat_history_reaches_the_bottom_in_the_real_five_pane_layout(project):
+    """#85 live repro (/tmp/rt/demo/recipe-box): the chat thread only got a small fraction of the
+    terminal's height once squeezed into the real five-pane layout (Team/Tasks/Needs-you/Comms/
+    Chat), and long/markdown history needed more than one layout pass to reach its final wrapped
+    size — scroll_end() called after just one deferred refresh landed short of the true bottom.
+    The human saw the last message's bare sender label with its body clipped, and later messages
+    never appeared. An isolated ChatPane test (test_tui_chat.py) doesn't reproduce this — it gets
+    the whole terminal to itself and settles in a single pass — so this needs the full TroupeApp."""
+    from textual.widgets import Markdown
+
+    from troupe.tui.panes.chat import ChatPane
+
+    cfg, _store = project
+    table = "| step | tool |\n|---|---|\n| 1 | oven |\n| 2 | mixer |\n| 3 | pan |"
+    code = "```python\n" + "\n".join(f"step_{i}()" for i in range(8)) + "\n```"
+    messages = []
+    for i in range(1, 26):
+        sender, recipient = ("pm", "human") if i % 2 else ("human", "pm")
+        if i % 5 == 0:
+            body = f"reply {i} with a table:\n\n{table}"
+        elif i % 7 == 0:
+            body = f"reply {i} with code:\n\n{code}"
+        else:
+            body = f"reply {i} " * 20  # long enough to soft-wrap across several visual lines
+        messages.append(dict(id=i, sender=sender, recipient=recipient, kind="chat", body=body, ts=0))
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES, messages=messages)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(150, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                chat = app.query_one(ChatPane)
+                thread = chat.query_one("#chat-thread")
+                await _wait_until(lambda: len(list(thread.query(Markdown))) == len(messages))
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                assert thread.max_scroll_y > 0, "test needs overflow to be meaningful"
+                assert thread.is_vertical_scroll_end  # the last message's body is the visible bottom
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
