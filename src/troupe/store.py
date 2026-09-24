@@ -135,6 +135,9 @@ class Store:
         self.conn.executescript(SCHEMA)
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
+            mail_columns = {r["name"] for r in self.q("PRAGMA table_info(messages)")}
+            if "fyi" not in mail_columns:
+                self.conn.execute("ALTER TABLE messages ADD COLUMN fyi INTEGER NOT NULL DEFAULT 0")
             columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
             if "answered_via" not in columns:
                 self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
@@ -222,12 +225,12 @@ class Store:
 
     # ── messages ──────────────────────────────────────────────────────────
     def send(self, sender: str, recipient: str, body: str, subject: str = "", kind: str = "msg",
-             reply_to: int | None = None, task_id: int | None = None) -> int:
+             reply_to: int | None = None, task_id: int | None = None, fyi: bool = False) -> int:
         body, subject = redact(body), redact(subject)
-        mid = self.x("""INSERT INTO messages(ts,sender,recipient,subject,body,kind,reply_to,task_id)
-                        VALUES(?,?,?,?,?,?,?,?)""", now(), sender, recipient, subject, body, kind, reply_to, task_id)
+        mid = self.x("""INSERT INTO messages(ts,sender,recipient,subject,body,kind,reply_to,task_id,fyi)
+                        VALUES(?,?,?,?,?,?,?,?,?)""", now(), sender, recipient, subject, body, kind, reply_to, task_id, int(fyi))
         label = subject or (body.strip().splitlines() or [""])[0]
-        self.event(sender, "message", f"{sender} → {recipient}: {label[:120]}", ref=f"msg:{mid}")
+        self.event(sender, "message", f"{sender} → {recipient}: {label[:120]}", ref=f"msg:{mid}", significant=not fyi)
         return mid
 
     def unread(self, recipient: str) -> list[dict]:

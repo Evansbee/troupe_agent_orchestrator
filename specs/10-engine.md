@@ -347,7 +347,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     words> → what was delivered, where to look".
   - Test: the ★ flag and quote, dispatch order, the cancel/scope guard, escalation at max attempts, and the Done
     report. Screenshot of the badge and filter.
-- **REQ-ENG-049 [ ]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
+- **REQ-ENG-049 [x]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
   wake-ups via local-LLM mail triage.
   - Before a `messages` wake, a local model (`[triage] enabled, model`, using the `local` backend) reads the pending
     mail, the agent's role and its active task title. It returns `{wake_now, reason, digest}`.
@@ -356,7 +356,13 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - **Hard rules the model can't override:** human mail, questions to the agent, review requests, mail about the
     agent's own active task, and ≥ N pending mails always wake. If the local model is down or errors, the agent
     wakes as today.
-  - Several pending mails become one wake.
+  - Several pending mails become one wake. `[triage]` defaults: `enabled=false`, `model=""` (use the local
+    agent model), `max_pending=5`, `timeout=5.0` seconds (maximum 30). The count guard includes FYIs.
+  - Classification is asynchronous and cached per pending batch/config; pending classification never blocks
+    heartbeat/chat. New mail invalidates the batch. Holds do not mark mail read and do not themselves
+    trigger cadence wakes. Questions/review words and explicit own-task links bypass conservatively.
+  - Hourly metrics exclude chat; runs with a task link or task/review reason count as work, others as coordination.
+    Synthetic regression replay: 28 arrivals → 8 message wakes; this is not a measured deployment saving.
   - Metrics: runs record `wake_reason` and tokens, and the Usage/Pulse view shows coordination vs work tokens per hour.
   - Test: with a mocked model, a hold, the hard rules and the fallback. A replay of an hour of mail shows ≥ 50% fewer
     `messages` wakes.
