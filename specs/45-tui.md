@@ -77,6 +77,17 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     - a second TUI attaches, and its `q` doesn't stop the engine.
 - **REQ-TUI-002 [x]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
   subscribe (REQ-API-010/020/060).
+  - [ ] (#108; QA: the TUI died at launch on a realistically sized project.)
+    - **Size:** the client accepts any response line up to the server's `MAX_LINE`, imported from api.py so
+      the two can't drift.
+    - **Isolation:** a pane whose load fails shows "couldn't load: <reason> (r to retry)" inline, and the rest
+      of the TUI keeps running. In the chat pane the error goes on its status line, and `r` isn't a retry key
+      there because it's typed text.
+    - **Exit code:** an unhandled exception exits non-zero.
+    - Test: a >64 KiB response loads through the real socket; a failing pane renders inline and the app
+      survives; a crash exits non-zero. Live (QA): a seeded project at least the size of the human's (≥300
+      tasks, ≥1,000 messages, ≥300 memories, ≥8,000 events) stays up 5 minutes with every pane loaded, with
+      scrolling, pane switches and a resize along the way.
   - No direct DB reads and no polling. Read-only local files are the exception, as in REQ-API-022: docs, and
     `git diff` for an approval card's "Open full diff" (design/tui.md).
   - Live updates appear within 1 s of a new message or task change.
@@ -96,6 +107,8 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - **Comms:** agent→agent mail subjects, decisions and merges, newest at the bottom, sticky to the bottom
     (REQ-GUI-017 rules).
   - **Needs you:** open cards, including escalations the PM forwarded, credited "via pm_1 from …".
+    [ ] (#109) Safety approval cards (REQ-SAFE-021) are pinned above every other card, whatever their age,
+    because they gate merges. Test: 6 questions plus 1 safety card, and the safety card is first.
   - **Chat with the PM:** an input line plus the last few messages, with a streaming "PM is working…" line
     while the PM runs.
 - **REQ-TUI-011 [x]** Sizes and terminals:
@@ -177,3 +190,5 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 - 2026-09-24 — TUI-001 → [~]: bare `troupe` is the primary entrypoint; Ctrl-C (key or SIGINT, any focus) is a no-prompt
   clean stop that clears lock/pid with no orphans; rerun resumes interrupted tasks in place, with no baseline
   re-approval and a kill that stays in force (human 13:31 via pm msg #887).
+- 2026-09-24 — TUI-002 (#108): responses up to the server's MAX_LINE, per-pane load errors inline, a crash exits
+  non-zero. TUI-010 (#109): safety approval cards pinned first in Needs you.

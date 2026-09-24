@@ -598,6 +598,8 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-040 (#107): doc-only main movement merges without a re-check (`[git] doc_only_paths`, guarded
+  by SAFE-021), and exhausted main-moved retries keep the task approved and requeued instead of bouncing it.
 - 2026-09-24 — ENG-059 hardened from QA's #92 review: runs the candidate tree's code, deterministic injection
   (10/10), skip decided up front (signal exit = fail), isolated HOME, cleanup in `finally`. New ENG-060: engines
   exit when their project disappears, plus test-session process hygiene (#103). ENG-008: missing-path entries
