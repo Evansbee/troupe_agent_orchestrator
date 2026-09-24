@@ -136,7 +136,8 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   - Engine-generated cards follow the same bar. A protected-change card is raised at most once per distinct
     protected change, and a status-marker-only edit to a protected spec raises none (REQ-SAFE-021, #118). A
     safety-baseline re-approval card appears only when the baseline's content actually changes, never for an
-    install, restart or format change alone. Test: reinstall with the same baseline, and no card appears. The bar
+    install, a restart, or a reordering or reserialization of the same values. A newly guarded key, such as
+    `doc_only_paths` in #107, does count as a change. Test: reinstall with the same baseline, and no card appears. The bar
     never suppresses the items in REQ-COM-029 that go direct to the human, and it never touches the whistleblower
     board: those stay the human's.
   - Status: the rule is live as a PM/lead decision (memories #303/#304). Still pending: the PM and lead charter
