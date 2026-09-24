@@ -1,1 +1,4 @@
-"""Per-project terminal dashboard (Textual). See specs/45-tui.md."""
+"""The per-project Textual TUI (specs/45-tui.md). Entry point: run_tui()."""
+from .app import run_tui
+
+__all__ = ["run_tui"]
