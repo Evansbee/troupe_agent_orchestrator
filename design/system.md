@@ -202,6 +202,74 @@ otherwise — animations must stay legible at both.
 - **Modal** (`views._task_modal`, `_new_task_modal`) — centered panel over a scrim, dismiss on
   click-outside or Esc.
 
+## Needs-you cards per notifier kind (#97)
+
+Today only `question`/`idea`/`safety` (backed by the `questions` table) render as cards in the Needs-you
+panel; the other nine kinds `notify.py` already fires OS notifications for — `blocked`, `check_failed`,
+`backoff`, `stalled`, `timeout`, `crash_loop`, `rate_limit`, `throttle`, `providers`, `concern`, `chat` —
+just vanish, so the human gets notified, opens the app, and finds nothing. This section gives each kind a
+card. No new component: every card below is the **question card shell** (`views._q_layout` /
+`design/tui.md`'s Needs-you card) — avatar in the kind's color, name + verb line, one-line body, a button
+row, `×` dismiss — driven off the notifier's pending map (key/kind/agent/text/since) instead of the
+`questions` table, since these kinds have no options/context columns to read.
+
+### Title rule
+"`<agent> needs you`" (single item) / "`N things need you in <project>`" (multiple) stays exactly as today
+for **any kind whose card has a real action** — that's every kind below except the three awareness-only
+ones. `rate_limit`, `throttle`, and `providers` are informational only (nothing to decide, just a heads-up
+that something's slower right now), so their title becomes **"`<project>: heads-up`"** instead — composed
+in `notify.py`'s `tick()`, same batching/suppression/must-deliver rules, just a different string. Don't
+reuse "needs you" for a card whose only button is "OK".
+
+### Per-kind cards
+
+| Kind | Title (name+verb line) | Body (one line) | Buttons | TUI (`a`+…) | Accent |
+|---|---|---|---|---|---|
+| `blocked` | "*&lt;assignee&gt;* is blocked" | task title, e.g. "#14 Fix backoff cap" | **Open task** (primary) · **Ask the PM** | `1` Open task · `2` Ask the PM | `RED` (matches the board's existing `blocked` status color) |
+| `check_failed` | "*&lt;assignee&gt;*'s task failed its check" | task title | **Open task** (primary) | `1` Open task | `ORANGE` |
+| `backoff` / `stalled` / `timeout` | "*&lt;agent&gt;* needs a nudge" | the notifier's own text (already agent-facing, e.g. "Repeated runs failed; retry backoff reached its cap") | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `ORANGE` |
+| `crash_loop` | "*&lt;agent&gt;* keeps crashing" | same notifier text | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `RED` (worse than a plain backoff) |
+| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited until 14:05" (existing text) | **OK** | `1` OK | `ORANGE` |
+| `throttle` | *(heads-up title)* | the throttle reason (existing text) | **OK** | `1` OK | `ORANGE` |
+| `providers` | *(heads-up title)* | "All of &lt;agent&gt;'s providers are unavailable" (existing text) | **OK** | `1` OK | `RED` (strictly worse than one rate-limited provider, matches `pulse.md`'s severity ordering) |
+| `concern` | "troupe needs you" (no reporter, no agent name — see below) | "An agent raised a concern. Run `troupe concerns` to read it." (existing text, unchanged) | **Got it** | `1` Got it | `RED` (matches the Concerns badge color already decided for #78) |
+| `chat` | "*&lt;sender&gt;* sent a message" | first ~120 chars of the message | **Open chat** (primary) | `1` Open chat | sender's role color |
+
+Buttons follow the existing kind convention: the primary navigation action is `primary`, a destructive one
+(`Stop`) is `danger`, everything else `default` — same as `_q_layout`'s option buttons.
+
+### Corrections to the task brief
+- **`blocked`: "reply to assignee" → "Ask the PM".** REQ-COM-029 shipped with #65: the TUI's human chat
+  is PM-only, and "the frozen raylib GUI's per-agent chat is no longer part of the model, and new clients
+  don't offer it." A button that opens a direct chat with the assignee would contradict a decision that's
+  already merged, so both surfaces route through the PM chat instead — same as every other human-to-agent
+  path today.
+- **`check_failed`: one button, not two.** There's no separate check-log viewer — `gates.check_failed`
+  already writes the failing output into the task's `review_notes` and a system mail to the assignee, so
+  "Open task" already shows the log (task notes/mail, same as any other task). Adding a second "View check
+  log" button would point at a surface that doesn't exist.
+- **`backoff`/`stalled`/`timeout`/`crash_loop`: "Poke" → "Wake now".** Same action (`d.command('poke', id)`,
+  clears failure backoff per REQ-ENG-010), renamed to match the label the Agent view's button already uses
+  — one verb for the same action, not two.
+- **TUI "Open transcript" has no destination yet.** The TUI has no per-agent transcript pane (only
+  Header/Team/Tasks/Comms/Chat, plus Concerns for #78). Until one exists, the TUI's "Open transcript"
+  jumps to the **Team pane with that agent's row focused** — the closest available view of what an agent
+  is doing — rather than inventing a new pane inside this task. Flagging this as a real gap, not a blocker:
+  Team's current-activity line is enough to judge whether Wake/Stop is the right call, just not as much
+  detail as the GUI's full transcript.
+
+### Notes
+- `concern`'s card is the **interim** shape only (per REQ-COM-029: content-free, no reporter, single "Got
+  it" dismiss) — #78 replaces it entirely with the Concerns pane and Raise/Suppress/Kill/Reply, already
+  designed in `design/tui.md`'s Needs-you section and specs/45-tui.md's TUI-014. Don't extend this card;
+  build #78's instead when that task starts.
+- `blocked` tasks with `human_request=true` (the human's own ask, #45) still sort first via the notifier's
+  existing `urgent` flag — no visual star/badge yet, since #45 (not this task) owns that treatment. If #45
+  ships first, its badge should appear on this card too rather than getting a second design pass.
+- Dismissing an awareness-only card (`rate_limit`/`throttle`/`providers`) removes it for that key and it
+  doesn't reappear until the state changes again (new reset time / new throttle episode) — same "dismiss
+  = seen" rule the notifier already applies, not a new one.
+
 ## Upcoming interactions (visual treatment)
 
 Specced behavior for REQ-GUI-020/022/023/024/027, REQ-COM-024, and REQ-ENG-016. Each reuses existing
