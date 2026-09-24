@@ -42,6 +42,14 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
     or reply." Until this ships, the team
     convention is "FYI" in the subject and no replies to FYIs (lead, 2026-09-23).
   - Test: an FYI doesn't wake the recipient and appears in its next prompt; exempt mail still wakes.
+  - (#74; human: "if it's FYI, don't invoke; that's a script, not an LLM wakeup") FYI is **deterministic**.
+    - Mail with `fyi=True`, or a subject starting with "FYI", never triggers a wake and never goes to local-LLM triage
+      (REQ-ENG-049) or any other model.
+    - It's shown as a digest in the recipient's next real wake prompt.
+    - Triage is only for genuinely ambiguous mail: neither FYI nor obviously actionable.
+    - The API exposes per-hour counters of "wakes avoided" and "model calls avoided".
+    - Test: an FYI causes zero runs and zero triage calls (spy on the triage client), and it appears in the next
+      digest.
 
 ## The human
 - **REQ-COM-020 [x]** Live chat: the human can talk to any agent; replies arrive as the agent's final text.
@@ -132,7 +140,7 @@ then you figure out if he should know it or if you need my involvement."
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
   `private`. Recent decisions are injected into every wake prompt.
 - **REQ-COM-031 [x]** `recall(query)` searches memories and answered questions.
-- **REQ-COM-032 [ ]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
+- **REQ-COM-032 [x]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
   - Superseded memories are excluded from wake prompts and `recall` results by default (`recall(...,
     include_superseded=True)` shows them); they are never deleted.
   - Superseding a nonexistent id, or one already superseded, returns `ERROR:` with the current successor's id.
@@ -145,7 +153,7 @@ then you figure out if he should know it or if you need my involvement."
     - Test: an agent superseding a human-pinned preference fails and the preference stays in prompts; the human's
       supersede works.
   - The Memory view shows superseded items struck through with a link to their successor.
-- **REQ-COM-033 [ ]** Human memory controls in the Memory view. (#8)
+- **REQ-COM-033 [x]** Human memory controls in the Memory view. (#8)
   - Pin: pinned memories appear in every wake prompt regardless of age, before recent decisions. Pinning does not
     un-supersede.
   - Edit (title, content, rationale) and delete (with confirmation). Only the human can pin, edit or delete;
@@ -251,3 +259,4 @@ then you figure out if he should know it or if you need my involvement."
 - 2026-09-24 — COM-027..029 the PM as the human's single point of contact: escalations, PM triage tools, safety bypass
   and auto-forward (#65, human request).
 - 2026-09-24 — COM-032: agents can't supersede pinned, human-authored or `preference` memories (QA finding on #8).
+- 2026-09-24 — COM-013: FYI is deterministic, never model-triaged (#74).
