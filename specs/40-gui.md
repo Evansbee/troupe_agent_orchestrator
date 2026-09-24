@@ -22,11 +22,22 @@ the Mac app.
 - **REQ-GUI-006 [x]** Idle at 20 fps when nothing is happening; 60 fps when animating/working.
 - **REQ-GUI-007 [x]** F12 saves a screenshot to `.troupe/`; `TROUPE_SHOT=path TROUPE_TAB=Board troupe gui`
   renders one frame to a PNG and exits (for agents to verify UI work visually).
-- **REQ-GUI-042 [x]** Global UI zoom, not per-widget font bumping: one factor scales the whole logical
+- **REQ-GUI-043 [x]** Global UI zoom, not per-widget font bumping: one factor scales the whole logical
   coordinate system (fonts *and* layout metrics — `TOP_H`/`SIDEBAR_W`/`GAP`/`RADIUS`/etc.), so everything
   stays proportional. (#23; human request via live chat, "text should be a bit larger on retina")
   - Default 115% (bigger than 100%, per the human's ask). ⌘= / ⌘+ zoom in, ⌘- zoom out, ⌘0 resets to
-    default, in 5% steps, range 80–160%. A toast ("Zoom 115%") confirms each change.
+    default, in 5% steps, range 80–120%. A toast ("Zoom 115%") confirms each change.
+  - Reference window for the range: the default 1560×980. All seven tabs render without overlap or
+    clipping across the whole range at that size — verified at 0.8, 1.15 and 1.20 (the max). Above 120%,
+    several views' fixed-width chrome (Board's 5 columns, Agent's header, Pulse's node orbit) run out of
+    absolute room as the logical canvas shrinks; raising the ceiling further needs a responsive pass
+    across those views, not a zoom change — out of this requirement's scope.
+  - At the 1120×720 minimum window (REQ-GUI-008), zoom 100% introduces no regression versus before
+    this requirement — the zoom mechanism itself (core.py) is a pure no-op at 100%. That window size
+    already has its own pre-existing layout gaps at 100%, tracked separately (#55); two small,
+    unconditional views.py fixes made here to reach a usable max at 1560×980 (Board's assignee/
+    timestamp row, Agent's header button reservation) incidentally improve — never worsen — those
+    pre-existing gaps at 1120×720 too, since they aren't zoom-gated.
   - Fonts are rasterized at `size × dpi × zoom` so zoomed text is real texture detail, not a blown-up
     bitmap; text stays crisp on Retina at any zoom level.
   - The zoom persists across launches (`kv.gui_zoom`).

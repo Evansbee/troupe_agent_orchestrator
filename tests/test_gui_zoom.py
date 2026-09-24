@@ -17,17 +17,18 @@ def test_set_zoom_clamps_to_range():
 
 def test_set_zoom_snaps_to_the_step_grid():
     ui = UI()
-    ui.set_zoom(1.238)
-    assert ui.zoom == 1.25
+    ui.set_zoom(1.088)
+    assert ui.zoom == 1.10
     ui.set_zoom(0.83)
     assert ui.zoom == 0.85
 
 
 def test_set_zoom_is_a_noop_at_the_same_value():
     ui = UI()
-    ui.set_zoom(1.3)
-    assert ui.set_zoom(1.3) is False
-    assert ui.set_zoom(1.3 + ZOOM_STEP) is True
+    base = ZOOM_MIN + ZOOM_STEP
+    ui.set_zoom(base)
+    assert ui.set_zoom(base) is False
+    assert ui.set_zoom(base + ZOOM_STEP) is True
 
 
 def test_zoom_in_out_reset_cycle_matches_app_shortcuts():
@@ -63,7 +64,7 @@ def test_app_set_zoom_reload_restores_persisted_value(project):
 def test_app_set_zoom_noop_does_not_toast_or_write_kv(project):
     cfg, store = project
     app = App(cfg)
-    app.ui.zoom = 1.3
-    app.set_zoom(1.3)  # already at this value
+    app.ui.zoom = ZOOM_MAX
+    app.set_zoom(ZOOM_MAX)  # already at this value
     assert store.kv_get("gui_zoom") is None
     assert app.toasts == []

@@ -521,15 +521,17 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     if check:
         ui.pill(x + pad, fy, check, T.ORANGE if check == "checking…" else T.RED, 10, h=18)
         fy += 24
+    age = ago(t["updated"])
+    age_w = ui.measure(age, 11)
     who = t["assignee"]
     if who:
         col = d.color_of(who)
         ui.avatar(x + pad + 8, fy + 8, 8, col, d.initials_of(who)[:2], d.agent_by_id.get(who, {}).get("state") == "running")
-        ui.text_fit(x + pad + 22, fy + 1, d.name_of(who), iw * 0.6, 11.5, T.TEXT_DIM)
+        name_budget = max(20.0, iw - 22 - (age_w + 10))
+        ui.text_fit(x + pad + 22, fy + 1, d.name_of(who), min(iw * 0.6, name_budget), 11.5, T.TEXT_DIM)
     else:
-        ui.text(x + pad, fy + 1, "unassigned", 11.5, T.TEXT_FAINT)
-    age = ago(t["updated"])
-    ui.text(r.r - pad - ui.measure(age, 11), fy + 2, age, 11, T.TEXT_FAINT)
+        ui.text_fit(x + pad, fy + 1, "unassigned", max(20.0, iw - (age_w + 10)), 11.5, T.TEXT_FAINT)
+    ui.text(r.r - pad - age_w, fy + 2, age, 11, T.TEXT_FAINT)
     if hov:
         ui.hand()
     if ui.click(r):
@@ -804,22 +806,30 @@ def agent_view(app: "App", r: Rect) -> None:
     ui.glow(head.x + 60, head.cy, 90, col, 0.12)
     ui.avatar(head.x + 60, head.cy, 30, col, d.initials_of(a["id"]), a["state"] == "running", not a["enabled"])
     tx = head.x + 110
-    nx = tx + ui.text(tx, head.y + 20, a["name"], 21, T.TEXT, "bold") + 12
-    nx += ui.pill(nx, head.y + 24, role.title, col, 11) + 6
-    nx += ui.pill(nx, head.y + 24, a["backend"] + (f" · {a['model']}" if a["model"] else ""), T.TEXT_DIM, 11) + 6
     state = "working" if a["state"] == "running" else ("disabled" if not a["enabled"] else "idle")
-    ui.pill(nx, head.y + 24, state, T.GREEN if state == "working" else T.TEXT_FAINT, 11)
-    ui.text_fit(tx, head.y + 52, role.blurb, head.w - 560, 13, T.TEXT_DIM)
-    stats = f"{a['runs']} runs · ${a['cost']:.2f} · {a['tokens'] / 1000:.0f}k tokens · session {a['session_runs']} runs" \
-            f" · last ran {ago(a['last_run_at'])}"
-    ui.text_fit(tx, head.y + 76, stats, head.w - 560, 12, T.TEXT_FAINT)
-    # controls
-    bx = head.r - 16
+    # controls: compute their width up front so the name/pill row (below) knows where it must stop —
+    # both rows share the header, and at high zoom the logical header isn't always wide enough for both
+    # to grow toward each other unbounded.
     buttons = [("chat", "Chat", "primary"), ("wake", "Wake now", "default")]
     if a["state"] == "running":
         buttons.append(("stop", "Stop", "danger"))
     buttons.append(("toggle", "Disable" if a["enabled"] else "Enable", "default"))
     buttons.append(("reset", "New session", "ghost"))
+    buttons_w = sum(ui.button_w(label) + 8 for _, label, _ in buttons)
+    pill_limit = head.r - 16 - buttons_w - 16
+
+    nx = tx + ui.text(tx, head.y + 20, a["name"], 21, T.TEXT, "bold") + 12
+    for label, pcol in ((role.title, col), (a["backend"] + (f" · {a['model']}" if a["model"] else ""), T.TEXT_DIM),
+                        (state, T.GREEN if state == "working" else T.TEXT_FAINT)):
+        pw = ui.measure(label, 11, "med") + 16
+        if nx + pw > pill_limit:
+            break
+        nx += ui.pill(nx, head.y + 24, label, pcol, 11) + 6
+    ui.text_fit(tx, head.y + 52, role.blurb, head.w - 560, 13, T.TEXT_DIM)
+    stats = f"{a['runs']} runs · ${a['cost']:.2f} · {a['tokens'] / 1000:.0f}k tokens · session {a['session_runs']} runs" \
+            f" · last ran {ago(a['last_run_at'])}"
+    ui.text_fit(tx, head.y + 76, stats, head.w - 560, 12, T.TEXT_FAINT)
+    bx = head.r - 16
     for key, label, kind in reversed(buttons):
         bw = ui.button_w(label)
         bx -= bw
