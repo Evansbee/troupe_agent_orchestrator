@@ -14,6 +14,7 @@ STAGES = ("in_progress", "review", "blocked", "ready")
 class TasksPane(Pane):
     DEFAULT_CSS = """
     TasksPane { border: round $panel-darken-1; border-title-align: left; height: 1fr; }
+    TasksPane:focus { border: round $accent; }
     """
     border_title = "TASKS"
     PANE_TITLE = "Tasks"
@@ -22,7 +23,7 @@ class TasksPane(Pane):
         super().__init__(client, **kwargs)
         self._tasks: list[dict] = []
 
-    async def load(self) -> None:
+    async def _load(self) -> None:
         result = await self.client.call("tasks", status=list(STAGES))
         self._tasks = result["items"]
         self._paint()

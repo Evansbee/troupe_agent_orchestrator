@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from .. import __version__
-from ..api import APIError, socket_path
+from ..api import MAX_LINE, APIError, socket_path
 
 DEFAULT_TIMEOUT = 5.0
 RECONNECT_DELAY = 1.0
@@ -31,10 +31,16 @@ class TuiClient:
         self._pump_task: asyncio.Task | None = None
 
     async def connect(self, timeout: float = DEFAULT_TIMEOUT) -> dict:
-        """Open the socket and say hello. Raises on failure — callers decide how to show offline."""
+        """Open the socket and say hello. Raises on failure — callers decide how to show offline.
+
+        #108: asyncio's own default StreamReader line limit is 64 KiB; a `tasks`/`messages`/etc.
+        response for a realistically sized project is comfortably over that, and readline() raises
+        LimitOverrunError (a ValueError) once a line exceeds it, which _pump below turns into
+        "engine offline" for every pending call. Import the server's own MAX_LINE (api.py) instead
+        of picking a new number, so the two ends can't drift apart again."""
         path = socket_path(self.root)
         self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(str(path)), timeout)
+            asyncio.open_unix_connection(str(path), limit=MAX_LINE), timeout)
         self.connected = True
         self._pump_task = asyncio.create_task(self._pump())
         self.hello = await self.call(
