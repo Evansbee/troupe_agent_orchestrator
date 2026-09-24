@@ -12,6 +12,8 @@ class _FakeProc:
     def __init__(self):
         self.pid = 999999  # never a real pid; kill attempts on it are harmless no-ops
         self.returncode = None
+        self.stdout = None
+        self.stderr = None
 
 
 class SilentStallRunner:
@@ -37,15 +39,18 @@ class SilentStallRunner:
 
 
 class ChattyRunner:
-    """Keeps emitting so it never stalls; only stops once cancelled (by the watchdog or the test)."""
+    """Emits on a timer until told to go quiet; only stops once cancelled (by the watchdog or the
+    test). Flip `silent = True` mid-run to simulate a backend that stops producing output."""
     cancelled = False
 
     def __init__(self):
         self.proc = _FakeProc()
+        self.silent = False
 
     async def run(self, spec, emit):
         while not self.cancelled:
-            emit("text", "still working")
+            if not self.silent:
+                emit("text", "still working")
             await asyncio.sleep(0.01)
         return RunResult(ok=False, error="killed")
 
@@ -181,3 +186,105 @@ def test_zombie_sweep_ignores_agents_this_engine_is_actually_running(project):
     engine.sweep_zombie_runs()
 
     assert store.runs("lead", limit=1)[0]["status"] == "running"
+
+
+def test_chat_run_that_goes_silent_is_still_killed_and_marked_stalled(project, monkeypatch):
+    """The cap-exemption test only proves chat survives a long *healthy* run — this proves a
+    silent chat run still gets caught by the stall rule (QA's #61 review, point (b))."""
+    cfg, store = project
+    cfg.budget.stall_minutes = 0.01
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("troupe.engine.now", lambda: clock["t"])
+    engine = Engine(cfg)
+    a = cfg.agent("lead")
+    runner = ChattyRunner()
+    monkeypatch.setattr("troupe.engine.make_runner", lambda backend: runner)
+    store.send("human", a.id, "hi", kind="chat")
+
+    async def scenario():
+        await engine.launch(Wake(0, a, "chat"))
+        await asyncio.sleep(0.05)  # a few healthy emits
+        runner.silent = True
+        clock["t"] += 5  # well past stall_minutes
+        engine.watchdog_sweep()
+        await engine.running[a.id][1]
+
+    asyncio.run(scenario())
+
+    run = store.runs(a.id, limit=1)[0]
+    assert run["status"] == "stalled"
+    assert engine.failures.get(a.id, (0, 0))[0] == 1
+
+
+def test_notifier_turns_a_stalled_event_into_a_needs_help_notification(project):
+    """QA's #61 review point (c): the AC says "a notification is raised", not just an event row."""
+    from troupe.notify import Notifier
+
+    cfg, store = project
+    notifier = Notifier(store)  # cursor starts at the current max event id
+    store.event("builder-1", "stalled", "builder-1's run stalled and was killed (1x)")
+
+    notifier.collect(cfg, {})
+
+    assert any(item["kind"] == "stalled" for item in notifier.state["pending"].values())
+    assert any(e["kind"] == "needs_help" for e in store.events(limit=200))
+
+
+_FAKE_BACKEND_SCRIPT = '''#!/usr/bin/env python3
+import json, os, sys, time
+
+print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}))
+sys.stdout.flush()
+
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        time.sleep(90)  # grandchild: reparents to init (ppid 1) once the middle process exits
+        os._exit(0)
+    os._exit(0)
+else:
+    os.wait()  # reap the middle child
+
+time.sleep(90)  # the "backend" itself also hangs, matching the observed stall
+'''
+
+
+def test_stall_through_real_stream_unsticks_a_pipe_held_by_a_reparented_grandchild(project, tmp_path, monkeypatch):
+    """QA's #61 rejection repro, through the real Runner._stream path (not a fake runner): a
+    daemonized grandchild inherits stdout/stderr, reparents to init before the watchdog can walk
+    pid ancestry to it, and is correctly never killed (not a verified descendant) — but it must
+    not leave the run hung forever. The watchdog kills the backend, then, after a grace period,
+    forces EOF on the still-open pipes so _run's completion handling can finish."""
+    cfg, store = project
+    script = tmp_path / "fake_claude"
+    script.write_text(_FAKE_BACKEND_SCRIPT)
+    script.chmod(0o755)
+    cfg.backends.claude_command = str(script)
+    cfg.budget.stall_minutes = 0.01
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr("troupe.engine.now", lambda: clock["t"])
+    engine = Engine(cfg)
+    a = cfg.agent("builder-1")
+    store.send("lead", a.id, "please work")
+
+    async def scenario():
+        await engine.launch(Wake(0, a, "messages"))
+        runner = engine.running[a.id][0]
+        await _wait_for(lambda: runner.proc is not None)
+        await asyncio.sleep(0.5)  # real time: let it print its line and finish forking
+
+        clock["t"] += 5  # past stall_minutes
+        engine.watchdog_sweep()
+        await asyncio.sleep(0.5)  # real time: let the SIGKILL actually land
+        assert a.id in engine.running  # still stuck: the reparented grandchild still holds the pipe
+
+        clock["t"] += 25  # past the pipe-unstick grace period
+        engine.watchdog_sweep()
+        await asyncio.wait_for(engine.running[a.id][1], timeout=5)
+
+    asyncio.run(scenario())
+
+    run = store.runs(a.id, limit=1)[0]
+    assert run["status"] == "stalled"
+    assert any(m["sender"] == "lead" for m in store.unread(a.id))
+    assert engine.failures.get(a.id, (0, 0))[0] == 1

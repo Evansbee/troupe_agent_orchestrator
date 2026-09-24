@@ -57,6 +57,7 @@ class Engine:
         self._last_output: dict[str, float] = {}  # agent -> time of last stream event (REQ-ENG-050)
         self._run_worktree: dict[str, bool] = {}  # agent -> run's cwd is a task worktree (REQ-ENG-050)
         self._watchdog_reason: dict[str, str] = {}  # agent -> "stalled" | "timeout" (REQ-ENG-050)
+        self._watchdog_killed_at: dict[str, float] = {}  # agent -> when the kill signal was sent
         self.pokes: set[str] = set()
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
@@ -656,8 +657,13 @@ class Engine:
 
         t, b = now(), self.cfg.budget
         for a_id, (runner, atask, w) in list(self.running.items()):
-            if runner is None or a_id in self._watchdog_reason or runner.cancelled:
-                continue  # not a real run (tests reserve slots this way), or already handled
+            if runner is None:
+                continue  # not a real run (tests reserve slots this way)
+            if a_id in self._watchdog_reason:
+                self._unstick_killed_run(a_id, runner, t)
+                continue  # already killed; waiting for _run's completion handling to finish it up
+            if runner.cancelled:
+                continue
             proc = runner.proc
             if proc is None or proc.returncode is not None:
                 continue  # not spawned yet, or already exited — _run will finish it up
@@ -669,6 +675,7 @@ class Engine:
             if not (stalled or timed_out):
                 continue
             self._watchdog_reason[a_id] = "timeout" if timed_out else "stalled"
+            self._watchdog_killed_at[a_id] = t
             runner.cancelled = True
             # Walk descendants before the group dies, or an orphaned child reparents to init
             # and the pid-ancestry walk can no longer find it.
@@ -677,6 +684,22 @@ class Engine:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+
+    def _unstick_killed_run(self, a_id: str, runner: Runner, t: float) -> None:
+        """A run we already killed can still be blocked in _stream()'s readline(): a daemonized
+        grandchild can inherit the stdout/stderr pipe, reparent to init, and never exit, so the
+        pipe never sees EOF even though the backend itself is dead. We can't kill that holder (not
+        a verified descendant — never by name), so once it's had a while to exit on its own, force
+        EOF on both pipes to unblock _run's completion handling instead."""
+        killed_at = self._watchdog_killed_at.get(a_id)
+        if killed_at is None or t - killed_at < 20:
+            return
+        proc = runner.proc
+        if proc is None:
+            return
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None and not stream.at_eof():
+                stream.feed_eof()
 
     def sweep_zombie_runs(self) -> None:
         """REQ-ENG-050: a run marked 'running' whose agent this engine instance isn't actually
@@ -742,6 +765,7 @@ class Engine:
             self._run_started.pop(a.id, None)
             self._last_output.pop(a.id, None)
             self._run_worktree.pop(a.id, None)
+            self._watchdog_killed_at.pop(a.id, None)
         watchdog_reason = self._watchdog_reason.pop(a.id, None)
         if res.extra.get("limit_until"):
             limited = True
