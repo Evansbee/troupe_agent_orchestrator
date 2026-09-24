@@ -11,7 +11,45 @@ from troupe.gui.core import UI, Rect
 
 def test_copy_button_returns_false_and_draws_nothing_when_not_shown():
     ui = UI()
-    assert ui.copy_button(Rect(0, 0, 46, 20), False) is False
+    # far from the default mouse position (0, 0) so hover(r) is also False, not just `show` —
+    # otherwise copy_button would (correctly, per copy_button_active) fall through to drawing,
+    # which needs an open window this suite deliberately doesn't open.
+    assert ui.copy_button(Rect(500, 500, 46, 20), False) is False
+
+
+def test_copy_button_active_when_parent_is_hovered():
+    ui = UI()
+    assert ui.copy_button_active(Rect(500, 500, 46, 20), show=True) is True
+
+
+def test_copy_button_active_when_neither_parent_nor_button_is_hovered():
+    ui = UI()
+    ui.mouse = (0.0, 0.0)
+    assert ui.copy_button_active(Rect(500, 500, 46, 20), show=False) is False
+
+
+def test_copy_button_stays_active_when_pointer_moves_off_the_trigger_onto_a_disjoint_button():
+    """Regression for #53: the transcript tool-chip's Copy button sits a few px outside the chip
+    it's triggered by. As the pointer moves from the chip onto the (disjoint) button, `show` — the
+    chip's own hover state — goes False, but the button must stay active because the pointer is now
+    directly over it."""
+    ui = UI()
+    trigger = Rect(0, 0, 40, 20)
+    button = Rect(46, 0, 46, 20)  # disjoint from trigger, mirroring the real tr.r+6 layout
+
+    ui.mouse = (20.0, 10.0)  # over the trigger, not the button
+    show = ui.hover(trigger)
+    assert show is True
+    assert ui.copy_button_active(button, show) is True
+
+    ui.mouse = (60.0, 10.0)  # moved onto the button; trigger no longer hovered
+    show = ui.hover(trigger)
+    assert show is False
+    assert ui.copy_button_active(button, show) is True  # stays active — this is the bug QA found
+
+    ui.mouse = (200.0, 200.0)  # moved off both entirely
+    show = ui.hover(trigger)
+    assert ui.copy_button_active(button, show) is False
 
 
 def test_copy_sets_clipboard_flag():

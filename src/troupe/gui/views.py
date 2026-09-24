@@ -495,6 +495,9 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     h = pad + 18
     th = ui.text_height(t["title"], iw, 13, "med", 1.4, 3)
     h += th + 8 + 18 + pad
+    check = t.get("merge_check", "")
+    if check:
+        h += 24
     if not draw:
         return h
     r = Rect(x, y, w, h)
@@ -515,6 +518,9 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     ty = y + pad + 20
     ui.text_block(x + pad, ty, t["title"], iw, 13, T.TEXT, "med", 1.4, 3)
     fy = ty + th + 8
+    if check:
+        ui.pill(x + pad, fy, check, T.ORANGE if check == "checking…" else T.RED, 10, h=18)
+        fy += 24
     who = t["assignee"]
     if who:
         col = d.color_of(who)
