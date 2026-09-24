@@ -1,10 +1,15 @@
 """#57: the API's stop_now/resume/safety-approval commands wired to #42's shared safety paths
-(safety.stop_now/resume, gates.py's answer-text verdict parsing), not a second implementation.
+(safety.stop_now/resume, gates.py's answer-text verdict parsing), not a second implementation —
+and (QA's Principle 0 finding on the first cut) human-only commands refuse an agent caller.
 REQ-SAFE-010 (kill switch), REQ-SAFE-020 (approval cards), REQ-SAFE-040 (audit).
 """
 import asyncio
+import json
+import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +19,8 @@ from troupe.engine import Engine, Wake
 from troupe.gates import verdict
 from troupe.runners import Runner, RunResult
 from troupe.team import TeamAPI
+
+CALLER_SCRIPT = Path(__file__).parent / "_api_call_subprocess.py"
 
 
 @pytest.fixture
@@ -34,6 +41,29 @@ def error(c, method, params, code):
     with pytest.raises(APIError) as exc:
         c.call(method, params)
     assert exc.value.code == code
+
+
+def call_over_socket(root, method, params=None, *, agent: str | None = None) -> dict:
+    """Makes one call from a genuinely separate process — required to test the peer-pid check at
+    all: on macOS `ps` (which that check reads) reports a process's environment as of exec() time,
+    so monkeypatching os.environ in the already-running test process can't simulate "no
+    TROUPE_AGENT" for it. `agent=None` means the subprocess's env has no TROUPE_AGENT (a human
+    caller); `agent="some-id"` sets it (an agent's shell command)."""
+    env = dict(os.environ)
+    if agent is None:
+        env.pop("TROUPE_AGENT", None)
+    else:
+        env["TROUPE_AGENT"] = agent
+    proc = subprocess.run(
+        [sys.executable, str(CALLER_SCRIPT), str(root), method, json.dumps(params or {})],
+        capture_output=True, text=True, env=env, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def assert_forbidden(outcome):
+    assert outcome == dict(outcome, ok=False, code="forbidden"), outcome
 
 
 class WaitingRunner(Runner):
@@ -81,43 +111,85 @@ def test_stop_now_over_the_api_kills_runs_within_2s_and_enters_stopped_state(api
     asyncio.run(scenario())
 
 
+def test_stop_now_from_an_agent_caller_still_works(api):
+    """stop_now stays open to agents (lead's decision on QA's finding) — stopping is the safe
+    direction, unlike resume or approving a protected merge."""
+    server, s = api
+    root = server.cfg.root
+    result = call_over_socket(root, "stop_now", agent="designer")
+    assert result["ok"] is True and result["result"] == {"killed": 0}
+    assert s.kv_get("stopped") and s.kv_get("paused")
+
+
 def test_resume_over_the_api_clears_stopped_and_is_audited(api):
     server, s = api
+    root = server.cfg.root
     with client(api) as c:
         c.call("stop_now")
         assert s.kv_get("stopped") and s.kv_get("paused")
-        result = c.call("resume")
-        assert result["engine"]["stopped"] is False and result["engine"]["paused"] is False
+    result = call_over_socket(root, "resume")  # agent=None: a human-driven call
+    assert result["ok"] is True
+    assert result["result"]["engine"]["stopped"] is False
+    assert result["result"]["engine"]["paused"] is False
     assert not s.kv_get("stopped") and not s.kv_get("paused")
     assert any("resumed" in e["text"].lower() and e["kind"] == "safety" for e in s.events(limit=20))
 
 
+def test_resume_is_forbidden_from_an_agent_caller(api):
+    """QA's Principle 0 repro: an agent's shell command must not be able to undo the kill switch."""
+    server, s = api
+    root = server.cfg.root
+    with client(api) as c:
+        c.call("stop_now")
+    assert s.kv_get("stopped") and s.kv_get("paused")
+    result = call_over_socket(root, "resume", agent="designer")
+    assert_forbidden(result)
+    assert s.kv_get("stopped") and s.kv_get("paused")  # unchanged — the kill switch still holds
+
+
 def test_plain_pause_does_not_touch_the_kill_switch(api):
     server, s = api
+    root = server.cfg.root
     with client(api) as c:
         assert c.call("pause")["engine"]["paused"] is True
         assert s.kv_get("stopped") in (None, False)
-        assert c.call("resume")["engine"]["paused"] is False
+    result = call_over_socket(root, "resume")
+    assert result["ok"] is True and result["result"]["engine"]["paused"] is False
 
 
 def test_answer_question_approves_a_safety_card_through_gates_verdict(api):
     server, s = api
+    root = server.cfg.root
     qid = s.ask("system", "Approve protected changes?", options=["Approve", "Reject"], kind="safety")
-    with client(api) as c:
-        result = c.call("answer_question", dict(id=qid, decision="approve", text=""))
-    assert result["question"]["status"] == "answered"
+    result = call_over_socket(root, "answer_question", dict(id=qid, decision="approve", text=""))
+    assert result["ok"] is True
+    assert result["result"]["question"]["status"] == "answered"
     q = s.one("SELECT * FROM questions WHERE id=?", qid)
     assert q["answer"] == "Approve"
     assert verdict(s, dict(qid=qid)) == "approve"
     assert any(e["kind"] == "safety" and "approve" in e["text"].lower() for e in s.events(limit=20))
 
 
+def test_approve_safety_card_is_forbidden_from_an_agent_caller(api):
+    """QA's Principle 0 repro: an agent's shell command must not be able to approve a protected
+    merge as the human."""
+    server, s = api
+    root = server.cfg.root
+    qid = s.ask("system", "Approve protected changes?", options=["Approve", "Reject"], kind="safety")
+    result = call_over_socket(root, "answer_question", dict(id=qid, decision="approve", text=""), agent="designer")
+    assert_forbidden(result)
+    q = s.one("SELECT * FROM questions WHERE id=?", qid)
+    assert q["status"] == "open"
+    assert verdict(s, dict(qid=qid)) == ""  # neither approved nor rejected
+
+
 def test_answer_question_rejects_a_safety_card_with_a_note(api):
     server, s = api
+    root = server.cfg.root
     qid = s.ask("system", "Approve protected changes?", options=["Approve", "Reject"], kind="safety")
-    with client(api) as c:
-        result = c.call("answer_question", dict(id=qid, decision="reject", text="Too risky"))
-    assert result["question"]["answer"] == "Reject — Too risky"
+    result = call_over_socket(root, "answer_question", dict(id=qid, decision="reject", text="Too risky"))
+    assert result["ok"] is True
+    assert result["result"]["question"]["answer"] == "Reject — Too risky"
     assert verdict(s, dict(qid=qid)) == "reject"
 
 
@@ -125,19 +197,44 @@ def test_approval_kind_question_also_wired_the_same_way(api):
     """`kind="approval"` (the API's own display label) hits the same code path as the stored `safety`
     kind — both are gated the same way in command()."""
     server, s = api
+    root = server.cfg.root
     qid = s.ask("system", "Approve?", options=["Approve", "Reject"], kind="approval")
-    with client(api) as c:
-        c.call("answer_question", dict(id=qid, decision="approve", text=""))
+    result = call_over_socket(root, "answer_question", dict(id=qid, decision="approve", text=""))
+    assert result["ok"] is True
     assert s.one("SELECT * FROM questions WHERE id=?", qid)["answer"] == "Approve"
 
 
 def test_safety_card_cannot_be_dismissed_or_answered_without_a_decision(api):
     server, s = api
+    root = server.cfg.root
     qid = s.ask("system", "Approve?", options=["Approve", "Reject"], kind="safety")
-    with client(api) as c:
-        error(c, "dismiss_question", dict(id=qid), "forbidden")
-        error(c, "answer_question", dict(id=qid, text="sure"), "bad_request")
-        error(c, "answer_question", dict(id=qid, decision="maybe", text=""), "bad_request")
+    dismissed = call_over_socket(root, "dismiss_question", dict(id=qid))
+    assert dismissed == dict(dismissed, ok=False, code="forbidden")
+    no_decision = call_over_socket(root, "answer_question", dict(id=qid, text="sure"))
+    assert no_decision == dict(no_decision, ok=False, code="bad_request")
+    bad_decision = call_over_socket(root, "answer_question", dict(id=qid, decision="maybe", text=""))
+    assert bad_decision == dict(bad_decision, ok=False, code="bad_request")
+    assert s.one("SELECT * FROM questions WHERE id=?", qid)["status"] == "open"
+
+
+def test_dismiss_question_is_forbidden_from_an_agent_caller_for_any_kind(api):
+    """QA: "agents must not answer the human's questions as the human either" — not just safety
+    cards. An ordinary question, asked by one agent for the human, must not be dismissable by any
+    agent's shell command."""
+    server, s = api
+    root = server.cfg.root
+    qid = s.ask("lead", "Ship the v2 API today?")
+    result = call_over_socket(root, "dismiss_question", dict(id=qid), agent="designer")
+    assert_forbidden(result)
+    assert s.one("SELECT * FROM questions WHERE id=?", qid)["status"] == "open"
+
+
+def test_answer_question_is_forbidden_from_an_agent_caller_for_a_plain_question(api):
+    server, s = api
+    root = server.cfg.root
+    qid = s.ask("lead", "Ship the v2 API today?")
+    result = call_over_socket(root, "answer_question", dict(id=qid, text="Yes"), agent="designer")
+    assert_forbidden(result)
     assert s.one("SELECT * FROM questions WHERE id=?", qid)["status"] == "open"
 
 
