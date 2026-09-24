@@ -8,11 +8,26 @@ complete_task, review_task, remember, recall, set_status, team`.
 - **REQ-COM-001 [x]** Identity comes from `TROUPE_AGENT`; the same API is used natively by local models.
 - **REQ-COM-002 [x]** Tool results are short plain text written for an LLM; errors start with `ERROR:` and say
   what to do instead.
+- **REQ-COM-005 [ ]** Every agent has a **handle** `<role>_<N>@<project>` (human: so it's clear who is talking
+  to whom across projects), e.g. `lead_1@troupe`, `builder_2@troupe`.
+  - `<project>` is `[project] name`, with runs of whitespace turned into `_` and characters outside
+    `[A-Za-z0-9_.-]` dropped. Always numbered, even for single-seat roles.
+  - `<N>` is the trailing number of the agent's id (`builder-2` → 2, `builder_2` → 2), or 1 if the id has none
+    (`spec` → `spec_1`). Two agents mapping to the same handle is a team.yaml validation error (REQ-ENG-019).
+  - The stored id never changes, so existing DBs keep working. The handle is derived.
+  - Shown as the agent's identifier in the charter/roster, wake prompts, tool results, mail, the activity feed,
+    `engine.log`, `troupe status` and notifications. In-window GUI labels where space is tight (board cards,
+    avatars, Stage nodes) may drop the `@<project>` suffix, because the window title names the project.
+  - Tools accept, case-insensitively: the full handle, the local handle (`builder_2`), the legacy id
+    (`builder-2`), a role (fan-out), `team` and `human`. A handle for another project returns `ERROR:` (no
+    cross-project mail yet).
+  - Test: handle derivation (legacy and new ids, project names with spaces), address resolution for every form,
+    and the collision error.
 - **REQ-COM-003 [x]** Permissions: only the Lead (or human) can re-prioritize/re-assign or move tasks to
   arbitrary statuses; assignees can block/unblock their own task; only QA/Lead can review.
 
 ## Mailboxes
-- **REQ-COM-010 [x]** `send_message(to=…)` accepts an agent id, a role (fan-out to all of that role),
+- **REQ-COM-010 [x]** `send_message(to=…)` accepts an agent id (or handle, REQ-COM-005), a role (fan-out to all of that role),
   `team`, or `human`. Every message is an event in the activity feed and wakes the recipient.
 - **REQ-COM-011 [x]** Messages are marked read when delivered in a wake prompt (or via `check_inbox`).
 - **REQ-COM-012 [ ]** Threads: group messages by `reply_to` chains in the Mail view.
@@ -58,3 +73,4 @@ complete_task, review_task, remember, recall, set_status, team`.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for COM-024/025/032/033 (from backlog #4,#8,#12). Team room with no @mention
   wakes lead + pm only; other agents see it next time they wake.
+- 2026-09-23 — REQ-COM-005 handles `role_N@project` (human request via pm).

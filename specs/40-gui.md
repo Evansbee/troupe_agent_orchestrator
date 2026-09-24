@@ -66,6 +66,17 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
 - **REQ-GUI-027 [ ]** App icon + window title with needs-you count; dock badge.
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered. (Title part: #12. Icon and dock badge: not yet tasked.)
+- **REQ-GUI-028 [ ]** "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+  updated about every 10 s while a window is focused, and on close).
+  - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
+    rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions
+    that arrived (still open ones first). Each group shows a count; each item is clickable and navigates to it.
+  - "Got it" or Esc closes the panel and advances `human_last_seen`. Nothing notable → no panel.
+  - Test: selecting catch-up items from a fixture DB for a given `last_seen` is a pure function with unit tests.
+- **REQ-GUI-029 [ ]** Offline and version states: with no service running, the top bar pill says "Engine offline"
+  and offers **Start team** (REQ-ENG-001). With a version mismatch (REQ-ENG-006), the pill shows "Restart needed".
+- **REQ-GUI-040 [ ]** Project switcher: lists projects from the registry (REQ-ENG-008) with each one's service state;
+  choosing one re-opens the GUI on that project. (Not yet tasked.)
 
 ## Stage — ambient full-screen view of the team at work (#22; design: `design/stage.md`, #21)
 Human request: "a compelling background visualization so I can just watch you guys work". Stage is for watching,
@@ -112,3 +123,4 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-23 — acceptance criteria for GUI-020/021/022/023/024/027 (from backlog #1,#5,#6,#7,#11,#12).
 - 2026-09-23 — GUI-021: agents are edited in team.yaml, budget in troupe.toml.
 - 2026-09-23 — Stage REQ-GUI-030..037 (human request via pm; #22, design #21).
+- 2026-09-23 — GUI-028 "While you were away", GUI-029 offline/restart states, GUI-040 project switcher (service model).
