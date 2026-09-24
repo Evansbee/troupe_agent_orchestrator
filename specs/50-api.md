@@ -60,7 +60,7 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
     | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
     | `comment_decision`, `comments`, `decisions_seen_at` | COM-035..037 → #27 |
     | `update_config` | ENG-019 + SAFE-021 → #5 |
-    | `milestones`, `milestone` command, `milestone_id`, `waiting_on`, `mail_reading`, `milestone.changed` | ENG-045/046 → #50 |
+    | `milestones`, `milestone` command, `milestone_id`, `waiting_on`, `mail_reading`, `milestone.changed` | ENG-045/046 → #50 (live) |
   - **Must land in #48:**
     - transport, handshake, error codes and security (API-001..006, 010, 011);
     - `snapshot` and every read for data that exists in main;
