@@ -18,16 +18,15 @@ from . import __version__
 from .store import HandleBook, Store
 
 
-def write_service_state(
-    state_dir: Path, state: str, reason: str = "", restarts: int | None = None
-):
+def _read_service_json(state_dir: Path) -> dict:
+    try:
+        return json.loads((state_dir / "service.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_service_json(state_dir: Path, value: dict) -> None:
     path = state_dir / "service.json"
-    if restarts is None:
-        try:
-            restarts = json.loads(path.read_text()).get("restarts", 0)
-        except (OSError, ValueError):
-            restarts = 0
-    value = dict(state=state, reason=reason, since=time.time(), restarts=restarts)
     fd, name = tempfile.mkstemp(prefix=".service-", dir=state_dir)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -37,7 +36,34 @@ def write_service_state(
         Path(name).unlink(missing_ok=True)
 
 
+def write_service_state(
+    state_dir: Path, state: str, reason: str = "", restarts: int | None = None
+):
+    existing = _read_service_json(state_dir)
+    if restarts is None:
+        restarts = existing.get("restarts", 0)
+    # owner_pid survives every state rewrite here: it's the launcher's concern (set_owner, below),
+    # not the engine's, and this is called from inside the engine process itself (api.py) as well
+    # as from stop_service -- neither of which knows or should overwrite who started it.
+    value = dict(state=state, reason=reason, since=time.time(), restarts=restarts,
+                 owner_pid=existing.get("owner_pid"))
+    _write_service_json(state_dir, value)
 
+
+def set_owner(state_dir: Path, pid: int | None) -> None:
+    """Record which launcher process (a TUI, or `troupe up`) is responsible for stopping this
+    engine (REQ-TUI-001's relaunch re-adopt, #100 F3): lets a later `ensure_engine` tell an orphan
+    (owner no longer alive, e.g. the TUI was `kill -9`'d) from an engine someone else is
+    deliberately keeping attached to, and re-adopt only the former."""
+    existing = _read_service_json(state_dir)
+    existing["owner_pid"] = pid
+    existing.setdefault("since", time.time())
+    _write_service_json(state_dir, existing)
+
+
+def owner_alive(root: Path) -> bool:
+    owner = _read_service_json(root / ".troupe").get("owner_pid")
+    return bool(owner and _process_alive(owner))
 
 def _atomic_json(path: Path, value) -> None:
     fd, name = tempfile.mkstemp(dir=path.parent, prefix="." + path.name)
@@ -147,6 +173,7 @@ def service_status(root: Path) -> dict:
         uptime=max(0, time.time() - record.get("started_at", time.time())),
         heartbeat=heartbeat,
         heartbeat_age=heartbeat_age,
+        owner_pid=_read_service_json(state).get("owner_pid") if live else None,
     )
 
 
@@ -263,6 +290,30 @@ def stop_service(cfg, timeout: float = 15) -> bool:
         write_service_state(cfg.state_dir, "stopped", "Stopped after shutdown timeout")
     else:
         raise RuntimeError("Engine did not stop; lifetime lock is still held")
+    return True
+
+
+def kill_service_now(cfg) -> bool:
+    """No SIGTERM grace period: REQ-TUI-001's "a second Ctrl-C SIGKILLs any remaining runs" — the
+    human already asked once and is done waiting."""
+    status = service_status(cfg.root)
+    if status["state"] != "running":
+        if not _locked(cfg.state_dir):
+            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+        return False
+    pid = status["pid"]
+    kill_descendants(pid)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 2
+    while _locked(cfg.state_dir) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not _locked(cfg.state_dir):
+        recover_interrupted(Store(cfg.db_path))
+        (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+        write_service_state(cfg.state_dir, "stopped", "Force-killed (second Ctrl-C)")
     return True
 
 
