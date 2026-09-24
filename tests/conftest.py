@@ -1,6 +1,7 @@
 import atexit
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -150,14 +151,38 @@ def _cwd_is_under_a_test_temp_root(cwd: str, basetemp: str) -> bool:
     return cwd.startswith(basetemp) or any(cwd.startswith(r) for r in _TEST_TEMP_ROOTS)
 
 
-def _find_untracked_engines(before_pids: set[int], session_start: float, basetemp: str) -> dict[int, dict]:
-    """Any `troupe.cli engine` that (a) wasn't running before this session started, (b) actually
-    started *after* the session began — closing a race around (a): a pid absent from our own
-    start-of-session snapshot only because of snapshot timing, not because the process is new —
-    and (c) has a cwd under a recognized test temp root, so a concurrent, legitimate engine from
-    another worktree's real project (a different pid, a real path) is never touched."""
+def _process_env_value(pid: int, key: str) -> str | None:
+    """The value of environment variable `key` in `pid`'s environment, or None if absent/
+    unreadable. `ps eww -o command=` appends a same-user process's environment after its argv on
+    macOS — the same technique api.py's caller_is_agent already relies on for TROUPE_AGENT."""
+    try:
+        out = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=2).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    m = re.search(rf"(?:^|\s){re.escape(key)}=(\S*)", out)
+    return m.group(1) if m else None
+
+
+def _find_untracked_engines(before_pids: set[int], session_start: float, basetemp: str,
+                            session_pid: int) -> dict[int, dict]:
+    """Any `troupe.cli engine` this session — and *only* this session — spawned, outside the
+    tracked-state-dir mechanism.
+
+    #103 QA cross-session finding: concurrent pytest sessions are routine here (three builders, QA
+    and the merge gate's own `uv run pytest` checks run side by side). "Not in my start snapshot +
+    cwd under a temp root + started after my session began" doesn't identify *which* session
+    spawned an engine — a short session B ending while a longer session A still has a legitimate
+    engine up would see A's engine as new, kill it, and fail. The authoritative check is
+    attribution, not circumstance: TROUPE_EXIT_WITH_PARENT_PID is already set to this session's own
+    pid for every test (`_engine_leak_guard`) and inherited by anything a test spawns via
+    subprocess.Popen, so a candidate whose *own* environment doesn't carry this exact value was
+    never ours, no matter how new or how located it looks. The snapshot/cwd/start-time checks stay
+    as extra filters (cheap, and each closes its own narrow race), never as the only signal."""
     survivors = {}
     for pid in _list_troupe_engine_pids() - before_pids:
+        if _process_env_value(pid, "TROUPE_EXIT_WITH_PARENT_PID") != str(session_pid):
+            continue
         started = _process_start_time(pid)
         # `ps -o lstart=` only has whole-second resolution and truncates down, so a process that
         # started in the same wall-clock second as `session_start` (a real, common case for a
@@ -203,7 +228,7 @@ def _engine_leak_guard(tmp_path_factory):
     # by watching the system's process list) — *before* killing anything, so the failure below
     # reports exactly what leaked rather than what a reap already cleaned up.
     tracked_survivors = {str(d): pid for d in _SPAWNED_STATE_DIRS if (pid := _still_our_engine(d)) is not None}
-    untracked_survivors = _find_untracked_engines(before_pids, session_start, basetemp)
+    untracked_survivors = _find_untracked_engines(before_pids, session_start, basetemp, os.getpid())
 
     for pid in tracked_survivors.values():
         try:

@@ -130,11 +130,13 @@ def test_session_guard_fails_the_run_for_an_engine_leaked_outside_any_fixture(tm
     involved) with exactly that shape and checks two things from the outside: the inner session's
     exit code is non-zero with "REQ-ENG-060" in its output, and no engine survives it.
 
-    The probe also clears TROUPE_EXIT_WITH_PARENT_PID right before spawning: this session's own
-    guard sets it for every test (so a merely-forgotten stop_service call usually self-heals within
-    ~2s on its own), which would otherwise heal the leak before the untracked-pid *fallback* this
-    test exists to exercise ever got a chance to matter — the point here is proving that fallback
-    works even when nothing else would have caught it."""
+    The probe does *not* clear TROUPE_EXIT_WITH_PARENT_PID: the session-wide guard sets it for
+    every test now (fix 1), so a realistically-forgotten stop_service call inherits it same as any
+    other subprocess a test spawns — that's exactly what makes the env-attribution check in (2)
+    able to recognize it as this session's own. The inner session's own teardown check runs
+    synchronously and well within the ~2s self-exit poll interval, so what's actually observed here
+    is the untracked-detection fallback catching (and reaping) the engine itself, not the slower
+    parent-pid self-heal winning the race."""
     leaky_test = Path(__file__).parent / "_leaky_engine_probe.py"
     leaky_test.write_text(
         "def test_leaks_an_engine_outside_any_fixture(monkeypatch):\n"
@@ -142,7 +144,6 @@ def test_session_guard_fails_the_run_for_an_engine_leaked_outside_any_fixture(tm
         "    from pathlib import Path\n"
         "    from troupe import config\n"
         "    from troupe.service import start_service\n"
-        "    monkeypatch.delenv('TROUPE_EXIT_WITH_PARENT_PID', raising=False)\n"
         # /tmp, not pytest's own (deeply-nested) tmp_path: a long AF_UNIX socket path errors out
         # before the engine ever starts, and the original 74-orphan leak was in /tmp too.
         "    tmp = Path(tempfile.mkdtemp(prefix='troupe-service-leaky-', dir='/tmp'))\n"
@@ -176,6 +177,77 @@ def test_session_guard_fails_the_run_for_an_engine_leaked_outside_any_fixture(tm
     for pid in _list_troupe_engine_pids():
         cwd = _process_cwd(pid)
         assert not (cwd and "leaky_project" in cwd), f"leaked engine pid {pid} at {cwd} survived"
+
+
+def test_session_guard_never_kills_another_concurrent_sessions_legitimate_engine():
+    """#103 QA finding: concurrent pytest sessions are routine here (three builders, QA and the
+    merge gate's own `uv run pytest` checks run side by side). Before the env-attribution fix,
+    "not in my snapshot + temp cwd + started after I began" was true for *any* recently-started
+    engine, including a completely different session's legitimate one — a short session B whose own
+    start-of-session snapshot predates another session A's engine, and whose own session doesn't
+    end until *after* A's engine exists, would see it as new, kill it, and fail itself for no
+    reason. QA's exact repro shape: B starts, THEN (~2s later) A starts and spawns a real engine it
+    holds open — B must still be running (not yet at its own teardown) when that happens, or there
+    is nothing for the bug to bite on.
+
+    Session B: starts immediately, then sleeps long enough that its own teardown runs well after
+    A's engine exists. Session A: starts ~2s after B (so A's engine is created *after* B's own
+    start-of-session snapshot, and while B is still mid-sleep), holds the engine open past B's
+    finish, then stops it cleanly. Both must pass, and A's own inner assertion proves the engine it
+    stops is the *same* one it started (one pid) — if B had killed it, this would catch that even if
+    B's own exit code somehow didn't."""
+    probe_a = Path(__file__).parent / "_leaky_engine_probe_a.py"
+    probe_b = Path(__file__).parent / "_leaky_engine_probe_b.py"
+    probe_a.write_text(
+        "import time\n"
+        "def test_session_a_holds_a_legitimate_engine_open(monkeypatch):\n"
+        "    import tempfile\n"
+        "    from pathlib import Path\n"
+        "    from troupe import config\n"
+        "    from troupe.service import start_service, stop_service, service_status\n"
+        "    tmp = Path(tempfile.mkdtemp(prefix='troupe-service-concurrent-a-', dir='/tmp'))\n"
+        "    root = tmp / 'project'\n"
+        "    state = root / '.troupe'\n"
+        "    state.mkdir(parents=True)\n"
+        "    home = tmp / 'home'\n"
+        "    home.mkdir()\n"
+        "    monkeypatch.setenv('HOME', str(home))\n"
+        "    (state / 'troupe.toml').write_text('[project]\\nname=\"A\"\\n[git]\\nautocommit=false\\n')\n"
+        "    (state / 'team.yaml').write_text(\n"
+        "        'agents:\\n  - id: lead\\n    role: lead\\n    provider: local\\n    enabled: false\\n')\n"
+        "    cfg = config.load(root)\n"
+        "    pid = start_service(cfg)['pid']\n"
+        "    time.sleep(6)  # outlast session B's own end\n"
+        "    assert service_status(cfg.root)['pid'] == pid, \\\n"
+        "        'my engine was replaced/restarted while B ran — it must have been killed'\n"
+        "    assert stop_service(cfg, timeout=5)\n"
+    )
+    probe_b.write_text(
+        "import time\n"
+        "def test_session_b_stays_open_a_while_but_spawns_no_engine():\n"
+        "    time.sleep(6)  # still running (not yet at teardown) when A's engine appears at ~2s\n"
+        "    assert 1 + 1 == 2\n"
+    )
+    proc_b = None
+    try:
+        proc_b = subprocess.Popen(
+            [sys.executable, "-m", "pytest", "-q", str(probe_b)],
+            cwd=str(Path(__file__).parent.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        time.sleep(2)  # B's own start-of-session snapshot is taken; now let A's engine appear
+        result_a = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(probe_a)],
+            cwd=str(Path(__file__).parent.parent), capture_output=True, text=True, timeout=30,
+        )
+        assert result_a.returncode == 0, result_a.stdout + result_a.stderr
+        stdout_b, _ = proc_b.communicate(timeout=30)
+        assert proc_b.returncode == 0, stdout_b
+    finally:
+        if proc_b is not None and proc_b.poll() is None:
+            proc_b.kill()
+            proc_b.wait(timeout=5)
+        probe_a.unlink(missing_ok=True)
+        probe_b.unlink(missing_ok=True)
 
 
 def invoke(cfg, *args):

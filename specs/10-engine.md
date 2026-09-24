@@ -26,7 +26,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
-- **REQ-ENG-060 [x]** (#103; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
+- **REQ-ENG-060 [ ]** (#103; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
   never outlives its project. If its project root or `.troupe/` disappears, it stops its runs, removes its pid
   file and exits within a few ticks. This check lives in the heartbeat loop.
   - Test hygiene, same task: a full `uv run pytest` session, even one killed mid-run, leaves no engine whose
