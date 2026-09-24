@@ -204,14 +204,37 @@ class ChatPane(Widget):
         # never caught up once layout did land, since nothing rescrolled after this worker exited).
         # Polling on a real clock instead gives the compositor's own paint cycle room to actually
         # run between checks, which is what a passing live repro needed in practice.
-        last = None
-        for i in range(30):  # ~600ms worst case; converges in a handful of iterations in practice
+        #
+        # Two things had to be true at once, not just one (#104 merge-gate flake, found by direct
+        # instrumentation): (1) layout can grow in more than one wave — max_scroll_y can hold still
+        # long enough to look converged and then grow *again* later (observed live: 103 -> 105,
+        # pause, -> 107) — a single scroll_end() call after declaring victory once just missed the
+        # second wave, since nothing was watching anymore once this worker had already exited; (2)
+        # scroll_end()'s effect on scroll_y isn't instant either. So this now re-snaps to the
+        # bottom on *every* poll, for as long as it keeps polling, and only stops once max_scroll_y
+        # has stopped changing *and* the thread is actually sitting at the bottom right now, both
+        # true continuously for the whole stability window — any later growth wave un-sticks the
+        # window and starts it over, so it can't be fooled by an early plateau the way a one-shot
+        # "call scroll_end() once, after N stable samples" could be. This is a background worker
+        # with no user-facing latency cost either way — the rest of the UI stays responsive
+        # throughout — so a generous ceiling here is free.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 8.0  # generous ceiling even under heavy contention; converges in well under this normally
+        last_max: int | None = None
+        stable_since: float | None = None
+        while loop.time() < deadline:
             await asyncio.sleep(0.02)
-            current = thread.max_scroll_y
-            if current == last and i >= 3:
+            thread.scroll_end(animate=False)
+            now = loop.time()
+            current_max = thread.max_scroll_y
+            settled = current_max == last_max and thread.is_vertical_scroll_end
+            last_max = current_max
+            if not settled:
+                stable_since = None
+            elif stable_since is None:
+                stable_since = now
+            elif now - stable_since >= 0.3:
                 break
-            last = current
-        thread.scroll_end(animate=False)
 
     async def _mount_message(self, thread: VerticalScroll, m: dict) -> bool:
         mid = m.get("id")

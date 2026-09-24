@@ -69,12 +69,17 @@ def push(pane: ChatPane, event: str, **data):
 async def push_and_settle(pilot, pane, event, settle_pauses=5, **data):
     """push() a message.new/agent.state event and wait for its effects to fully land.
 
-    message.new dispatches to a background worker (mount the row, maybe scroll_end()), and
-    scroll_end() itself only *schedules* its scroll via call_after_refresh — neither is guaranteed
-    to have visibly landed after a single pilot.pause(), especially under load. Wait for the
-    worker, then pump a few more refresh cycles to flush any chained deferred callback."""
+    message.new dispatches to a background worker (_handle_new_message), which — only if the
+    thread was already scrolled to the bottom — starts a *second*, nested worker (_settle_scroll)
+    to wait for the new message's layout to land before scrolling (#104: that wait can take real,
+    observable time, since Markdown content lands over more than one layout pass). A single
+    `wait_for_complete()` call only snapshots whichever workers already exist *at that instant* —
+    called right after push(), that's just the outer worker, which returns almost immediately,
+    before it has even spawned the nested one. Looping until no workers remain at all catches
+    however many levels of nested worker there are, however long the last one takes."""
     push(pane, event, **data)
-    await pilot.app.workers.wait_for_complete()
+    while list(pilot.app.workers):
+        await pilot.app.workers.wait_for_complete()
     for _ in range(settle_pauses):
         await pilot.pause()
 
