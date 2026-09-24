@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -15,17 +16,10 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static, TextArea
 
-from ...gui import theme as T
-from ...roles import get_role
+from .. import colors as C
 
-
-def _hex(rgb: tuple[int, int, int, int] | tuple[int, int, int]) -> str:
-    r, g, b = rgb[0], rgb[1], rgb[2]
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-HUMAN_COLOR = _hex(T.ACCENT)
-DIM_COLOR = _hex(T.TEXT_DIM)
+HUMAN_COLOR = C.ACCENT
+DIM_COLOR = C.TEXT_DIM
 
 
 class Composer(TextArea):
@@ -40,8 +34,10 @@ class Composer(TextArea):
         if event.key == "enter":
             event.stop()
             event.prevent_default()
+            # Stays in the box until ChatPane confirms the send actually went through — clearing
+            # here and only here meant a failed/undeliverable send silently lost the human's text
+            # (QA #68 rejection).
             text = self.text
-            self.clear()
             if text.strip():
                 self.post_message(self.Submitted(text))
             return
@@ -61,14 +57,16 @@ class Composer(TextArea):
 class ChatPane(Widget):
     """Chat with the PM: composer, streaming "…is working" line, markdown thread, sticky-to-bottom."""
 
+    PANE_TITLE = "Chat"  # matches TeamPane/TasksPane's convention for the future compact-tabs order
+
     DEFAULT_CSS = f"""
     ChatPane {{
         layout: vertical;
-        border: round {_hex(T.BORDER)};
+        border: round {C.BORDER};
         border-title-align: left;
     }}
     ChatPane:focus-within {{
-        border: round {_hex(T.ACCENT)};
+        border: round {C.ACCENT};
     }}
     ChatPane > #chat-thread {{
         height: 1fr;
@@ -82,7 +80,7 @@ class ChatPane(Widget):
         height: auto;
         max-height: 6;
         margin: 0 1 1 1;
-        border: round {_hex(T.BORDER)};
+        border: round {C.BORDER};
     }}
     .chat-message {{
         height: auto;
@@ -95,11 +93,13 @@ class ChatPane(Widget):
         self.client = client
         self.pm_id: str | None = None
         self.pm_name = "PM"
-        self.pm_color = _hex(get_role("pm").color)
+        self.pm_color = C.role_color("pm")
         self._pm_running = False
+        self._pm_activity = ""
         self._last_sender: str | None = None
-        self._working = False
+        self._working_text = ""
         self._seen_ids: set[int] = set()
+        self._sending = False
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-thread")
@@ -131,6 +131,7 @@ class ChatPane(Widget):
             self._last_sender = m.get("sender")
         thread.scroll_end(animate=False)
         self._pm_running = pm.get("state") == "running"
+        self._pm_activity = pm.get("activity") or ""
         self._refresh_working()
 
     def on_troupe_event(self, event: dict) -> None:
@@ -144,6 +145,7 @@ class ChatPane(Widget):
             a = data.get("agent") or {}
             if a.get("id") == self.pm_id:
                 self._pm_running = a.get("state") == "running"
+                self._pm_activity = a.get("activity") or ""
                 self._refresh_working()
 
     # ── internals ─────────────────────────────────────────────────────────
@@ -172,7 +174,7 @@ class ChatPane(Widget):
         who = "you" if human else self.pm_name
         color = HUMAN_COLOR if human else self.pm_color
         row = Vertical(
-            Static(f"[bold {color}]{who}[/]"),
+            Static(f"[bold {color}]{escape(who)}[/]"),
             Markdown(m.get("body", "")),
             classes="chat-message",
         )
@@ -181,21 +183,39 @@ class ChatPane(Widget):
 
     def _refresh_working(self) -> None:
         working = self._pm_running and self._last_sender == "human"
-        if working == self._working:
+        if working:
+            suffix = f"… {escape(self._pm_activity)}" if self._pm_activity else "…"
+            text = f"[{DIM_COLOR}]{escape(self.pm_name)} is working{suffix}[/]"
+        else:
+            text = ""
+        if text == self._working_text:
             return
-        self._working = working
-        label = self.query_one("#chat-working", Static)
-        label.update(f"[{DIM_COLOR}]{self.pm_name} is working…[/]" if working else "")
+        self._working_text = text
+        self.query_one("#chat-working", Static).update(text)
 
     def on_composer_submitted(self, message: Composer.Submitted) -> None:
         message.stop()
         text = message.text.strip()
-        if not text or not self.pm_id:
+        if not text or self._sending:
             return
+        if not self.pm_id:
+            self.notify("No PM to chat with yet", severity="warning", timeout=5)
+            return
+        self._sending = True
         self.run_worker(self._send(text), exclusive=False)
 
     async def _send(self, text: str) -> None:
+        composer = self.query_one("#chat-composer", Composer)
         try:
             await self.client.call("chat", timeout=5.0, agent=self.pm_id, text=text)
-        except Exception as e:
-            self.notify(f"Couldn't reach the engine: {e}", severity="error", timeout=5)
+        except Exception:
+            self.notify("Not sent — engine offline; your message is still in the box",
+                        severity="error", timeout=5)
+            # Restore only if the box is still empty: the human may already be typing something
+            # else, and stomping on that would just trade one kind of message loss for another.
+            if not composer.text.strip():
+                composer.text = text
+        else:
+            composer.clear()
+        finally:
+            self._sending = False
