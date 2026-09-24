@@ -29,15 +29,39 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - `troupe restart` = stop + start. It is used after reinstalling troupe.
   - `troupe status` first prints the service state (`running` with pid, uptime, heartbeat age and version,
     `stopped`, or `stale`) and exits 0 if running, 1 otherwise.
-  - `troupe up` and `troupe status` warn when the running service's version differs from the installed CLI's
-    ("service is 0.1.0, installed 0.2.0 — run `troupe restart`").
+  - `troupe reload` = graceful reload (REQ-ENG-009). `troupe status` shows the running service's version; a
+    newer installed version is picked up automatically by ENG-009 (this replaces the earlier mismatch warning).
   - The GUI has a **Stop team** action (with confirmation) that goes through the `commands` table.
 - **REQ-ENG-007 [ ]** (#24) The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
   rotated at 10 MB and keeping 3 files. Log lines identify agents by handle (REQ-COM-005).
 - **REQ-ENG-008 [ ]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
-- Out of scope: auto-start at login (launchd) and one machine-wide service for all projects.
+- **REQ-ENG-009 [ ]** (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
+  - Triggered by `troupe reload`, SIGHUP to the service, or automatically when the installed troupe changes: the
+    service checks about every 30 s for a new version or changed package files (e.g. after
+    `uv tool install --reinstall`).
+  - Drain: no new runs start (chat included; it stays queued). Runs in flight, and a merge-gate check in progress
+    (ENG-040), finish normally, up to `[service] drain_timeout` (default 600 s). After the timeout the remaining runs
+    are stopped and marked `interrupted` with their mail re-queued (ENG-004).
+  - Then config is re-read and the engine re-execs on the currently installed code. The lock, pid file and DB carry
+    over, and the heartbeat resumes within 10 s of the drain ending. GUIs stay attached and reconnect by themselves.
+  - An event and a log line record it ("Engine reloaded: v0.1.0 → v0.2.0", or "config reload" if the version is
+    unchanged). A reload request during a reload is ignored.
+  - Test: while draining nothing launches, in-flight runs complete, the timeout interrupts, and the version-change
+    detector fires once per change.
+- **REQ-ENG-042 [ ]** (#28) Crash supervision.
+  - The service is a small supervisor process that holds the lock and runs the engine as a child. If the engine
+    exits unexpectedly (non-zero, or killed, including `kill -9`), the supervisor restarts it with backoff
+    (1 s, 2 s, 4 s … max 60 s), and recovery (ENG-004) marks its runs interrupted.
+  - Crash loop: more than 5 restarts in 10 min → stop restarting and record the reason in kv and `engine.log`.
+    `troupe status` shows `crashed` and the GUI shows it (REQ-GUI-029). `troupe up` or Start team clears it.
+  - `troupe stop` and reload are not crashes. If the supervisor itself dies, the engine exits within 5 s, so no
+    unlocked orphan engine can run beside a new one.
+  - No launchd/login items are installed: auto-start at login stays out of scope. Test: backoff sequence and the
+    crash-loop limit.
+- Out of scope: auto-start at login (launchd) and one machine-wide service for all projects (human chose one service
+  per project, with one GUI attached to all of them, REQ-GUI-040).
 
 ## Wake-ups (who runs, when, why)
 Each agent run is one session of a backend CLI. Agents never loop; they are woken with a reason.
@@ -177,8 +201,6 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
-- One service per project (the current default, decided by pm when the human didn't answer) vs one machine-wide
-  service. The human can still choose.
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
@@ -189,3 +211,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-23 — service process model: ENG-001/003 rewritten, new ENG-006/007/008. Default roster: ENG-041 (the
   roster open question is resolved).
 - 2026-09-23 — tagged: service → #24, roster → #20.
+- 2026-09-23 — human chose one service per project (open question closed). New ENG-009 graceful/auto reload and
+  ENG-042 crash supervision (#28). ENG-006 version warning replaced by auto reload.
