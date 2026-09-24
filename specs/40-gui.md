@@ -67,7 +67,48 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered. (Title part: #12. Icon and dock badge: not yet tasked.)
 
-## Changelog
+## Stage — ambient full-screen view of the team at work (#22; design: `design/stage.md`, #21)
+Human request: "a compelling background visualization so I can just watch you guys work". Stage is for watching,
+not clicking. These requirements define *what* it shows and *when*. `design/stage.md` defines how it looks.
+- **REQ-GUI-030 [ ]** Entering and leaving Stage.
+  - A "Stage" button on Pulse and ⌘⇧F (ignored while a text input has focus) open Stage: the top bar, sidebar
+    and Needs-you panel are hidden and the window goes borderless full-screen on its current monitor.
+  - Esc (or ⌘⇧F again) returns to Pulse and restores the previous window size and position.
+  - `troupe watch` opens a GUI straight into Stage, attached to the running engine. It never starts an engine: with
+    none running it shows Stage with the "Engine offline" state (REQ-ENG-005). Esc from `troupe watch` goes to the
+    normal GUI.
+  - `TROUPE_TAB=Stage` (with `TROUPE_SHOT`) renders Stage for screenshots. `TROUPE_STAGE_DEMO=1` seeds synthetic
+    comets, task cards and an open question so one screenshot shows every element.
+- **REQ-GUI-031 [ ]** Agents: every enabled agent is a node around a central "YOU" node, in its role color.
+  - Idle, working, parked (owes work, REQ-GUI-002) and throttled or rate-limited (REQ-ENG-016) are visually
+    distinct. A working node shows its current activity (e.g. tool name) as a short label.
+  - Adding, removing or disabling agents (REQ-ENG-019) adds or removes nodes with an animation, not a jump.
+- **REQ-GUI-032 [ ]** Messages are comets that travel from sender to recipient, labeled with the subject (or the
+  first ~40 characters of the body if there is no subject).
+  - Human chat and questions travel to or from YOU. A fan-out message (`to=role` or `team`) splits into one comet
+    per recipient, leaving the sender together. System mail from the engine is not a comet; it goes to the ticker.
+  - Only messages created while Stage is open animate (plus the last 5 s on opening). With more than 12 comets in
+    flight, further ones on the same edge merge into one comet with a count ("×4").
+  - Each comet stays on screen long enough to read its label (≥1.5 s).
+- **REQ-GUI-033 [ ]** Tasks are cards that move with their lifecycle (REQ-ENG-030..040):
+  - `ready` → flies to the assignee when it goes `in_progress` and stays attached to that node showing id + title.
+  - `review` → flies to the reviewer. Merged (`done` via merge) → a burst effect and the card leaves.
+  - Rejected, merge conflict, or checks failed (REQ-ENG-040) → a visibly different "bounce" back to the builder.
+  - `blocked` → the card is marked blocked on its node.
+  - At most 1 card per agent is attached; extra in-flight tasks show as a count.
+- **REQ-GUI-034 [ ]** While ≥1 question is open, YOU glows gold and shows the count. The glow breathes slowly and
+  never strobes (≤1 cycle per 2 s). It fades within 1 s of the last question being answered or dismissed.
+- **REQ-GUI-035 [ ]** A slow ticker shows notable events: merges, rejections, new questions and answers, new
+  decisions, throttle or rate-limit changes, engine offline. It holds the last 5, newest first.
+- **REQ-GUI-036 [ ]** Quiet mode: when no agent has worked and nothing has moved for 60 s, Stage dims and the whole
+  scene drifts slowly (burn-in protection for an always-on second monitor). Any new activity restores full
+  brightness within 0.5 s.
+- **REQ-GUI-037 [ ]** Performance: 60 fps while anything is animating or an agent is working, 20 fps when quiet
+  (REQ-GUI-006). No blocking I/O in draw code: Stage reads only `gui/data.py` snapshots. The mapping from snapshot
+  changes to comets, cards and ticker entries is a pure module, unit-tested without raylib (fan-out split, the
+  12-comet cap, the reject bounce and the question glow state).
+
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for GUI-020/021/022/023/024/027 (from backlog #1,#5,#6,#7,#11,#12).
 - 2026-09-23 — GUI-021: agents are edited in team.yaml, budget in troupe.toml.
+- 2026-09-23 — Stage REQ-GUI-030..037 (human request via pm; #22, design #21).
