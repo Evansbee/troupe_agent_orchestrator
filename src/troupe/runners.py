@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import time
+from datetime import datetime
 import os
 import re
 import signal
@@ -44,6 +47,60 @@ class RunResult:
     error: str = ""
     extra: dict = field(default_factory=dict)
 
+
+
+def limit_reset(info: dict, at: float) -> float:
+    """Normalize provider reset timestamps, falling back to fifteen minutes."""
+    for key in ("resetsAt", "reset_at", "resetAt", "resets_at", "reset_time"):
+        value = info.get(key)
+        if value is None:
+            continue
+        try:
+            stamp = float(value)
+            if stamp > 100_000_000_000:
+                stamp /= 1000
+        except (ValueError, TypeError):
+            try:
+                stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+        if math.isfinite(stamp):
+            return stamp
+    for key in ("retry_after", "retry_after_seconds"):
+        try:
+            seconds = float(info[key])
+            if math.isfinite(seconds) and seconds >= 0:
+                return at + seconds
+        except (KeyError, ValueError, TypeError):
+            pass
+    for value in info.values():
+        if isinstance(value, dict):
+            reset = limit_reset(value, at)
+            if reset != at + 900:
+                return reset
+    text = " ".join(str(v) for v in info.values() if isinstance(v, str))
+    iso = re.search(r"(?:reset\w*|try again)(?: at| on| in)?[: ]+(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)", text, re.I)
+    if iso:
+        try:
+            return datetime.fromisoformat(iso[1].replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    delay = re.search(r"(?:try again|retry|resets?) in\s+(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?|s|m|h)\b", text, re.I)
+    if delay:
+        return at + float(delay[1]) * {"s": 1, "m": 60, "h": 3600}[delay[2][0].lower()]
+    return at + 900
+
+
+def usage_limit(error: object) -> bool:
+    text = json.dumps(error) if not isinstance(error, str) else error
+    return bool(re.search(r"rate[ _-]?limit|usage[ _-]?limit|usage_limit_reached|"
+                          r"too many requests|hit your limit|quota.{0,30}(?:exceed|exhaust)", text, re.I))
+
+
+def report_limit(state: dict, info: dict, emit: Emit) -> None:
+    reset = limit_reset(info, time.time())
+    state["limit_until"] = max(state.get("limit_until", 0), reset)
+    emit("backend_limit", json.dumps({"until": state["limit_until"]}))
 
 def child_env(cfg: Config, agent_id: str) -> dict[str, str]:
     env = dict(os.environ)
@@ -140,7 +197,7 @@ class Runner:
 class ClaudeRunner(Runner):
     async def run(self, spec: RunSpec, emit: Emit) -> RunResult:
         res = await self._run_once(spec, emit, spec.session_id)
-        if not res.ok and spec.session_id and not self.cancelled and not res.extra.get("had_output"):
+        if not res.ok and spec.session_id and not self.cancelled and not res.extra.get("had_output") and not res.extra.get("limit_until"):
             emit("info", "resume failed — starting a fresh session")
             res = await self._run_once(spec, emit, None)
         return res
@@ -192,7 +249,10 @@ class ClaudeRunner(Runner):
                         elif c:
                             emit("result", short(c, 300))
             elif t == "rate_limit_event":
-                emit("ratelimit", json.dumps(o.get("rate_limit_info", {})))
+                info = o.get("rate_limit_info") or {}
+                emit("ratelimit", json.dumps(info))
+                if info.get("status") and info["status"] != "allowed":
+                    report_limit(state, info, emit)
             elif t == "result":
                 state["sid"] = o.get("session_id") or state["sid"]
                 state["final"] = o.get("result") or state["last_text"]
@@ -202,22 +262,26 @@ class ClaudeRunner(Runner):
                                                                     "cache_creation_input_tokens"))
                 state["error"] = bool(o.get("is_error"))
                 if state["error"]:
+                    if usage_limit(o):
+                        report_limit(state, o, emit)
                     emit("error", short(o.get("result") or o.get("subtype") or "error", 400))
 
         rc, err = await self._stream(args, spec, spec.prompt, on_json)
+        if (rc != 0 or state["error"]) and usage_limit(err):
+            report_limit(state, {"message": err}, emit)
         ok = rc == 0 and not state["error"] and not self.cancelled
         if rc != 0 and err.strip() and not self.cancelled:
             emit("error", short(err, 400))
         return RunResult(ok=ok, final_text=state["final"], session_id=state["sid"], cost=state["cost"],
                          tokens=state["tokens"], error="" if ok else (err.strip()[-400:] or "claude failed"),
-                         extra={"had_output": state["had_output"]})
+                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until")})
 
 
 # ── Codex ────────────────────────────────────────────────────────────────────
 class CodexRunner(Runner):
     async def run(self, spec: RunSpec, emit: Emit) -> RunResult:
         res = await self._run_once(spec, emit, spec.session_id)
-        if not res.ok and spec.session_id and not self.cancelled and not res.extra.get("had_output"):
+        if not res.ok and spec.session_id and not self.cancelled and not res.extra.get("had_output") and not res.extra.get("limit_until"):
             emit("info", "resume failed — starting a fresh session")
             res = await self._run_once(spec, emit, None)
         return res
@@ -270,6 +334,8 @@ class CodexRunner(Runner):
                 elif it_t == "web_search" and t == "item.started":
                     emit("tool", f"web_search  {short(it.get('query', ''), 120)}")
                 elif it_t == "error":
+                    if usage_limit(it):
+                        report_limit(state, it, emit)
                     msg = it.get("message", "")
                     if "hooks" not in msg:  # benign config warning
                         emit("error", short(msg, 300))
@@ -278,15 +344,19 @@ class CodexRunner(Runner):
                 state["tokens"] += int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
             elif t in ("turn.failed", "error"):
                 state["failed"] = True
+                if usage_limit(o):
+                    report_limit(state, o, emit)
                 emit("error", short(json.dumps(o.get("error") or o.get("message") or o), 400))
 
         rc, err = await self._stream(args, spec, prompt, on_json)
+        if (rc != 0 or state["failed"]) and usage_limit(err):
+            report_limit(state, {"message": err}, emit)
         ok = rc == 0 and not state["failed"] and not self.cancelled
         if not ok and err.strip() and not self.cancelled:
             emit("error", short(err, 400))
         return RunResult(ok=ok, final_text=state["final"], session_id=state["sid"], tokens=state["tokens"],
                          error="" if ok else (err.strip()[-400:] or "codex failed"),
-                         extra={"had_output": state["had_output"]})
+                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until")})
 
 
 # ── Local OpenAI-compatible model with a native tool loop ────────────────────

@@ -13,7 +13,7 @@ from pathlib import Path
 from . import gitops
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
-from .runners import RunSpec, make_runner, Runner
+from .runners import RunSpec, make_runner, Runner, usage_limit, limit_reset
 from .store import OPEN_STATUSES, Store, now
 from .team import ago, fmt_message, fmt_task_full, fmt_task_line
 
@@ -224,6 +224,13 @@ class Engine:
                            f"complete_task again.\n\n{out[-1200:]}",
                            subject=f"#{t['id']} merge conflict", task_id=t["id"], kind="system")
 
+    def backend_limited(self, backend: str) -> bool:
+        return (self.store.kv_get(f"limit.{backend}", 0) or 0) > now()
+
+    def record_limit(self, backend: str, until: float) -> None:
+        key = f"limit.{backend}"
+        self.store.kv_set(key, max(self.store.kv_get(key, 0) or 0, until))
+
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:
         s = self.store
@@ -233,7 +240,7 @@ class Engine:
         review_queue = [t for t in s.tasks(("review",))]
         for a in self.cfg.agents:
             row = db_agents.get(a.id)
-            if a.id in self.running or not row or not row["enabled"]:
+            if a.id in self.running or not row or not row["enabled"] or self.backend_limited(a.backend):
                 continue
             fails, retry_after = self.failures.get(a.id, (0, 0))
             if t_now < retry_after:
@@ -270,6 +277,8 @@ class Engine:
     # ── running an agent ──────────────────────────────────────────────────
     async def launch(self, w: Wake) -> None:
         a, s = w.agent, self.store
+        if self.backend_limited(a.backend):
+            return
         self.pokes.discard(a.id)
         task = w.task
         role = get_role(a.role)
@@ -302,8 +311,14 @@ class Engine:
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
                    task: dict | None) -> None:
         a, s = spec.agent, self.store
+        limited = False
 
         def emit(kind: str, text: str) -> None:
+            nonlocal limited
+            if kind == "backend_limit":
+                limited = True
+                self.record_limit(a.backend, json.loads(text)["until"])
+                return
             if kind == "ratelimit":
                 try:
                     s.kv_set("claude_ratelimit", {**json.loads(text), "at": now()})
@@ -322,7 +337,13 @@ class Engine:
             emit("error", traceback.format_exc()[-800:])
         finally:
             self.running.pop(a.id, None)
-        status = "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
+        if res.extra.get("limit_until"):
+            limited = True
+            self.record_limit(a.backend, res.extra["limit_until"])
+        elif not res.ok and a.backend in ("claude", "codex") and usage_limit(res.error):
+            limited = True
+            self.record_limit(a.backend, limit_reset({"message": res.error}, now()))
+        status = "limited" if limited else "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])
         row = s.agent(a.id) or {}
@@ -333,6 +354,11 @@ class Engine:
             fields["session_runs"] = (row.get("session_runs") or 0) + 1
         s.set_agent(a.id, **fields)
 
+        if limited:
+            s.mark_unread([m["id"] for m in msgs])
+            reset = time.strftime("%H:%M", time.localtime(s.kv_get(f"limit.{a.backend}")))
+            s.event(a.id, "run", f"{a.backend.title()} limited until {reset}", significant=False)
+            return
         if not res.ok and not runner.cancelled:
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
