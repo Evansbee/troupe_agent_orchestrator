@@ -10,6 +10,8 @@ from ..config import Config
 from ..roles import get_role
 from ..store import OPEN_STATUSES, Store, HandleBook
 
+RUNS_PAGE = 200  # initial fetch depth per agent, and the size of each "load older" page
+
 
 class Data:
     REFRESH = 0.35
@@ -38,6 +40,10 @@ class Data:
         self._max_q = -1
         self.docs: list[Path] = []
         self._docs_at = 0.0
+        self._runs_cache: dict[str, list[dict]] = {}  # agent_id -> loaded runs, newest first
+        self._runs_limit: dict[str, int] = {}  # agent_id -> current fetch depth (grows on "load older")
+        self._runs_exhausted: dict[str, bool] = {}  # agent_id -> True once its oldest run is loaded
+        self._runs_at: dict[str, float] = {}  # agent_id -> last fetch time, for the same REFRESH throttle
 
     def role_of(self, agent_id: str):
         a = self.agent_by_id.get(agent_id)
@@ -147,6 +153,37 @@ class Data:
 
     def chat_thread(self, agent_id: str) -> list[dict]:
         return self.store.chat_thread(agent_id)
+
+    def _fetch_runs_page(self, agent_id: str, limit: int) -> None:
+        """Fetch `limit` runs, over-fetching by one to tell "exactly `limit` runs total" apart from
+        "more than `limit` exist" without a separate COUNT query — LIMIT alone can't distinguish
+        those, and getting that wrong either strands the last page behind a dead "Load older" button
+        or (worse) hides one that would have reached genuinely older runs."""
+        rows = self.store.runs(agent_id, limit=limit + 1)
+        self._runs_exhausted[agent_id] = len(rows) <= limit
+        self._runs_cache[agent_id] = rows[:limit]
+        self._runs_at[agent_id] = time.time()
+
+    def runs_for(self, agent_id: str) -> list[dict]:
+        """Cached run history for an agent, newest first. Re-fetched at the same cadence as
+        refresh() so new runs show up, without hitting the DB every draw frame. Starts at the most
+        recent RUNS_PAGE runs; call load_older_runs() to extend it with another page of history so
+        no run — however old — is ever permanently out of reach (see REQ-GUI-022)."""
+        now = time.time()
+        limit = self._runs_limit.setdefault(agent_id, RUNS_PAGE)
+        if agent_id not in self._runs_cache or now - self._runs_at.get(agent_id, 0) >= self.REFRESH:
+            self._fetch_runs_page(agent_id, limit)
+        return self._runs_cache[agent_id]
+
+    def has_more_runs(self, agent_id: str) -> bool:
+        self.runs_for(agent_id)  # ensure a page has actually been fetched before answering
+        return not self._runs_exhausted[agent_id]
+
+    def load_older_runs(self, agent_id: str) -> None:
+        """Extend the cached history for an agent by another page of older runs."""
+        limit = self._runs_limit.get(agent_id, RUNS_PAGE) + RUNS_PAGE
+        self._runs_limit[agent_id] = limit
+        self._fetch_runs_page(agent_id, limit)
 
     def scan_docs(self) -> list[Path]:
         root = self.cfg.root
