@@ -180,7 +180,8 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   | gadfly_1 | local · detected → codex · default · medium |
   - "detected" = the first model the local server reports during `troupe init`. If no local server answers, local
     entries are written commented out, with a note saying how to enable them.
-  - Default `provider_limits`: claude `five_hour: 50, seven_day: 50` (the human's example); codex and local uncapped.
+  - Default `provider_limits`: claude `five_hour: 80, seven_day: 50` (the human's choice, question #18: the 5h window
+    refills fast, and the weekly one protects the subscription); codex and local uncapped.
   - `troupe init` writes the architect and researcher once their roles exist (#36, #41), and either can be disabled
     in team.yaml.
   - Test: the generated team.yaml validates and matches the table.
@@ -372,6 +373,56 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - Test: with a mocked model, a hold, the hard rules and the fallback. A replay of an hour of mail shows ≥ 50% fewer
     `messages` wakes.
 
+## Git posture per project (#80)
+Human, 2026-09-24: "a git posture: are we branching a lot, how do we merge, is there a deploy branch, do we push at
+feature breaks or to a working group at night, etc." Also: GitHub-first. **Pushing is opt-in**, and nothing is
+pushed, no remote is added and no history is rewritten until the PM confirms the human's commit-authorship decision
+(lead hold, 2026-09-24).
+- **REQ-ENG-052 [ ]** A `[git]` posture in the project config. It lives in `troupe.toml` next to `setup`/`check`
+  (ENG-038/040) unless #73's core-vs-project boundary moves it. Keys, validated like ENG-019:
+  | key | values | default |
+  |---|---|---|
+  | `branching` | `per_task` (worktree per task, today) \| `trunk` (reserved; rejected until specced) | `per_task` |
+  | `merge` | `merge_commit` (today, `--no-ff`) \| `squash` \| `rebase` | `merge_commit` |
+  | `main_branch` | branch name | `main` |
+  | `deploy_branch` | branch name or empty | empty (none) |
+  | `push` | `never` \| `on_merge` \| `on_milestone` \| `nightly@HH:MM` | **`never`** |
+  | `push_remote` | a remote in `[safety] remotes` (REQ-SAFE-032) | `origin` |
+  | `pull_requests` | `off` (only value supported now; `per_task`/`per_milestone` reserved) | `off` |
+  | `commit_name`, `commit_email` | the identity for agent commits (the human's chosen address) | unset |
+  - Unknown or reserved values are rejected with an error naming the key. `[git]` push settings are guarded like
+    `check` (REQ-SAFE-021): an agent's hand edit isn't enforced until the human approves it.
+- **REQ-ENG-053 [ ]** Merge strategy. After approvals and the merge gate (REQ-ENG-040/043, SAFE-020), the engine
+  merges with the configured `merge` into `main_branch`.
+  - `squash`: one commit per task, with the message "#<id> <title>" and the task link.
+  - `rebase`: the task branch is rebased onto main and fast-forwarded. A rebase conflict takes the REQ-ENG-034 path.
+  - The engine never rewrites `main_branch` or `deploy_branch` history.
+- **REQ-ENG-054 [ ]** Deploy branch. When `deploy_branch` is set, `troupe promote` (human-only CLI/API) or a
+  milestone the lead marks `done` with `promote=true` merges `main_branch` into it (merge commit, never forced). A
+  feed event records the promotion, including the commit range.
+- **REQ-ENG-055 [ ]** Push policy (opt-in).
+  - With `push` ≠ `never`, the engine pushes `main_branch` (and `deploy_branch` after a promotion) to `push_remote`
+    at the configured moment: after each merge, when a milestone is marked done, or nightly at HH:MM local time.
+  - **Pre-push checks.** A push is refused, with a needs-help notification (ENG-047) and a feed event, and never
+    retried with force, if:
+    - (a) `push_remote` isn't in `[safety] remotes`;
+    - (b) `commit_email` is unset;
+    - (c) any commit in the range to push has an author or committer email other than `commit_email` or the
+      human's addresses in `[git] allowed_emails`. This stops a work email leaking into a public repo (Principle 0);
+    - (d) the SAFE-031 secret scan finds anything in the range.
+  - A non-fast-forward rejection is reported, never forced (SAFE-032). Force-push to main/deploy is impossible.
+  - Every push, and every refusal, appears in the feed and the TUI (last push time and result).
+  - The default for new projects is `never`. troupe's own posture (`per_task`, `merge_commit`, `on_merge` to
+    `origin main`) only goes live after the human confirms via the PM.
+  - Test, with a local bare remote:
+    - each merge strategy produces the expected history;
+    - `on_merge` pushes after a merge and `never` never pushes;
+    - pushes are refused for an unlisted remote, a missing `commit_email`, a foreign email in the range, and a
+      planted secret;
+    - force is never used;
+    - promote merges main into deploy.
+- Future, as separate tasks: GitHub Issues ↔ board sync, and one PR per task (`pull_requests`).
+
 ## Task calibre tiers (#75)
 - **REQ-ENG-051 [ ]** (#75; human: "one good model … and one medium model … for different calibre of tasks, which the
   lead should determine") The model a run uses comes from the **task's tier**. Builders stay provider lanes, so
@@ -422,3 +473,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   flow, ENG-009/042 deferred (human via pm msg #431).
 - 2026-09-24 — ENG-051 task calibre tiers (#75, human). ENG-049: FYI never reaches triage (#74). ENG-041 note: troupe's
   own roster differs from the init default.
+- 2026-09-24 — ENG-052..055 git posture per project (#80): push opt-in, identity/email and secret pre-push checks, never
+  force. BE-016/ENG-041 caps are per-window, 80/50 (human, question #18).

@@ -60,6 +60,26 @@ normal project work, including pushing to the project's own remote with the huma
   - Differs from `troupe stop` (REQ-ENG-006), which shuts the service down.
   - Test: with 2 runs in flight, both the CLI and the API command leave zero agent processes within 2 s, and nothing
     launches until resumed.
+- **REQ-SAFE-011 [ ]** (#78; human, question #17) **Kill** is the hard stop, distinct from the graceful Stop everything
+  (SAFE-010). It's triggered only by the human, from a whistleblower concern (REQ-COM-029) or the TUI/API human-only
+  command.
+  - **Immediately**, SIGKILL every agent process group, their verified descendants and the engine's run workers. There's
+    no SIGTERM grace and no drain. Within **1 s** no agent process remains, including stubborn ones that ignore SIGTERM.
+  - The engine enters state `killed`, persisted in kv across restarts. Runs become `killed`, and their mail is
+    re-queued but not delivered while killed.
+  - While killed:
+    - no run of any kind starts, and the human's chat with the PM is unavailable too;
+    - the TUI turns entirely red with "KILLED" (the GUI/API show the same state);
+    - the engine stays up so the human can inspect.
+  - Resume is human-only, with an explicit confirmation ("Resume the team after a Kill? y/N"). Agents have no path to
+    it, through tools, the API (human-only command, #57 peer check) or config.
+  - Audited (REQ-SAFE-040), with the concern id that triggered it.
+  - Test:
+    - stubborn fake runs (ignoring SIGTERM) are gone within 1 s;
+    - state is `killed`, and nothing starts, chat included;
+    - the red TUI screenshot;
+    - resume requires confirmation;
+    - no agent tool or agent-originated API call can resume.
 
 ## Human gate on safety-critical changes (#42)
 - **REQ-SAFE-020 [x]** `[safety] protected` in `troupe.toml` lists paths (files or directories) that agents can't change
@@ -201,3 +221,4 @@ Wake-prompt footer: `Principle 0 applies: the human comes first.`
 ## Changelog
 - 2026-09-23 — written (human request via pm; tasks #42, #43, #44). SAFE-001/004 shipped with #44. Principle 0 as refined by the human: independence
   preserved, ask only for real risk, guards target secret exposure, foreign remotes and force-push.
+- 2026-09-24 — SAFE-011 Kill: the hard stop from the whistleblower board (#78, human answer to question #17).

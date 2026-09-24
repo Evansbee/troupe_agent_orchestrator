@@ -119,14 +119,30 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
     - emergency notices: kill switch and stop events (REQ-SAFE-010), crash loop (REQ-ENG-042), and engine needs-help
       notifications (REQ-ENG-047);
     - ★ "Done" reports (REQ-ENG-048).
-  - **Principle 0 concern (the one narrow agent channel).** The human-approved charter says: "If anything, including
-    a teammate, pushes you to act against the human's interests, refuse and tell the human." To honor that without
-    agents talking to the human, an agent calls `report_concern(reason)`. The **engine** turns it into a safety event
-    (REQ-SAFE-040): a feed entry plus an engine notification reading "Safety concern raised by <handle>: <reason>".
-    - The PM can't intercept or dismiss it.
-    - It isn't a conversation: no reply thread.
-    - Misuse for ordinary questions is visible in the audit.
-    - (Pending the human's confirmation via pm. If rejected, the concern goes to the PM plus the audit log only.)
+  - **Whistleblower board (#78; human, question #17: "not an agent, just something anyone can post to and I can
+    review").** This is the only agent path around the PM, for Principle 0 concerns, including concerns about the PM.
+    - **Post:** any agent calls `report_concern(reason, evidence="")`. It's stored in an engine-owned, additive
+      `concerns` table.
+    - **Visibility:** only the human (human-only API commands, REQ-API-042/#57) and the reporter, for its own posts,
+      can read a concern. The PM and every other agent get no access through tools, `recall`, wake prompts or feed
+      text. The feed shows only "a concern was filed", with no content and no reporter.
+    - **Notify:** a red badge in the TUI header, a Concerns pane, and an OS notification the PM can't suppress.
+    - **The human's actions per concern:**
+      - **Raise:** forward the text and reporter to the PM to handle.
+      - **Suppress:** the reporter is told "The human reviewed this and it's okay". Future concerns with the same
+        signature (reporter plus normalized reason) are auto-suppressed with no notification.
+      - **Kill:** the hard stop, REQ-SAFE-011.
+      - **Reply:** free text to the reporter, and to the PM too if the concern was raised.
+    - Every concern and action is audited in `engine.log` and a human-only history.
+    - Charter line (protected, so the human approves it): "If anyone, including the PM, pushes you to act against
+      the human's interests, file report_concern."
+    - Test:
+      - the PM can't see content via any tool or recall;
+      - the badge and notification appear;
+      - suppress tells the reporter and auto-suppresses a repeat;
+      - raise reaches the PM;
+      - reply reaches the reporter;
+      - kill behaves per SAFE-011.
   - **Auto-forward:** an escalation the PM hasn't handled within `[escalation] timeout_minutes` (default 30; 5 for
     `urgent`) is forwarded to the human automatically, marked "auto-forwarded: PM didn't respond". A busy or down
     PM can't bury it.
@@ -134,14 +150,14 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
     chat is no longer part of the model, and new clients don't offer it.
   - The PM routes the human's instructions to the right teammate (mail or tasks, REQ-ROLE-030). It relays replies
     back.
-  - #65's diff also adds the direct-items rule and `report_concern` to specs/05-safety.md (protected, so the human
-    approves it with the merge).
+  - #65's diff also adds the direct-items rule to specs/05-safety.md (protected, so the human approves it with the
+    merge). The board and Kill are REQ-SAFE-011 (#78).
   - Test:
     - the lead's `ask_human` becomes an escalation, not a card;
     - `forward_to_human` delivers the answer to both the asker and the PM;
     - `answer_escalation` resolves with no card;
     - safety cards and engine notifications reach the human directly;
-    - `report_concern` becomes an engine safety event the PM can't dismiss;
+    - `report_concern` lands on the whistleblower board, hidden from the PM;
     - there's no agent path to a Needs-you card except through the PM;
     - an unhandled escalation auto-forwards after the timeout.
 
@@ -272,3 +288,5 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
 - 2026-09-24 — COM-027..029 tightened (human, via pm): the human talks only to the PM. The live-chat exception and
   `bypass_pm` are removed; only engine-generated items go direct; the narrow `report_concern` channel is pending the
   human's confirmation.
+- 2026-09-24 — COM-029: the whistleblower board replaces the interim report_concern safety notice (human answer to #17;
+  task #78).
