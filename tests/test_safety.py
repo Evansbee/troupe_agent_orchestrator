@@ -294,8 +294,10 @@ def test_agent_roster_cannot_claim_human_identity():
 def test_hook_blocks_git_syntax_bypasses_with_local_remotes(project, attack):
     import subprocess
     cfg, store = project
-    origin = cfg.root.parent / 'allowed.git'
-    foreign = cfg.root.parent / 'foreign.git'
+    # Named per-attack: cfg.root.parent is the pytest session's shared tmp root, and a bare repo
+    # left behind by one parametrized case must not leak refs into the other's.
+    origin = cfg.root.parent / f'allowed-{attack}.git'
+    foreign = cfg.root.parent / f'foreign-{attack}.git'
     for path in (origin, foreign):
         subprocess.run(['git', 'init', '--bare', str(path)], check=True, capture_output=True)
     gitops.git(cfg.root, 'remote', 'add', 'origin', str(origin))
