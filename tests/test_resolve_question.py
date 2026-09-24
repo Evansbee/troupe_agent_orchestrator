@@ -107,3 +107,36 @@ def test_mcp_tool_is_registered(project):
     tool = next(t for t in asyncio.run(server.list_tools()) if t.name == "resolve_question")
     assert "question_id" in tool.input_schema["properties"]
     assert api.resolve_question in api.tools()
+
+
+def test_dismissed_question_and_explicit_inbox_resolution(project):
+    cfg, store = project
+    api = TeamAPI(cfg, store, "pm")
+    dismissed = store.ask("pm", "Ignore?")
+    store.answer(dismissed, "use judgment", status="dismissed")
+    assert api.resolve_question(dismissed, "replace").startswith("ERROR:")
+    qid = store.ask("pm", "Another?")
+    before = len(store.messages())
+    assert not api.resolve_question(qid, "yes", via="inbox").startswith("ERROR:")
+    assert len(store.messages()) == before
+    assert store.one("SELECT answered_via FROM questions WHERE id=?", qid)["answered_via"] == "inbox"
+
+
+def test_concurrent_answers_only_resolve_once(project):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    _, store = project
+    qid = store.ask("pm", "Race?")
+    barrier = Barrier(2)
+    original_one = store.one
+    def synchronized_one(sql, *args):
+        result = original_one(sql, *args)
+        barrier.wait(timeout=5)
+        return result
+    store.one = synchronized_one
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda answer: store.answer(qid, answer), ["first", "second"]))
+    assert sorted(results) == [False, True]
+    assert len(store.unread("pm")) == 1
+    assert len([e for e in store.events() if e["kind"] == "answer"]) == 1
