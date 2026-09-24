@@ -248,7 +248,7 @@ reuse "needs you" for a card whose only button is "OK".
 | `check_failed` | "*&lt;assignee&gt;*'s task failed its check" | task title | **Open task** (primary) | `1` Open task | `ORANGE` |
 | `backoff` / `stalled` / `timeout` | "*&lt;agent&gt;* needs a nudge" | the notifier's own text (already agent-facing, e.g. "Repeated runs failed; retry backoff reached its cap") | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `ORANGE` |
 | `crash_loop` | "*&lt;agent&gt;* keeps crashing" | same notifier text | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `RED` (worse than a plain backoff) |
-| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited, back in 4h" | **OK** | `1` OK | `ORANGE` |
+| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited · resets in 4h" | **OK** | `1` OK | `ORANGE` |
 | `throttle` | *(heads-up title)* | the throttle reason (existing text) | **OK** | `1` OK | `ORANGE` |
 | `providers` | *(heads-up title)* | "All of &lt;agent&gt;'s providers are unavailable" (existing text) | **OK** | `1` OK | `RED` (strictly worse than one rate-limited provider, matches `pulse.md`'s severity ordering) |
 | `concern` | "troupe needs you" (no reporter, no agent name — see below) | "An agent raised a concern. Run `troupe concerns` to read it." (existing text, unchanged) | **Got it** | `1` Got it | `RED` (matches the Concerns badge color already decided for #78) |
@@ -392,11 +392,11 @@ controls that don't get used in time.
   pill) verbatim — same shape, same `alpha(color, 0.14)` fill + colored dot + label — one instance per
   currently-limited backend, laid out in a row immediately after the engine-state pill. Color: `ORANGE`
   (matches "Throttled" convention already established for capacity pressure; reserve `RED` for
-  failure/blocked states, not rate limiting). Label: `"<backend> limited · back in 4h"` (countdown format,
-  #105). A pill disappears the frame its backend's limit clears — no exit animation needed, these are
-  low-frequency.
+  failure/blocked states, not rate limiting). Label: `"<backend> limited · resets in 4h"` (countdown
+  format, #105 — matches specs/10-engine.md REQ-ENG-016's canonical wording). A pill disappears the frame
+  its backend's limit clears — no exit animation needed, these are low-frequency.
 - In Chat, a working bubble for an agent on a limited backend shows the same limited-until copy inline
-  (`_typing`'s existing bubble, swap the activity line for `"Claude limited, back in 4h"` in place of
+  (`_typing`'s existing bubble, swap the activity line for `"Claude limited · resets in 4h"` in place of
   `"thinking…"`) rather than a separate banner — one state, shown where the user is already looking.
 
 ## Header rows: space allocation rule
