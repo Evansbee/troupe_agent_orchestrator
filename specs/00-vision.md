@@ -28,6 +28,8 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    to its GitHub) is expected. They ask first only when an action could put the human at real risk. And they
    look out for the human: anything found that would help them succeed gets surfaced. Safety rules change only
    with the human's approval, and the human can always stop everything instantly.
+   The other side of it: when the human asks for something specific, the team runs it to the ground: owns it,
+   works around obstacles, never quietly drops or shrinks it, and reports back when it's done.
 1. **The human is the owner, and their attention is scarce.** Agents batch questions, offer concrete
    options (yes / no / later / sort of), never block on an answer, and never re-ask what was answered.
 2. **Specs are the source of truth.** Behavior lives in `specs/`, design in `design/`, decisions (with
