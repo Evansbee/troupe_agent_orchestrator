@@ -53,6 +53,54 @@ def test_gui_change_runs_launch_smoke_and_bounces_on_failure(project):
     assert not (cfg.root / "feature.txt").exists()  # never merged
 
 
+def test_gui_change_fake_client_killed_by_signal_is_a_failure_not_a_skip(project):
+    """QA blocker #3: a negative return code (killed by a signal, e.g. a segfault) must never be
+    read as "no display available"; only launch_smoke.py's own up-front, positive skip decision
+    (printed as "SKIP: ...") may skip. Anything else non-zero is a failure."""
+    cfg, store, engine, tid, tree = approved(project)
+    cfg.git.check = "true"
+    (tree / "src" / "troupe" / "gui").mkdir(parents=True)
+    (tree / "src" / "troupe" / "gui" / "widget.py").write_text("# gui change")
+    (tree / "scripts").mkdir()
+    (tree / "scripts" / "launch_smoke.py").write_text(
+        "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    gitops.commit_all(tree, "gui change")
+    engine.process_approved()
+    task = store.task(tid)
+    assert task["status"] == "in_progress"
+    assert "launch smoke failed" in task["review_notes"]
+    assert not (cfg.root / "feature.txt").exists()
+
+
+def test_launch_smoke_runs_through_uv_in_the_task_tree_not_the_engines_python(project, monkeypatch):
+    """QA blocker #1: the merge gate must smoke-test the task tree's own code through its own venv
+    (`uv run` in the tree), not sys.executable -- the engine's own installed interpreter, which
+    would silently import whatever's installed there instead of the tree being reviewed."""
+    from troupe import gates as gates_mod
+
+    cfg, store, engine, tid, tree = approved(project)
+    cfg.git.check = "true"
+    (tree / "src" / "troupe" / "gui").mkdir(parents=True)
+    (tree / "src" / "troupe" / "gui" / "widget.py").write_text("# gui change")
+    (tree / "scripts").mkdir()
+    (tree / "scripts" / "launch_smoke.py").write_text("print('launch smoke passed')\n")
+    gitops.commit_all(tree, "gui change")
+
+    calls = []
+    real_run = gates_mod.subprocess.run
+
+    def spy(command, **kwargs):
+        calls.append((command, kwargs.get("cwd")))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(gates_mod.subprocess, "run", spy)
+    engine.process_approved()
+
+    assert store.task(tid)["status"] == "done"
+    uv_calls = [c for c in calls if c[0][0] == "uv"]
+    assert uv_calls == [(["uv", "run", "python", "scripts/launch_smoke.py"], tree)]
+
+
 def test_gui_change_skip_is_logged_but_still_merges(project):
     cfg, store, engine, tid, tree = approved(project)
     cfg.git.check = "true"

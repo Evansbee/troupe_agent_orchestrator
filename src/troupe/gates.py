@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -26,15 +25,23 @@ def run_launch_smoke(tree: Path, log_path: Path) -> str:
     the merge gate's normal `cfg.git.check` (pytest) never opens a real window. Appends to the same
     check log as the main check. Returns "" on a pass; a skip is logged but also returns "" (a skip
     is not a failure, but it must never be silently indistinguishable from a real pass); anything
-    else is a real failure that bounces the task like a failed check."""
+    else is a real failure that bounces the task like a failed check.
+
+    QA's #92 review, blocker 1: this must run the TASK TREE's own code through its own venv --
+    `sys.executable` here is the *engine's* interpreter (e.g. an installed troupe's own python),
+    which imports whatever's installed there, not this tree's code; a `uv run` in the tree (same as
+    `cfg.git.check`'s own "uv run pytest") is what actually picks up the tree's own dependencies and
+    its own src/troupe. A tree whose gui/app.py can't even import must fail this, not silently pass
+    by running someone else's copy."""
     script = tree / "scripts" / "launch_smoke.py"
+    command = ["uv", "run", "python", "scripts/launch_smoke.py"]
     with log_path.open("a") as log:
-        log.write("\n$ uv run python scripts/launch_smoke.py  (gui/tui change)\n")
+        log.write(f"\n$ {' '.join(command)}  (cwd={tree}, gui/tui change)\n")
         if not script.exists():
             log.write("launch smoke not run: scripts/launch_smoke.py missing from this tree\n")
             return ""
         try:
-            p = subprocess.run([sys.executable, str(script)], cwd=tree, capture_output=True,
+            p = subprocess.run(command, cwd=tree, capture_output=True,
                                text=True, timeout=LAUNCH_SMOKE_TIMEOUT)
         except subprocess.TimeoutExpired:
             log.write(f"launch smoke timed out after {LAUNCH_SMOKE_TIMEOUT:g}s\n")
