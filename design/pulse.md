@@ -201,10 +201,19 @@ toggle for **all in flight**. Each row:
   reading it on the node or in the panel.
 
 ### Linking (panel ↔ scene)
-Hovering or clicking a row highlights that task's assignee node, its active tethers, and any in-flight
-comets touching it in the scene (brighten those, dim everything else slightly). Hovering a node does the
-reverse — highlights its row in the panel. This is what ties "who" (the scene) to "what" (the panel)
-together, per the brief.
+Hovering a row highlights that task's assignee node, its active tethers, and any in-flight comets
+touching it in the scene (brighten those, dim everything else slightly); hovering a node does the
+reverse. This is what ties "who" (the scene) to "what" (the panel) together, per the brief.
+
+Two refinements, each borrowed from a specific reference (see Inspiration references below):
+- **A persistent link, not just hover:** every node with an attached task gets a faint, static thin
+  line to its own Work-panel row (not the bright hover-highlight — just enough presence that the
+  pairing is visible without interacting). Borrowed from the "dock near their panel while they work"
+  pattern in the cosmic-orb reference — hover-only linking makes you guess-and-check which row belongs
+  to which node; a quiet permanent thread removes the guessing.
+- **Click pins it:** clicking (not just hovering) a node or row locks the highlight and scrolls/expands
+  that row, for deliberately inspecting one agent rather than a transient glance — borrowed from the
+  CyberDefend case study's "click a node, its detail surfaces inline, spatially anchored" pattern.
 
 ### Completion
 On merge, the row plays the same burst effect as the scene's task-card merge burst (`design/stage.md`),
