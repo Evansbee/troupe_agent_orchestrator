@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import os
 import socket
 import stat
 import subprocess
@@ -38,6 +39,31 @@ def client(api, **kwargs):
 def error(c, method, params, code):
     with pytest.raises(APIError) as exc:
         c.call(method, params)
+    assert exc.value.code == code
+
+
+def call_as_human(root, method, params=None) -> dict:
+    """#57's peer-pid check refuses resume/answer_question/dismiss_question from a caller whose own
+    process carries TROUPE_AGENT — which every agent's shell (including this very test, when it's
+    run by an agent, as it always is in this dogfooding project) inherits from its own launch
+    environment. `ps` (which that check reads) reports a process's environment as of exec() time, so
+    monkeypatching os.environ here can't hide it retroactively; only a freshly spawned process with
+    TROUPE_AGENT stripped can act as "the human" for these calls. See tests/_api_call_subprocess.py
+    and tests/test_api_safety.py, which own this behavior's real coverage."""
+    env = {k: v for k, v in os.environ.items() if k != "TROUPE_AGENT"}
+    script = Path(__file__).parent / "_api_call_subprocess.py"
+    proc = subprocess.run([sys.executable, str(script), str(root), method, json.dumps(params or {})],
+                          capture_output=True, text=True, env=env, timeout=10)
+    assert proc.returncode == 0, proc.stderr
+    outcome = json.loads(proc.stdout.strip().splitlines()[-1])
+    if not outcome["ok"]:
+        raise APIError(outcome["code"], outcome["message"])
+    return outcome["result"]
+
+
+def error_as_human(root, method, params, code):
+    with pytest.raises(APIError) as exc:
+        call_as_human(root, method, params)
     assert exc.value.code == code
 
 
@@ -190,20 +216,23 @@ def test_commands_and_idempotency(api):
         c.call("set_agent_enabled", dict(agent="builder-1", enabled=False))
         assert s.one("SELECT * FROM commands ORDER BY id DESC")["cmd"] == "disable"
         assert c.call("pause")["engine"]["paused"]
-        assert not c.call("resume")["engine"]["paused"]
+        # resume/answer_question/dismiss_question are human-only (#57); this test's own process
+        # inherits TROUPE_AGENT from whatever agent is running it, so these three go through a
+        # freshly spawned, TROUPE_AGENT-free process instead of the shared connection `c`.
+        assert not call_as_human(server.cfg.root, "resume")["engine"]["paused"]
         q = s.ask("builder-1", "A?")
         assert (
-            c.call("answer_question", dict(id=q, text="yes"))["question"]["answer"]
+            call_as_human(server.cfg.root, "answer_question", dict(id=q, text="yes"))["question"]["answer"]
             == "yes"
         )
-        error(c, "answer_question", dict(id=q, text="again"), "conflict")
+        error_as_human(server.cfg.root, "answer_question", dict(id=q, text="again"), "conflict")
         q = s.ask("builder-1", "B?")
         assert (
-            c.call("dismiss_question", dict(id=q))["question"]["status"] == "dismissed"
+            call_as_human(server.cfg.root, "dismiss_question", dict(id=q))["question"]["status"] == "dismissed"
         )
         q = s.ask("builder-1", "Approve?", kind="approval")
-        error(c, "dismiss_question", dict(id=q), "forbidden")
-        error(c, "answer_question", dict(id=q, text="yes"), "bad_request")
+        error_as_human(server.cfg.root, "dismiss_question", dict(id=q), "forbidden")
+        error_as_human(server.cfg.root, "answer_question", dict(id=q, text="yes"), "bad_request")
         t = c.call("create_task", dict(title="Build", idempotency_key="task"))["task"]
         assert t["status"] == "ready" and t["created_by"] == "human"
         assert c.call("create_task", dict(title="Build", idempotency_key="task"))[

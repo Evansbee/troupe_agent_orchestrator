@@ -9,13 +9,15 @@ from pathlib import Path
 
 
 class FixtureServer:
-    def __init__(self, root: Path, *, agents=None, tasks=None, usage=None, engine=None, milestones=None):
+    def __init__(self, root: Path, *, agents=None, tasks=None, usage=None, engine=None, milestones=None,
+                questions=None):
         self.root = root
         self.agents = agents if agents is not None else []
         self.tasks = tasks if tasks is not None else []
         self.usage = usage if usage is not None else {"providers": []}
         self.engine = engine if engine is not None else {"state": "live", "running_runs": 0}
         self.milestones = milestones if milestones is not None else []
+        self.questions = questions if questions is not None else []
         self.seq = 0
         self._server: asyncio.base_events.Server | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -84,6 +86,10 @@ class FixtureServer:
             return self.engine
         if method == "milestones":
             return dict(items=self.milestones)
+        if method == "questions":
+            status = params.get("status", "open")
+            items = self.questions if status in ("open", "all") else []
+            return dict(items=items)
         if method == "subscribe":
             return dict(epoch=1, seq=self.seq)
         return {}
