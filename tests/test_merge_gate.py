@@ -98,13 +98,89 @@ def test_precheck_conflict_bounces_without_running_command(project):
     assert not gitops.git(tree, "rev-parse", "--verify", "MERGE_HEAD", check=False)
 
 
-def test_repository_changes_during_check_do_not_merge(project):
+def test_dirty_tree_after_check_retries_once_then_bounces_clearly(project, monkeypatch):
+    """The check command itself leaves the tree dirty (a check-script bug, not main moving): the
+    first "repository changed" is retried (#81) same as any other, but the retry's own prepare_check
+    finds the tree still dirty and can't proceed automatically — that's not the same as main moving
+    again, so it bounces right away instead of burning the rest of the retry budget."""
+    from troupe import gates as gates_module
+    monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
     cfg, store, engine, tid, tree = approved(project)
     cfg.git.check = "echo unchecked > feature.txt"
     engine.process_approved()
-    assert store.task(tid)["status"] == "in_progress"
-    assert "Repository changed" in store.task(tid)["review_notes"]
+    task = store.task(tid)
+    assert task["status"] == "in_progress"
+    assert "uncommitted changes" in task["review_notes"]
     assert not (cfg.root / "feature.txt").exists()
+
+
+def test_main_moving_during_check_retries_and_merges_without_bouncing(project, monkeypatch):
+    """#81: main moves constantly from non-builder autocommits — that shouldn't cost the builder a
+    wake. The worker re-merges main into the task tree and re-runs the check itself."""
+    from troupe import gates as gates_module
+    monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
+    cfg, store, engine, tid, tree = approved(project)
+    real_run_check = gitops.run_check
+    moved = {"done": False}
+    def run_check(tree_, command, timeout, log_path, stop):
+        if not moved["done"]:
+            moved["done"] = True
+            (cfg.root / "moved.txt").write_text("moved mid-check")
+            gitops.commit_all(cfg.root, "Main advanced mid-check")
+        return real_run_check(tree_, command, timeout, log_path, stop)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "true"
+    engine.process_approved()
+    task = store.task(tid)
+    assert task["status"] == "done"
+    assert moved["done"]
+    assert (cfg.root / "feature.txt").exists() and (cfg.root / "moved.txt").exists()
+    bodies = [m["body"] for m in store.messages() if m["recipient"] == "builder-1"]
+    assert not any("changed" in b.lower() or "failed" in b.lower() for b in bodies)
+    assert any("merged into main" in b for b in bodies)
+    assert store.kv_get(f"check_failures.{tid}", 0) == 0
+
+
+def test_repository_keeps_changing_gives_up_after_max_attempts(project, monkeypatch):
+    """#81: after MERGE_RETRY_ATTEMPTS consecutive "repository changed" results, stop retrying and
+    bounce with a message that says what actually happened."""
+    from troupe.gates import MERGE_RETRY_ATTEMPTS
+    from troupe import gates as gates_module
+    monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
+    cfg, store, engine, tid, tree = approved(project)
+    real_run_check = gitops.run_check
+    calls = []
+    def run_check(tree_, command, timeout, log_path, stop):
+        calls.append(1)
+        (cfg.root / f"moved{len(calls)}.txt").write_text("moved")
+        gitops.commit_all(cfg.root, f"Main advanced #{len(calls)}")
+        return real_run_check(tree_, command, timeout, log_path, stop)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "true"
+    engine.process_approved()
+    assert len(calls) == MERGE_RETRY_ATTEMPTS
+    task = store.task(tid)
+    assert task["status"] == "in_progress"
+    assert str(MERGE_RETRY_ATTEMPTS) in task["review_notes"]
+    assert "kept moving" in task["review_notes"] or "changed" in task["review_notes"].lower()
+    assert store.unread("builder-1")
+    assert not (cfg.root / "feature.txt").exists()
+
+
+def test_real_check_failure_bounces_immediately_without_retrying(project, monkeypatch):
+    """#81: a real test failure is never retried — retrying the same code against the same check
+    can't change the outcome, so it should bounce on the very first attempt."""
+    cfg, store, engine, tid, tree = approved(project)
+    calls = []
+    real_run_check = gitops.run_check
+    def run_check(*args, **kwargs):
+        calls.append(1)
+        return real_run_check(*args, **kwargs)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "exit 3"
+    engine.process_approved()
+    assert len(calls) == 1
+    assert store.task(tid)["status"] == "in_progress"
 
 
 def test_worker_does_not_block_ticks_or_chat_and_is_serial(project, monkeypatch):

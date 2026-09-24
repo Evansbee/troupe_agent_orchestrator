@@ -341,6 +341,11 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     - the GUI's own osascript path is removed.
   - Titles use full handles plus the project, e.g. "qa_1@troupe needs you".
   - Config: `[notify] enabled = true` and a `quiet` list of event kinds to mute.
+  - **Must-deliver kinds** (#89, found by QA): `safety`, `crash_loop`, `concern` and `kill` ignore `quiet` and
+    `enabled`, so no config edit can silence them. `[notify]` also joins the human-approved config (REQ-SAFE-021),
+    so an agent's edit to it isn't enforced until the human approves the card. #89's diff adds `[notify]` to the
+    SAFE-021 text, which is protected, so the human approves it. Test: with every kind in `quiet` and
+    `enabled = false`, the four must-deliver kinds still notify.
   - Delivery for now is osascript, with safe escaping. There's no click-through until the Mac app (REQ-MAC).
   - Test: coalescing, dedupe, focus suppression and `quiet`, with delivery mocked. Manual: GUI closed + a question →
     a notification within about 5 s.
@@ -493,3 +498,4 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - 2026-09-24 — ENG-052..055 git posture per project (#80): push opt-in, identity/email and secret pre-push checks, never
   force. BE-016/ENG-041 caps are per-window, 80/50 (human, question #18).
 - 2026-09-24 — ENG-040: auto-retry when main moves during checks (#81).
+- 2026-09-24 — ENG-047: must-deliver notification kinds and a guarded `[notify]` (#89).

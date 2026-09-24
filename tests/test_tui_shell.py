@@ -145,8 +145,10 @@ def test_full_size_uses_side_by_side_panes_not_tabs(project):
 
 
 def test_chatpane_is_mounted_alongside_needs_you_in_the_right_column(project):
-    """#77: ChatPane (#68) mounted into RIGHT_PANES, after Needs-you per design/tui.md."""
+    """#77: ChatPane (#68) mounted into RIGHT_PANES, after Needs-you and Comms (#69) per
+    design/tui.md."""
     from troupe.tui.panes.chat import ChatPane
+    from troupe.tui.panes.feed import FeedPane
     from troupe.tui.panes.needs_you import NeedsYouPane
 
     cfg, _store = project
@@ -161,7 +163,7 @@ def test_chatpane_is_mounted_alongside_needs_you_in_the_right_column(project):
                 await pilot.pause()
                 right = app.query_one("#right")
                 mounted = list(right.children)
-                assert [type(w) for w in mounted] == [NeedsYouPane, ChatPane]
+                assert [type(w) for w in mounted] == [NeedsYouPane, FeedPane, ChatPane]
                 await _wait_until(lambda: app.query_one(ChatPane).pm_id == "pm")
         finally:
             await server.stop()
@@ -186,7 +188,7 @@ def test_80x24_tab_order_matches_the_design_priority(project):
                 await pilot.pause()
                 titles = [tp._title.plain if hasattr(tp._title, "plain") else str(tp._title)
                          for tp in app.query(TabPane)]
-                assert titles == ["Needs you", "Team", "Tasks", "Chat"]
+                assert titles == ["Needs you", "Team", "Tasks", "Comms", "Chat"]
         finally:
             await server.stop()
 
