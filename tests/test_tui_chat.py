@@ -90,6 +90,10 @@ def test_load_populates_thread_oldest_first_and_finds_pm_by_role():
             pane = pilot.app.query_one(ChatPane)
             assert pane.pm_id == "pm_1"
             thread = pane.query_one("#chat-thread", VerticalScroll)
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.pause()
             bodies = list(thread.query(Markdown))
             assert len(bodies) == 2
             methods = {(m, t) for m, t, _ in client.calls}
@@ -210,6 +214,7 @@ def test_sticks_to_bottom_unless_the_human_scrolled_away():
         async with ChatTestApp(client).run_test(size=(80, 24)) as pilot:
             pane = pilot.app.query_one(ChatPane)
             thread = pane.query_one("#chat-thread", VerticalScroll)
+            await pilot.app.workers.wait_for_complete()
             await pilot.pause()
             assert thread.max_scroll_y > 0, "test needs overflow to be meaningful"
             assert thread.is_vertical_scroll_end
@@ -304,4 +309,42 @@ def test_double_enter_during_a_slow_send_only_sends_once():
             assert composer.text == ""
             assert pane._sending is False
             assert len([c for c in client.calls if c[0] == "chat"]) == 1
+    asyncio.run(scenario())
+
+
+def test_long_realistic_history_settles_to_the_bottom_even_in_a_small_viewport():
+    """#85: in an isolated ChatPane with the whole terminal to itself, a single layout pass is
+    enough and this never reproduces — the live repro (/tmp/rt/demo/recipe-box) only showed up in
+    the real five-pane TroupeApp, where the chat thread gets a small fraction of a typical
+    terminal's height and long/markdown content needs more than one layout pass to reach its
+    final wrapped size. See test_tui_shell.py's version of this test for the five-pane repro; this
+    one just pins down the ChatPane-level contract a fix must keep: N>=20 history including a
+    table and a code block, latest message body visible on load, and a live message that follows."""
+    table = "| step | tool |\n|---|---|\n| 1 | oven |\n| 2 | mixer |\n| 3 | pan |"
+    code = "```python\n" + "\n".join(f"step_{i}()" for i in range(8)) + "\n```"
+    seed = []
+    for i in range(1, 26):
+        if i % 5 == 0:
+            body = f"reply {i} with a table:\n\n{table}"
+        elif i % 7 == 0:
+            body = f"reply {i} with code:\n\n{code}"
+        else:
+            body = f"reply {i} " * 20  # long enough to soft-wrap across several visual lines
+        seed.append(message(i, "pm_1" if i % 2 else "human", "human" if i % 2 else "pm_1", body))
+    client = FixtureClient(messages=seed)
+
+    async def scenario():
+        async with ChatTestApp(client).run_test(size=(80, 24)) as pilot:
+            pane = pilot.app.query_one(ChatPane)
+            thread = pane.query_one("#chat-thread", VerticalScroll)
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert thread.max_scroll_y > 0, "test needs overflow to be meaningful"
+            assert len(list(thread.query(Markdown))) == len(seed)  # every message mounted
+            assert thread.is_vertical_scroll_end  # the last message's body is the visible bottom
+
+            await push_and_settle(pilot, pane, "message.new",
+                                  message=message(26, "pm_1", "human", "a brand new reply"))
+            assert len(list(thread.query(Markdown))) == len(seed) + 1
+            assert thread.is_vertical_scroll_end  # the new message scrolled into view
     asyncio.run(scenario())
