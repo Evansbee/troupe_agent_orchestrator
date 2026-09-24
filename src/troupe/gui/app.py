@@ -94,6 +94,10 @@ class App:
                     if not rl.is_window_focused():
                         d.notify(f"troupe · {d.name_of(m['sender'])}", m["body"])
             d.new_messages = []
+        if d.new_chat_answers:
+            for q in d.new_chat_answers:
+                self.toast(f"Answered in chat ✓ · {q['question'][:70]}", T.GREEN)
+            d.new_chat_answers = []
         if d.new_questions:
             for q in d.new_questions:
                 self.toast(f"{d.name_of(q['asker'])} needs you: {q['question'][:90]}", d.color_of(q["asker"]))

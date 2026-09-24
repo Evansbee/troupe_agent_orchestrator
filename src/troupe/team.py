@@ -80,7 +80,7 @@ class TeamAPI:
         self.role = me.role if me else "human"
 
     def tools(self) -> list:
-        return [self.send_message, self.check_inbox, self.ask_human, self.propose_idea, self.create_task,
+        return [self.send_message, self.check_inbox, self.ask_human, self.resolve_question, self.propose_idea, self.create_task,
                 self.update_task, self.list_tasks, self.get_task, self.complete_task, self.review_task,
                 self.remember, self.recall, self.set_status, self.team]
 
@@ -143,6 +143,26 @@ class TeamAPI:
                     "Wait for answers before asking more; prioritize.")
         qid = self.store.ask(self.me, question, context, options, task_id=task_id)
         return f"Question #{qid} is in the human's inbox. The answer will arrive in your mailbox."
+
+    def resolve_question(self, question_id: int, answer: str, via: str = "chat") -> str:
+        """Close an open question after the human answers in chat; then remember the decision.
+
+        Quote the human's answer faithfully. Only the asker, lead or PM can resolve a question.
+        `via` is chat or inbox. This records the answer without sending duplicate answer mail."""
+        if via not in ("chat", "inbox"):
+            return "ERROR: via must be 'chat' or 'inbox'."
+        if not answer.strip():
+            return "ERROR: answer is empty. Supply the human's actual answer."
+        question = self.store.one("SELECT * FROM questions WHERE id=?", question_id)
+        if not question:
+            return "ERROR: question not found. Check its id in your open questions."
+        if question["asker"] != self.me and self.role not in ("lead", "pm"):
+            return "ERROR: this is another agent's question. Ask its owner, the lead or PM to resolve it."
+        if question["status"] != "open":
+            return "ERROR: question is already closed. Use recall to read the recorded answer; do not overwrite it."
+        if not self.store.answer(question_id, answer, via=via, notify=False):
+            return "ERROR: question was already closed. Use recall to check the recorded answer."
+        return f"Question #{question_id} answered via {via}. Record the decision with remember()."
 
     def propose_idea(self, title: str, pitch: str, why: str = "") -> str:
         """Propose a product idea to the human (they answer: yes / no / later / sort of).
