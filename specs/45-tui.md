@@ -93,6 +93,14 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - The TUI connects with `notifications: false` (REQ-API-010), so the engine keeps sending OS notifications while
     the human is elsewhere in tmux.
 
+- **REQ-TUI-014 [ ]** (#78) Concerns and Kill.
+  - A red "⚑ N" concern badge in the header, and a Concerns pane listing the whistleblower board (REQ-COM-029), with
+    the actions Raise / Suppress / Kill / Reply. The content is shown only here, never in panes an agent's text flows
+    through.
+  - Kill asks for confirmation. Once confirmed, the whole screen turns red with "KILLED" (REQ-SAFE-011) until the
+    human resumes, which also asks for confirmation. The PM chat is disabled while killed.
+  - Test: the badge appears on a new concern; each action's effect; the red KILLED screenshot; resume asks first.
+
 ## Keys
 - **REQ-TUI-020 [~]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `/` is #68, `s` confirmation detail is #69):
 
@@ -133,3 +141,4 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 - 2026-09-24 — TUI-001 rewritten: the TUI owns its engine (quit and SIGHUP stop everything, confirm if runs are in flight,
   resume on next start, attach without owning if already running). Slices mapped to #66–#69.
 - 2026-09-24 — TUI-021: chat is PM-only (human).
+- 2026-09-24 — TUI-014 Concerns pane and red KILLED state (#78).
