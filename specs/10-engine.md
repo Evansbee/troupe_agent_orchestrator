@@ -72,6 +72,12 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
 - **REQ-ENG-011 [x]** Pending human chat pre-empts every other wake reason for that agent; any run that
   consumes a human chat message replies to the human with its final text.
 - **REQ-ENG-012 [x]** Concurrency: at most `budget.max_concurrent` autonomous runs; chat gets up to 2 extra slots.
+  - When eligible task work is waiting and no autonomous task-work run is active, it gets the next free
+    autonomous slot ahead of coordination wakes. Task work means a worktree-role agent with a due,
+    dependency-ready `ready`/`in_progress` task, including a mail/poke wake carrying that task.
+    Choose the least recently run eligible agent (id breaks ties). Other slots keep wake-priority order.
+    Existing runs are not interrupted; the bound is the first tick with a free autonomous slot after
+    current runs finish. Pause, budgets, backend limits and failure backoff still apply; chat stays first.
 - **REQ-ENG-013 [x]** Budget: `max_runs_per_hour` (autonomous runs) and `max_usd_per_day` (claude-reported
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
@@ -161,7 +167,10 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
 Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approved → done` (+ `cancelled`).
 - **REQ-ENG-030 [x]** Tasks created by the Lead or human start `ready`; by anyone else `backlog` (Lead triages).
 - **REQ-ENG-031 [x]** Dispatch: unassigned `ready` tasks go to the least-loaded enabled agent of the task's
-  role; builders hold at most one active task. `depends_on` must be done first.
+  role; worktree roles (including builders) hold at most one active task, even with a single-agent roster.
+  `ready`, `in_progress` and `blocked` assignments count toward that cap; backlog, review, approved,
+  done and cancelled do not. Explicit lead assignments bypass dispatch, and a rejected task may return
+  while another is active; current-task selection retains its existing priority order. `depends_on` must be done first.
 - **REQ-ENG-032 [x]** Builder tasks get a git worktree `.troupe/worktrees/t<id>` on branch `troupe/t<id>-<slug>`.
 - **REQ-ENG-033 [x]** `complete_task` on a code task commits the worktree and moves it to `review`; QA is woken
   inside the same worktree; `approve` → engine merges `--no-ff` into main and removes the worktree;
