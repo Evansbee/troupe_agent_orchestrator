@@ -82,9 +82,10 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
 - **REQ-ENG-015 [x]** Failed runs back off exponentially per agent (30s → 10m) and their mail is re-queued.
-- **REQ-ENG-050 [ ]** (#62; #61 was cancelled as a duplicate) Run watchdog, for every backend. Observed 2026-09-24: codex runs hung silently for
+- **REQ-ENG-050 [ ]** (#61) Run watchdog, for every backend. Observed 2026-09-24: codex runs hung silently for
   2h45m (builder-2) and 78 min (QA) at 0% CPU, and nobody noticed.
-  - Each run tracks the time of its last stream event (any line from the backend).
+  - Each run tracks the time of its last stream event (any line from the backend), taken in the engine from the
+    run's stream, so the watchdog doesn't touch the protected `runners.py`.
   - **Stall:** no output for `[budget] stall_minutes` (default 15) → status `stalled`.
   - **Hard cap:** a run exceeding `max_run_minutes` → status `timeout`. The default is 90 min for worktree roles
     (builder, and QA reviewing in a worktree) and `max_coord_run_minutes` = 30 for everyone else. Chat runs are
