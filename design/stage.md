@@ -1,9 +1,12 @@
 # Stage — ambient full-screen view of the team at work
 
 Behavior: `specs/40-gui.md` REQ-GUI-030..037. This doc defines the *look*: layout, visual states,
-motion timing, and pacing. Builds on `design/system.md` (tokens, components) and the existing Pulse
-constellation (`gui/views.py pulse_view`) — Stage is Pulse's content model at ambient scale, not a
-different visual language.
+motion timing, and pacing. Builds on `design/system.md` (tokens, components). **As of the #32 redesign,
+`design/pulse.md` is the master spec for the shared scene** (agent states, tethers, comets, task cards,
+model chips, the Work panel) — Pulse and Stage are one scene at two densities. This doc keeps only
+what's Stage-specific: entering/leaving full-screen, sizing-by-screen-fraction, quiet-mode dimming/
+drift, the ready-queue tray, and the engine-offline state. Read `design/pulse.md` first for what a
+node/comet/task actually looks like; this doc assumes it.
 
 ## Principle: watching, not reading
 
