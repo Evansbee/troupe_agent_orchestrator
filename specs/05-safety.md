@@ -266,3 +266,5 @@ Wake-prompt footer: `Principle 0 applies: the human comes first.`
 - 2026-09-24 — Appendix synced to #65's charter line (report_concern).
 - 2026-09-24 — SAFE-050 codex MCP and git (#96): troupe's MCP server alone is pre-approved; nothing under `.git` is ever
   writable from a sandbox (QA reproduced three escapes); `complete_task` commits.
+- 2026-09-24 — SAFE-021: `[git] doc_only_paths` guarded (#107); approval cards list every difference, including
+  unknown keys (#109).
