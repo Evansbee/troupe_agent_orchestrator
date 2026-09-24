@@ -42,8 +42,8 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    verifies by effect before anything merges.
 6. **Everything is visible.** A beautiful, crazy-useful desktop app shows who's doing what, how they're
    talking, the backlog, the mailboxes, the decisions, and what needs the human — live.
-   The team runs as a background service; the app is a window you open and close without stopping it,
-   and every agent has a clear handle (`role_N@project`, e.g. `builder_2@troupe`) so it's obvious who is
+   Run and everything runs, quit and everything quits: `troupe` in a project starts its team and TUI together
+   (tmux keeps it going while you're away), and every agent has a clear handle (`role_N@project`, e.g. `builder_2@troupe`) so it's obvious who is
    talking to whom.
 7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The primary interface is a per-project terminal UI (Python Textual/Rich);
    a native macOS app (SwiftUI) comes later as the cross-project portfolio view. Both talk to each
@@ -104,3 +104,4 @@ territories for parallel builders, reviewers on a different runtime than writers
   opportunities that help the human succeed.
 - 2026-09-24 — interface model (human): per-project TUI + PM as single contact + GUI as portfolio view.
 - 2026-09-24 — focus shift (human): TUI (Textual/Rich) first; Swift portfolio app deferred; raylib frozen; more Codex.
+- 2026-09-24 — lifecycle (human): the TUI owns its project's engine; quit = stop; tmux provides persistence.
