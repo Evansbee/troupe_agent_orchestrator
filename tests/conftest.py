@@ -105,14 +105,86 @@ def _reap_all_spawned_engines() -> None:
         _kill_engine_by_pid_file(state_dir)
 
 
+# ── #103 QA finding: catch engines outside the tracked-state-dir mechanism too ──────────────────
+# `track_engine_state_dir` only knows about engines started through test_service.py's `project`
+# fixture. A test that calls `start_service` directly — the exact shape of the original 74-orphan
+# leak, which never went through any troupe test fixture at all — is otherwise invisible: not
+# reaped, not asserted. This section detects those by watching the *system's* set of `troupe.cli
+# engine` processes across the session, independent of any registration.
+_TEST_TEMP_ROOTS = ("/tmp", "/private/tmp", "/private/var/folders")
+
+
+def _list_troupe_engine_pids() -> set[int]:
+    try:
+        out = subprocess.run(["pgrep", "-f", "troupe.cli engine"],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (subprocess.SubprocessError, OSError):
+        return set()
+    return {int(p) for p in out.split() if p.isdigit()}
+
+
+def _process_start_time(pid: int) -> float | None:
+    """Unix timestamp `pid` started, parsed from `ps -o lstart=` (local wall-clock, same basis as
+    `time.time()` on this machine, so it's directly comparable to a session-start timestamp)."""
+    try:
+        raw = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        return time.mktime(time.strptime(raw, "%a %b %d %H:%M:%S %Y"))
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
+def _process_cwd(pid: int) -> str | None:
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return None
+
+
+def _cwd_is_under_a_test_temp_root(cwd: str, basetemp: str) -> bool:
+    return cwd.startswith(basetemp) or any(cwd.startswith(r) for r in _TEST_TEMP_ROOTS)
+
+
+def _find_untracked_engines(before_pids: set[int], session_start: float, basetemp: str) -> dict[int, dict]:
+    """Any `troupe.cli engine` that (a) wasn't running before this session started, (b) actually
+    started *after* the session began — closing a race around (a): a pid absent from our own
+    start-of-session snapshot only because of snapshot timing, not because the process is new —
+    and (c) has a cwd under a recognized test temp root, so a concurrent, legitimate engine from
+    another worktree's real project (a different pid, a real path) is never touched."""
+    survivors = {}
+    for pid in _list_troupe_engine_pids() - before_pids:
+        started = _process_start_time(pid)
+        # `ps -o lstart=` only has whole-second resolution and truncates down, so a process that
+        # started in the same wall-clock second as `session_start` (a real, common case for a
+        # short-lived inner session, not just theoretical) can appear to have started *before* a
+        # `session_start` with a later fractional part — a 2s buffer absorbs that truncation
+        # without meaningfully widening the window for a genuinely pre-existing process to slip in.
+        if started is None or started < session_start - 2:
+            continue
+        cwd = _process_cwd(pid)
+        if not cwd or not _cwd_is_under_a_test_temp_root(cwd, basetemp):
+            continue
+        survivors[pid] = dict(cwd=cwd, started=started)
+    return survivors
+
+
 @pytest.fixture(scope="session", autouse=True)
-def _engine_leak_guard():
+def _engine_leak_guard(tmp_path_factory):
     """Installs the session-wide SIGTERM handler (here, not at import time in test_service.py —
     that would silently replace SIGTERM handling for the *entire* session merely by importing that
-    file) and the atexit safety net, then asserts at session end that nothing this session spawned
-    is still alive: a future leak becomes a failing test, not something QA has to notice by hand on
+    file), sets TROUPE_EXIT_WITH_PARENT_PID for every test in the session (not just inside the
+    `project` fixture, so an engine started any other way still self-exits if this process dies),
+    and asserts at session end that nothing this session spawned — tracked *or* untracked — is
+    still alive: a future leak becomes a failing test, not something QA has to notice by hand on
     the human's laptop (REQ-ENG-060)."""
     previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_parent_env = os.environ.get("TROUPE_EXIT_WITH_PARENT_PID")
+    os.environ["TROUPE_EXIT_WITH_PARENT_PID"] = str(os.getpid())
 
     def _on_sigterm(signum, frame):
         _reap_all_spawned_engines()
@@ -120,9 +192,36 @@ def _engine_leak_guard():
 
     signal.signal(signal.SIGTERM, _on_sigterm)
     atexit.register(_reap_all_spawned_engines)
+
+    session_start = time.time()
+    before_pids = _list_troupe_engine_pids()
+    basetemp = str(tmp_path_factory.getbasetemp())
+
     yield
-    _reap_all_spawned_engines()
-    time.sleep(0.5)  # give a just-issued SIGKILL a moment to land before the final check
-    survivors = {str(d): pid for d in _SPAWNED_STATE_DIRS if (pid := _still_our_engine(d)) is not None}
+
+    # Record every survivor — tracked (registered via track_engine_state_dir) and untracked (found
+    # by watching the system's process list) — *before* killing anything, so the failure below
+    # reports exactly what leaked rather than what a reap already cleaned up.
+    tracked_survivors = {str(d): pid for d in _SPAWNED_STATE_DIRS if (pid := _still_our_engine(d)) is not None}
+    untracked_survivors = _find_untracked_engines(before_pids, session_start, basetemp)
+
+    for pid in tracked_survivors.values():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    for pid in untracked_survivors:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    if previous_parent_env is None:
+        os.environ.pop("TROUPE_EXIT_WITH_PARENT_PID", None)
+    else:
+        os.environ["TROUPE_EXIT_WITH_PARENT_PID"] = previous_parent_env
     signal.signal(signal.SIGTERM, previous_sigterm)
+
+    survivors = {**{f"tracked {d}": pid for d, pid in tracked_survivors.items()},
+                 **{f"untracked pid {pid}": info for pid, info in untracked_survivors.items()}}
     assert not survivors, f"REQ-ENG-060: engine(s) survived the test session: {survivors}"

@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import _kill_engine_by_pid_file, _still_our_engine, track_engine_state_dir, untrack_engine_state_dir
+from conftest import (
+    _kill_engine_by_pid_file,
+    _list_troupe_engine_pids,
+    _process_cwd,
+    _still_our_engine,
+    track_engine_state_dir,
+    untrack_engine_state_dir,
+)
 from troupe import config
 from troupe.service import (
     _identity,
@@ -113,6 +120,62 @@ def test_kill_engine_by_pid_file_kills_a_legacy_bare_int_record_only_if_it_looks
     # after this line would run; the test process being alive to reach the next assertion is itself
     # part of the proof.
     assert os.kill(os.getpid(), 0) is None  # still alive
+
+
+def test_session_guard_fails_the_run_for_an_engine_leaked_outside_any_fixture(tmp_path):
+    """#103 QA finding: the session guard's tracked-state-dir mechanism only sees engines started
+    through test_service.py's `project` fixture. The original 74-orphan leak never went through
+    any fixture at all — just a bare `start_service()` call whose caller forgot to stop it. This
+    drives a real, separate pytest *session* (so the outer session's own tracking never gets
+    involved) with exactly that shape and checks two things from the outside: the inner session's
+    exit code is non-zero with "REQ-ENG-060" in its output, and no engine survives it.
+
+    The probe also clears TROUPE_EXIT_WITH_PARENT_PID right before spawning: this session's own
+    guard sets it for every test (so a merely-forgotten stop_service call usually self-heals within
+    ~2s on its own), which would otherwise heal the leak before the untracked-pid *fallback* this
+    test exists to exercise ever got a chance to matter — the point here is proving that fallback
+    works even when nothing else would have caught it."""
+    leaky_test = Path(__file__).parent / "_leaky_engine_probe.py"
+    leaky_test.write_text(
+        "def test_leaks_an_engine_outside_any_fixture(monkeypatch):\n"
+        "    import tempfile\n"
+        "    from pathlib import Path\n"
+        "    from troupe import config\n"
+        "    from troupe.service import start_service\n"
+        "    monkeypatch.delenv('TROUPE_EXIT_WITH_PARENT_PID', raising=False)\n"
+        # /tmp, not pytest's own (deeply-nested) tmp_path: a long AF_UNIX socket path errors out
+        # before the engine ever starts, and the original 74-orphan leak was in /tmp too.
+        "    tmp = Path(tempfile.mkdtemp(prefix='troupe-service-leaky-', dir='/tmp'))\n"
+        "    root = tmp / 'leaky_project'\n"
+        "    state = root / '.troupe'\n"
+        "    state.mkdir(parents=True)\n"
+        "    home = tmp / 'home'\n"
+        "    home.mkdir()\n"
+        "    monkeypatch.setenv('HOME', str(home))\n"
+        "    (state / 'troupe.toml').write_text('[project]\\nname=\"Leaky\"\\n[git]\\nautocommit=false\\n')\n"
+        "    (state / 'team.yaml').write_text(\n"
+        "        'agents:\\n  - id: lead\\n    role: lead\\n    provider: local\\n    enabled: false\\n')\n"
+        "    cfg = config.load(root)\n"
+        "    start_service(cfg)  # deliberately never stopped, and never registered with the guard\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(leaky_test)],
+            cwd=str(Path(__file__).parent.parent), capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "REQ-ENG-060" in result.stdout + result.stderr
+        # The inner test itself must have run and leaked the engine (not failed for some other
+        # reason before ever reaching start_service) — otherwise a non-zero exit + REQ-ENG-060
+        # elsewhere in the output could pass this assertion for the wrong cause.
+        assert "1 passed" in result.stdout or "1 failed" in result.stdout
+    finally:
+        leaky_test.unlink(missing_ok=True)
+    # By the time the inner pytest process has exited, its own session-guard teardown already
+    # killed what it leaked — confirm from out here too, since that's the actual point of #103.
+    for pid in _list_troupe_engine_pids():
+        cwd = _process_cwd(pid)
+        assert not (cwd and "leaky_project" in cwd), f"leaked engine pid {pid} at {cwd} survived"
 
 
 def invoke(cfg, *args):
