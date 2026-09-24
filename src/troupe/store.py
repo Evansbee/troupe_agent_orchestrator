@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, started REAL, ended REAL, reason TEXT,
   status TEXT DEFAULT 'running', cost REAL DEFAULT 0, tokens INTEGER DEFAULT 0,
-  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0
+  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0,
+  prompt TEXT DEFAULT '', system TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS run_lines(
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, ts REAL, kind TEXT, text TEXT
@@ -75,6 +76,14 @@ class Store:
         self.path = str(path)
         self._local = threading.local()
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
+        if "prompt" not in cols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
+        if "system" not in cols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -278,9 +287,11 @@ class Store:
         return self.q(sql, *args)
 
     # ── runs ──────────────────────────────────────────────────────────────
-    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool) -> int:
-        return self.x("INSERT INTO runs(agent,started,reason,task_id,cwd,chat) VALUES(?,?,?,?,?,?)",
-                      agent, now(), reason, task_id, cwd, int(chat))
+    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool,
+                 prompt: str = "", system: str = "") -> int:
+        return self.x("""INSERT INTO runs(agent,started,reason,task_id,cwd,chat,prompt,system)
+                         VALUES(?,?,?,?,?,?,?,?)""",
+                      agent, now(), reason, task_id, cwd, int(chat), prompt, system)
 
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",

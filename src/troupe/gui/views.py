@@ -784,26 +784,64 @@ def agent_view(app: "App", r: Rect) -> None:
         app.sel_run = None
     rsel = app.sel_run or (runs[0]["id"] if runs else None)
     strip, tr = left.cut_top(46)
-    x = strip.x + 14
+    view_w = 190.0
+    view_toggle, chips = strip.cut_right(view_w)
+    x = chips.x + 14
     for run in runs:
         label = f"#{run['id']} {run['reason']}"
         c = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}.get(run["status"], T.TEXT_FAINT)
-        clicked, w = ui.chip(f"run:{run['id']}", x, strip.y + 10, label, run["id"] == rsel, c, 11.5)
-        if ui.hover(Rect(x, strip.y + 10, w, 26)):
+        clicked, w = ui.chip(f"run:{run['id']}", x, chips.y + 10, label, run["id"] == rsel, c, 11.5)
+        if ui.hover(Rect(x, chips.y + 10, w, 26)):
             ui.tip(f"{run['status']} · {ago(run['started'])} · ${run['cost']:.3f}\n{(run['summary'] or '')[:300]}")
         if clicked:
             app.sel_run = run["id"]
         x += w + 6
-        if x > strip.r - 120:
+        if x > chips.r - 8:
             break
+    vx = view_toggle.x + 8
+    for mode in ("Transcript", "Prompt"):
+        clicked, w = ui.chip(f"runview:{mode}", vx, view_toggle.y + 10, mode, app.run_view == mode,
+                             T.ACCENT, 11.5)
+        if clicked:
+            app.run_view = mode
+        vx += w + 6
     ui.hline(left.x, strip.b, left.w, T.BORDER)
-    if rsel:
+    rsel_row = next((run for run in runs if run["id"] == rsel), None)
+    if not rsel:
+        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
+    elif app.run_view == "Prompt":
+        _prompt_view(app, rsel_row, tr)
+    else:
         live = any(run["id"] == rsel and run["status"] == "running" for run in runs)
         lines = _run_lines(app, rsel, live)
         _transcript(app, lines, tr, f"tr:{rsel}")
-    else:
-        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
     _agent_side(app, a, right)
+
+
+def _prompt_view(app: "App", run: dict | None, r: Rect) -> None:
+    ui = app.ui
+    sc = ui.scroll_begin(f"prompt:{run['id'] if run else 0}", r)
+    y = r.y + 16 - sc.offset
+    w = r.w - 48
+    if not run:
+        ui.text(r.x + 24, r.y + 16, "No run selected.", 13, T.TEXT_FAINT)
+        ui.scroll_end(sc, 0)
+        return
+    system, prompt = run.get("system") or "", run.get("prompt") or ""
+    if system:
+        ui.text(r.x + 24, y, "SYSTEM PROMPT", 11, T.TEXT_FAINT, "bold")
+        y += 22
+        h = ui.markdown(r.x + 24, y, system, w, 13)
+        y += h + 24
+    ui.text(r.x + 24, y, "WAKE PROMPT", 11, T.TEXT_FAINT, "bold")
+    y += 22
+    if prompt:
+        h = ui.markdown(r.x + 24, y, prompt, w, 13)
+        y += h
+    else:
+        ui.text(r.x + 24, y, "(not recorded for this run)", 13, T.TEXT_FAINT)
+        y += 20
+    ui.scroll_end(sc, y + sc.offset - r.y + 20)
 
 
 def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
