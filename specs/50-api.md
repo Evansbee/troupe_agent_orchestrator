@@ -50,13 +50,13 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
     `status: "active"`, `comments: []`, `room: null`. Clients render them without special cases.
   - **Commands and events:** these return `unavailable` with `data: {req, task}` until the owning task ships. That
     task wires its method, fields and events into the API as part of its own acceptance (a test calling it over
-    the socket).
+    the socket), and marks its row below **live** in the same diff, like a REQ status marker.
     | method / data | owning REQ → task |
     |---|---|
     | `room_message`, `room` field | COM-024 → #4 |
     | `stop_team`, `mark_seen human_last_seen` catch-up, `troupe start` | ENG-006, GUI-028 → #24 |
     | `reload`, `service.json`, Engine `reloading` | ENG-009/042, API-074 → #28 |
-    | `stop_now`, approval questions (`decision`) | SAFE-010/020 → #42 (wire in #48 if #42 has merged first) |
+    | `stop_now`, `resume`, approval questions (`decision`) | SAFE-010/020 → #57 (after #42 and #48) |
     | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
     | `comment_decision`, `comments`, `decisions_seen_at` | COM-035..037 → #27 |
     | `update_config` | ENG-019 + SAFE-021 → #5 |
@@ -303,3 +303,4 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
   up their methods (builder-2 msg #293).
 
 - 2026-09-24 — #48 implements the existing-data NDJSON API, Python client and CLI; staged domains follow API-006.
+- 2026-09-24 — API-006: owning tasks mark their staged row live; stop_now/resume/approvals move to #57.
