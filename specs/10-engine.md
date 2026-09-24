@@ -99,6 +99,23 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   the Lead's: moving a task that has a branch to **Done** sets it `approved` (the engine merges it and then marks it
   done, REQ-ENG-033); moving one to **Review** wakes QA. Moving a task out of `in_progress` while its run is live
   does not kill the run; the assignee sees the new status in its next prompt.
+- **REQ-ENG-040 [ ]** Merge gate: a configured check must pass before a task merges into main. (#15, human
+  approved idea #1)
+  - Config `[git] check = "<cmd>"` (troupe itself uses `"uv run pytest"`) and `[git] check_timeout` (seconds,
+    default 600). Empty `check` = today's behavior (merge straight after approval).
+  - On `approved` (from QA or a human board move, REQ-ENG-039), in the task's worktree: merge main into the task
+    branch, run the check with `cwd` = the worktree, then `merge --no-ff` into main **only if it exits 0**.
+  - Tasks without a branch skip the gate. The check runs off the engine's tick: heartbeat, chat and other wakes
+    keep going while it runs, and only one check runs at a time.
+  - Failure (non-zero exit or timeout): the task goes back to `in_progress` with the assignee. The last ~50 lines of
+    output go into `review_notes` and are mailed to the builder, an event is logged ("Checks failed on #15"), and
+    the full output is saved to `.troupe/checks/t<id>.log`. The worktree is kept. The builder fixes the problem and
+    calls `complete_task` again, which goes through QA review again, the same as the conflict path.
+  - The board card shows a "checks failed" chip from the failure until the task next enters `review`.
+  - A conflict while merging main into the branch, or while merging into main afterwards, takes the existing
+    REQ-ENG-034 path.
+  - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
+    output, a timeout counts as a failure, and an empty check merges directly.
 
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
@@ -108,3 +125,4 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for ENG-016/017/018/019/037/038 (from backlog #1,#2,#3,#5,#9,#10); new ENG-039
   (drag to Done must merge, not skip it).
+- 2026-09-23 — new ENG-040 merge gate (human approved idea #1 via pm; task #15, depends on #3's `[git]` section).

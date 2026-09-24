@@ -63,4 +63,4 @@ territories for parallel builders, reviewers on a different runtime than writers
 ## Changelog
 - 2026-09-23 — initial vision written during bootstrap (from the human's brief).
 - 2026-09-23 — added "What finished means" (human: a tool we can use to build a project; agent activity
-  always visible). Merge gate approved (idea #1 → REQ-ENG-039).
+  always visible). Merge gate approved (idea #1 → REQ-ENG-040).
