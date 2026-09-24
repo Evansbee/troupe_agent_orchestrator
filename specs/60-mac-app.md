@@ -5,7 +5,7 @@ The desktop GUI moves from raylib/Python to a native macOS app. The GUI requirem
 native-only requirements, and sets milestones. The app is a pure client of the engine local API (the API,
 `specs/50-api.md`): it never opens `.troupe/troupe.db` or writes the `commands` table directly. The raylib GUI
 (`src/troupe/gui/`) stays the daily GUI until the Mac app reaches parity (REQ-MAC-070).
-Code: `mac/` (SwiftPM package; macOS 27+, Swift 6.4, SwiftUI, Metal / Canvas for Pulse and Stage).
+Code: `mac/` (SwiftPM package; macOS 26+, Swift 6.4, SwiftUI, Metal / Canvas for Pulse and Stage).
 Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 
 ## Package & build
@@ -220,6 +220,6 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 
 ## Changelog
 - 2026-09-23 — written (human confirmed the native SwiftUI app; pm msg #110).
-- 2026-09-23 — minimum macOS is 27+ (lead's decision, overriding pm's 26+: the human's Mac runs 27, troupe is
-  single-user, and it's reversible; closes that open question). `troupe start` and
+- 2026-09-23 — minimum macOS is 26+ (pm's call, confirmed by the lead after a crossed decision; closes that open
+  question). `troupe start` and
   `service.json` wired into REQ-MAC-015.

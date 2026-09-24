@@ -92,6 +92,11 @@ fan-out, the 12-in-flight merge cap) — two refinements the human specifically 
   edge don't stack brightness — the edge just resets to full warmth and restarts its fade. This turns
   the constellation into a readable "who's active with whom right now" map without requiring anyone to
   watch comets fly in real time.
+- **Thickness signals volume, not just recency** (borrowed from Grafana's Node Graph edges, see
+  references below): a spoke's line thickness scales with how many messages have crossed it in the last
+  3-minute warm window (capped at a modest max thickness so a chatty pair doesn't dominate the scene).
+  Combined with the fade above, a glance answers both "who talked recently" (brightness) and "who talks
+  a lot" (thickness).
 
 ## Layer 2 — who's waiting on whom
 
