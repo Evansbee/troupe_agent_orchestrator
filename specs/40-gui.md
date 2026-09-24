@@ -48,7 +48,7 @@ the Mac app.
 ## Views
 - **REQ-GUI-010 [x]** Chat: partner list (PM, Spec, Lead first), markdown bubbles, live "is working" bubble with
   current activity, suggestions on empty threads, multi-line composer (Enter send, Shift+Enter newline).
-- **REQ-GUI-017 [ ]** (#33; human: "make sure our chat always stays scrolled to the bottom") Stick to the bottom.
+- **REQ-GUI-017 [x]** (#33; human: "make sure our chat always stays scrolled to the bottom") Stick to the bottom.
   - Chat and the Agent transcript follow new content while the view is at the bottom, even when content grows
     by hundreds of pixels in one frame (a streaming reply, a long message). Stickiness changes only on user scroll,
     never on content growth.
@@ -256,3 +256,4 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-24 — new GUI-008 minimum window (#55), GUI-009 zoom (#23), GUI-017 stick-to-bottom (#33), GUI-043 text
   selection (#47). GUI-022 gains older-run paging (#54). GUI-023 shipped (#7/#53). GUI-005 OS notifications move to ENG-047.
 - 2026-09-24 — GUI-027 marked partial (title shipped, #12). COM-025 shipped.
+- 2026-09-24 — GUI-017 shipped (#33 merged; the builder hadn't flipped the marker).
