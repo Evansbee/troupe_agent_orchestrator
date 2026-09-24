@@ -68,6 +68,7 @@ def test_quit_with_no_runs_in_flight_stops_the_owned_engine(project, monkeypatch
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: stop_calls == [cfg])
         await server.stop()
@@ -88,6 +89,7 @@ def test_quit_with_runs_in_flight_asks_first_and_a_no_answer_cancels(project, mo
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: len(app.screen_stack) > 1)  # the confirmation modal is up
             await pilot.press("n")
@@ -111,7 +113,45 @@ def test_quit_with_runs_in_flight_stops_on_yes(project, monkeypatch):
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
+            await _wait_until(lambda: len(app.screen_stack) > 1)
+            await pilot.press("y")
+            await _wait_until(lambda: stop_calls == [cfg])
+        await server.stop()
+
+    asyncio.run(scenario())
+    assert stop_calls == [cfg]
+
+
+def test_ctrl_q_quits_with_confirm_even_while_the_composer_is_focused(project, monkeypatch):
+    """QA #83: action_quit was `async def ... : await self.action_quit_app()`, but
+    action_quit_app is @work — awaiting the Worker it returns raised TypeError, killing the app
+    before the confirm dialog or stop_owned_engine ran. ctrl+q is Textual's own priority binding
+    (fires regardless of focus), and #83 made plain "q" text once the composer has startup focus,
+    so ctrl+q is now the one key that must always quit cleanly."""
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+    stop_calls = []
+    monkeypatch.setattr("troupe.tui.app.stop_owned_engine",
+                        lambda c: stop_calls.append(c) or asyncio.sleep(0))
+
+    async def scenario():
+        server = FixtureServer(cfg.root, engine=dict(ENGINE_BUSY, running_runs=3))
+        await server.start()
+        app = TroupeApp(cfg, owns_engine=True)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_until(lambda: app.client.connected)
+            await pilot.pause()
+            assert isinstance(app.focused, Composer)  # startup focus (#83), unlike plain "q"
+            await pilot.press("ctrl+q")
+            await _wait_until(lambda: len(app.screen_stack) > 1)
+            await pilot.press("n")
+            await pilot.pause()
+            assert not app._exit and stop_calls == []
+
+            await pilot.press("ctrl+q")
             await _wait_until(lambda: len(app.screen_stack) > 1)
             await pilot.press("y")
             await _wait_until(lambda: stop_calls == [cfg])
@@ -133,6 +173,7 @@ def test_non_owner_quit_leaves_the_engine_running(project, monkeypatch):
         app = TroupeApp(cfg, owns_engine=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: app._exit)
         await server.stop()

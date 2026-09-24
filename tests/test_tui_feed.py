@@ -243,6 +243,7 @@ def test_kill_switch_shows_unavailable_before_57(project):
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
+                await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "s"
                 await pilot.press("s")
                 await pilot.pause()
                 await pilot.press("y")
@@ -269,6 +270,7 @@ def test_kill_switch_success_shows_stopped_banner_and_resume_recovers(project):
                 assert not app.query(".-visible")
                 assert app.check_action("resume_action", ()) is False
 
+                await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "s"
                 await pilot.press("s")
                 await pilot.pause()
                 await pilot.press("y")
@@ -284,6 +286,7 @@ def test_kill_switch_success_shows_stopped_banner_and_resume_recovers(project):
                 assert "STOPPED" in app._stopped_banner.content
                 assert app.check_action("resume_action", ()) is True
 
+                await pilot.press("tab")  # #83: closing the kill-switch dialog refocuses the composer, which eats "R"
                 await pilot.press("R")
                 await pilot.pause()
                 await pilot.press("y")
