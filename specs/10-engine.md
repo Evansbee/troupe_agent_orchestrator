@@ -48,12 +48,27 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     before the backend starts, so they exist even for runs that crash.
   - Runs from before the migration show "(not recorded)" rather than erroring.
   - Test: migration on an old-schema DB; a launched run persists both fields.
-- **REQ-ENG-019 [ ]** Hot-reload `troupe.toml` (agents, models, budget) without restarting. (#5)
-  - The engine re-reads the file when its mtime changes (checked each tick); invalid TOML is ignored, the previous
-    config kept, and an error event logged.
-  - Changes apply at the next run; running runs are never interrupted. Changing an agent's **backend** clears its
-    session (sessions can't cross backends); changing only the model keeps it.
-  - Disabling an agent stops new wakes; adding an agent to the file makes it appear in the team without restart.
+- **REQ-ENG-019 [ ]** The team is defined in `.troupe/team.yaml` and both config files hot-reload. (#20; human,
+  live chat: "the agent setup should be a yaml file, which provider, which level")
+  - `team.yaml` holds `agents:`, a list of `{id, role, name, provider, model, level, enabled, idle_minutes,
+    extra_args}`. `provider` is `claude | codex | local`. `level` is `low | medium | high | max`, or empty for the
+    provider default (mapping in REQ-BE-010). Only `id`, `role` and `provider` are required. `troupe.toml` keeps
+    `[project]`, `[budget]`, `[backends]` and `[git]`.
+  - Validation (on load and on reload): ids are unique, exactly one `lead`, roles and providers are known, `level`
+    is valid, and numbers are non-negative. The error message names the file, the agent id and the field.
+  - Migration: if `team.yaml` is missing and `troupe.toml` has `[[agents]]`, write `team.yaml` from them once
+    (`backend` → `provider`, `effort` → `level`) and log an event. `troupe.toml` is not modified. When both exist,
+    `team.yaml` wins and a leftover `[[agents]]` gets a one-time "ignored" event. `troupe init` writes `team.yaml`.
+  - Hot reload: the engine checks both files' mtimes each tick and re-reads a file when it changes. An invalid file
+    is ignored and the last good config kept. An error event is logged and the GUI top bar shows a red
+    "team.yaml invalid" (or troupe.toml) pill with the message until a valid version is saved.
+  - Changes apply at each agent's next wake; a run in flight is never interrupted. Changing `provider` clears the
+    agent's session (sessions can't cross providers); changing `model` or `level` keeps it.
+  - Adding an agent makes it appear in the team without restart. Disabling one stops new wakes. Removing one (or
+    changing its role) returns its open tasks to `ready` and unassigned.
+  - Comments in `team.yaml` survive a GUI save (REQ-GUI-021), so the YAML library must round-trip comments.
+  - Test: parse and validate, migration from `[[agents]]`, reload applies a model change to the next launch, and an
+    invalid file keeps the old config.
 
 ## Prompts
 - **REQ-ENG-020 [x]** System prompt = team charter (roster, rules, tools) + role prompt (`roles.py`).
@@ -120,9 +135,12 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
+- Default roster in the `team.yaml` that `troupe init` writes: the human wants codex trusted equally with claude.
+  pm is confirming the concrete provider/model/level per role with the human (ENG-019).
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for ENG-016/017/018/019/037/038 (from backlog #1,#2,#3,#5,#9,#10); new ENG-039
   (drag to Done must merge, not skip it).
 - 2026-09-23 — new ENG-040 merge gate (human approved idea #1 via pm; task #15, depends on #3's `[git]` section).
+- 2026-09-23 — ENG-019 rewritten: agents move to `.troupe/team.yaml` (provider/model/level), hot-reloaded (#20).
