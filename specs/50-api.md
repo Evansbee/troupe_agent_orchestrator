@@ -129,8 +129,9 @@ Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: boo
            version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
            (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
-           throttled: str?, providers: [{provider, limited_until: ts?, windows: [{name: "5h"|"7d"|…,
-           used_pct: float, cap_pct: float?, resets_at: ts?}]}]
+           throttled: str?, providers: [{provider, limited_until: ts?, plan_type: str?, observed_at: ts?,
+           source: str?, windows: [{name: "five_hour"|"seven_day"|"window_<minutes>", window_minutes: int,
+           used_pct: float, cap_pct: float?, resets_at: ts?}]}]  (window names per REQ-BE-011)
 Seen       human_last_seen: ts?, decisions_seen_at: ts?
 ```
 
@@ -310,3 +311,4 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
 - 2026-09-24 — API-006: owning tasks mark their staged row live; stop_now/resume/approvals move to #57.
 - 2026-09-24 — WaitingOn aligned to ENG-046 (precedence, plural `targets`, reset_at for providers too). Added the
   `milestone` command (builder-2 msg #329).
+- 2026-09-24 — Usage windows use BE-011 names and carry plan/observed_at/source.
