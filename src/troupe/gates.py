@@ -9,6 +9,9 @@ from pathlib import Path
 from . import gitops
 from .safety import audit, fingerprint, protected, redact
 
+MERGE_RETRY_ATTEMPTS = 3  # #81: how many times to re-check after "repository changed during checks"
+MERGE_RETRY_BACKOFF_SECONDS = 2.0  # wait between retries, so main has a moment to settle
+
 
 def request(store, key: str, title: str, context: str, payload: dict, task_id=None) -> dict:
     previous = store.kv_get(key)
@@ -190,6 +193,48 @@ class MergeGateMixin:
             self.store.send("system", task["assignee"], note + "\nFix the failure and call complete_task for QA review.",
                             subject=f"#{task['id']} checks failed", task_id=task["id"], kind="system")
 
+    def _check_and_merge_with_retry(self, cfg, s, t: dict, tree: Path, log_path: Path) -> tuple[bool, str, bool]:
+        """Run check + merge, retrying only on "repository changed during checks" (#81) — main moves
+        constantly from non-builder autocommits, and that's not the builder's fault. Re-merges main
+        into the task tree and re-runs the check fresh each attempt, so the tree that finally merges
+        is always the one that just passed. A real check failure or a genuine merge conflict still
+        bounces to the builder immediately, with no retry — retrying wouldn't change the outcome.
+
+        Returns (ok, out, bounced). `bounced=True` means the task was already handled (check_failed,
+        a stop request, or the human's protected-path gate) and the caller should just move on to the
+        next task. `bounced=False` means the caller should apply its normal ok/out merge-result
+        handling (merge success, or a real conflict from merge_checked's own `git merge`)."""
+        for attempt in range(1, MERGE_RETRY_ATTEMPTS + 1):
+            main_head, task_head = gitops.prepare_check(cfg.root, tree, t["branch"])
+            passed, outcome = gitops.run_check(tree, cfg.git.check, cfg.git.check_timeout, log_path, CheckStop(self))
+            current = s.task(t["id"])
+            if self._stop.is_set() or not current or current["status"] != "approved":
+                return False, outcome, True
+            if not passed:
+                with log_path.open(errors="replace") as log:
+                    tail = "".join(deque(log, maxlen=50))[-12000:]
+                self.check_failed(t, tail or outcome)
+                return False, outcome, True
+            s.kv_set(f"check_failures.{t['id']}", 0)
+            if not task_gate(cfg, s, s.task(t["id"])):
+                return False, "awaiting protected-path approval", True
+            ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
+                                           f"Merge #{t['id']}: {t['title']}", CheckStop(self))
+            if self._stop.is_set() or self.store.kv_get("stopped"):
+                return False, out, True
+            if ok or not out.startswith("Repository changed"):
+                return ok, out, False  # success, or a real merge conflict — let the caller handle it
+            with log_path.open("a") as log:
+                log.write(f"{out} (attempt {attempt}/{MERGE_RETRY_ATTEMPTS})\n")
+            if attempt == MERGE_RETRY_ATTEMPTS:
+                self.check_failed(t, f"Repository changed during checks {MERGE_RETRY_ATTEMPTS} times in a "
+                                      f"row — main kept moving underneath the checked tree. Resubmit for "
+                                      f"review once things settle down.")
+                return False, out, True
+            stop = CheckStop(self)
+            if stop.wait(MERGE_RETRY_BACKOFF_SECONDS):
+                return False, out, True  # stopped during backoff — leave the task as approved
+
     def _process_approved(self) -> None:
         s = self.store
         process_answers(self.cfg, s)
@@ -211,28 +256,9 @@ class MergeGateMixin:
                     if tree is None or not tree.exists():
                         self.check_failed(t, "Task worktree is missing; restore it and resubmit.")
                         continue
-                    main_head, task_head = gitops.prepare_check(cfg.root, tree, t["branch"])
                     log_path = cfg.state_dir / "checks" / f"t{t['id']}.log"
-                    passed, outcome = gitops.run_check(tree, cfg.git.check, cfg.git.check_timeout, log_path, CheckStop(self))
-                    current = s.task(t["id"])
-                    if self._stop.is_set() or not current or current["status"] != "approved":
-                        continue
-                    if not passed:
-                        with log_path.open(errors="replace") as log:
-                            tail = "".join(deque(log, maxlen=50))[-12000:]
-                        self.check_failed(t, tail or outcome)
-                        continue
-                    s.kv_set(f"check_failures.{t['id']}", 0)
-                    if not task_gate(cfg, s, s.task(t["id"])):
-                        continue
-                    ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
-                                                   f"Merge #{t['id']}: {t['title']}", CheckStop(self))
-                    if self._stop.is_set() or self.store.kv_get("stopped"):
-                        continue
-                    if not ok and out.startswith("Repository changed"):
-                        with log_path.open("a") as log:
-                            log.write(out + "\n")
-                        self.check_failed(t, out)
+                    ok, out, bounced = self._check_and_merge_with_retry(cfg, s, t, tree, log_path)
+                    if bounced:
                         continue
                 except gitops.GitError as e:
                     ok, out = False, str(e)
