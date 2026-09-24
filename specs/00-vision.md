@@ -49,6 +49,14 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    project's engine service over a local API. The team (provider, model and level per agent) is a
    live-editable `team.yaml`; budget and plumbing live in `troupe.toml`.
 
+## How the human works with troupe
+- **One terminal per project.** `troupe` in a project directory (e.g. in a tmux window) opens a simple TUI for that
+  project: status, tasks, comms, Needs-you, and a chat with the PM.
+- **The PM is the human's single point of contact.** Other agents go through the PM, who answers, batches or
+  escalates. Safety approvals and emergencies always reach the human directly.
+- **The desktop app sits above all projects**: the portfolio view across teams, where the cross-project
+  coordinator lives.
+
 ## The team (roles)
 | Role | Job |
 |---|---|
@@ -93,3 +101,4 @@ territories for parallel builders, reviewers on a different runtime than writers
 - 2026-09-23 — added Principle 0: the human comes first (human). Safety baseline + sandboxing tasked.
 - 2026-09-23 — Principle 0 refined (human): protect job/reputation/family/life, keep agents independent, surface
   opportunities that help the human succeed.
+- 2026-09-24 — interface model (human): per-project TUI + PM as single contact + GUI as portfolio view.
