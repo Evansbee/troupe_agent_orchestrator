@@ -169,7 +169,7 @@ def recover_interrupted(store: Store) -> None:
     )
 
 
-def _kill_descendants(pid: int) -> None:
+def kill_descendants(pid: int) -> None:
     rows = subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True).splitlines()
     parents = {
         int(row.split()[0]): int(row.split()[1])
@@ -207,7 +207,7 @@ def stop_service(cfg, timeout: float = 15) -> bool:
         time.sleep(0.05)
     # Recheck identity before signalling: a recycled pid is never a valid stop target.
     if service_status(cfg.root).get("pid") == pid:
-        _kill_descendants(pid)
+        kill_descendants(pid)
         os.kill(pid, signal.SIGKILL)
     deadline = time.monotonic() + 2
     while _locked(cfg.state_dir) and time.monotonic() < deadline:
