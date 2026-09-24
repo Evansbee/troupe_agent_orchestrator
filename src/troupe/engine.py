@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import threading
 import time
 import traceback
@@ -128,8 +130,8 @@ class Engine:
         self.sync_config_agents(self.cfg)
         for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
             s.kv_set(f"config_error.{name}", "")
-        s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
-        s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
+        from .service import recover_interrupted
+        recover_interrupted(s)
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
         s.kv_set("checking_task", None)
@@ -173,9 +175,27 @@ class Engine:
                 self.store.event("system", "error", "engine tick failed: " + traceback.format_exc()[-600:],
                                  significant=False)
             await asyncio.sleep(TICK)
-        for runner, _task, _w in list(self.running.values()):
+        runs = list(self.running.values())
+        groups = {id(runner): runner.proc.pid for runner, _, _ in runs
+                  if runner.proc and runner.proc.returncode is None}
+        for runner, _task, _w in runs:
             runner.kill()
-        await asyncio.sleep(0.5)
+        if runs:
+            await asyncio.sleep(0.5)
+            for runner, task, _w in runs:
+                if runner.proc and runner.proc.returncode is None:
+                    groups[id(runner)] = runner.proc.pid
+                if id(runner) in groups:
+                    try:
+                        os.killpg(groups[id(runner)], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await runner.proc.wait()
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for _, task, _ in runs), return_exceptions=True)
+        self.store.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
+        self.store.x("UPDATE agents SET state='idle',current_run=NULL,activity='' WHERE state='running'")
         if self._merge_task is not None:
             await self._merge_task
 
@@ -185,6 +205,8 @@ class Engine:
         s.kv_set("heartbeat", now())
         self.reload_config()
         self.handle_commands()
+        if self._stop.is_set():
+            return
         if self._merge_task is not None and self._merge_task.done():
             try:
                 self._merge_task.result()
@@ -280,7 +302,7 @@ class Engine:
                     old = previous.get(cfg.id, {}).get('waiting_on')
                     waiting['since'] = old['since'] if old and old['kind'] == waiting['kind'] else stamp
             states[cfg.id] = dict(waiting_on=waiting, mail_queued=queued.get(cfg.id, 0),
-                mail_reading=s.kv_get(f'mail_reading.{cfg.id}', 0) if row['state'] == 'running' else 0)
+                mail_reading=len(s.kv_get(f'run_mail.{row["current_run"]}', [])) if row['state'] == 'running' else 0)
         s.publish_wait_states(states)
         return states
 
@@ -302,7 +324,9 @@ class Engine:
         s = self.store
         for c in s.pending_commands():
             cmd, arg = c["cmd"], c["arg"]
-            if cmd == "stop" and arg in self.running:
+            if cmd == "stop_team":
+                self.stop()
+            elif cmd == "stop" and arg in self.running:
                 self.running[arg][0].kill()
                 s.event("human", "control", f"You stopped {arg}'s run", significant=False)
             elif cmd == "poke":
@@ -544,8 +568,6 @@ class Engine:
         if role.works_in_task_tree and task and task.get("worktree") and Path(task["worktree"]).exists():
             cwd = Path(task["worktree"])
         msgs = s.unread(a.id)
-        s.mark_read([m["id"] for m in msgs])
-        s.kv_set(f"mail_reading.{a.id}", len(msgs))
         if any(m["sender"] == "human" and m["kind"] == "chat" for m in msgs):
             w.reason = "chat"  # whatever woke them, the human gets a live reply
         row = s.agent(a.id) or {}
@@ -554,6 +576,8 @@ class Engine:
         system = self.system_prompt(a)
         run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat,
                              prompt=prompt, system=system)
+        s.kv_set(f"run_mail.{run_id}", [m["id"] for m in msgs])
+        s.mark_read([m["id"] for m in msgs])
         s.set_agent(a.id, state="running", current_run=run_id, activity=REASONS[w.reason], last_run_at=now(),
                     last_event_seen=seen)
         s.event(a.id, "run", f"{a.id} woke up: {REASONS[w.reason]}", ref=f"run:{run_id}", significant=False)
@@ -636,6 +660,10 @@ class Engine:
                 # covers a crash during setup itself (nothing to update to in that case).
                 s.update_run_prompt(run_id, spec.prompt)
                 res = await runner.run(spec, emit)
+        except asyncio.CancelledError:
+            from .runners import RunResult
+            runner.cancelled = True
+            res = RunResult(ok=False, error="service shutdown")
         except Exception as e:
             from .runners import RunResult
             res = RunResult(ok=False, error=repr(e))
@@ -650,8 +678,12 @@ class Engine:
             reset = reported_reset({"message": res.error}, now())
             self.record_limit(a.backend, now() + 900 if reset is None else reset, reset is not None)
         status = "limited" if limited else "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
+        if self._stop.is_set():
+            status = "interrupted"
+            s.mark_unread([m["id"] for m in msgs])
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])
+        s.x("DELETE FROM kv WHERE key=?", f"run_mail.{run_id}")
         row = s.agent(a.id) or {}
         fields = dict(state="idle", current_run=None, activity="", runs=(row.get("runs") or 0) + 1,
                       cost=(row.get("cost") or 0) + res.cost, tokens=(row.get("tokens") or 0) + res.tokens)

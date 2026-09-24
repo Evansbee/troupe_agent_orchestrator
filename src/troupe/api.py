@@ -29,7 +29,6 @@ PUSH_LIMIT = 8 * 1024 * 1024
 OUTPUT_LIMIT = 32 * 1024 * 1024
 STAGED = {
     "room_message": ("REQ-COM-024", 4),
-    "stop_team": ("REQ-ENG-006", 24),
     "reload": ("REQ-ENG-009", 28),
     "update_memory": ("REQ-COM-033", 8),
     "delete_memory": ("REQ-COM-033", 8),
@@ -677,6 +676,8 @@ class Data:
                 self.require('milestones', mid)
                 s.update_milestone(mid, **fields)
             return dict(milestone=s.milestone(mid))
+        if method == "stop_team":
+            return {"accepted": True}
         if method in STAGED:
             unavailable(*STAGED[method])
         if method in (
@@ -825,7 +826,7 @@ class Connection:
             for t in self.topics
         )
 
-    def enqueue(self, obj, push=False):
+    def enqueue(self, obj, push=False, after_send=None):
         if self.closed:
             return
         raw = (
@@ -837,9 +838,9 @@ class Connection:
         transport_bytes = self.writer.transport.get_write_buffer_size()
         if push and self.queued + transport_bytes + len(raw) > self.server.push_limit:
             self.queue = deque(
-                (data, ispush) for data, ispush in self.queue if not ispush
+                (data, ispush, callback) for data, ispush, callback in self.queue if not ispush
             )
-            self.queued = sum(len(data) for data, _ in self.queue)
+            self.queued = sum(len(data) for data, _, _ in self.queue)
             self.subscribed = False
             raw = (
                 json.dumps(
@@ -855,7 +856,7 @@ class Connection:
         if self.queued + transport_bytes + len(raw) > self.server.output_limit:
             self.close()
             return
-        self.queue.append((raw, push))
+        self.queue.append((raw, push, after_send))
         self.queued += len(raw)
         self.ready.set()
 
@@ -869,10 +870,12 @@ class Connection:
             while not self.closed:
                 await self.ready.wait()
                 while self.queue:
-                    raw, _ = self.queue.popleft()
+                    raw, _, callback = self.queue.popleft()
                     self.queued -= len(raw)
                     self.writer.write(raw)
                     await self.writer.drain()
+                    if callback:
+                        callback()
                 self.ready.clear()
         except (ConnectionError, OSError, asyncio.CancelledError):
             pass
@@ -911,7 +914,8 @@ class Connection:
                 rid = req.get("id") if isinstance(req, dict) else None
                 try:
                     result = self.server.request(self, req)
-                    self.enqueue(dict(id=rid, ok=True, result=result))
+                    after_send = (lambda: self.server.data.s.command("stop_team")) if req["method"] == "stop_team" else None
+                    self.enqueue(dict(id=rid, ok=True, result=result), after_send=after_send)
                 except APIError as e:
                     self.enqueue(dict(id=rid, ok=False, error=e.object()))
                     if e.code == "unsupported_version":

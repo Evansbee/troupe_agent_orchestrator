@@ -114,8 +114,9 @@ def test_mail_and_slot_snapshots(project):
     assert states[a.id]["waiting_on"]["kind"] == "slot"
     assert states[a.id]["waiting_on"]["queue_position"] == 1
     s.mark_read([m["id"] for m in s.unread(a.id)])
-    s.set_agent(a.id, state="running")
-    s.kv_set("mail_reading." + a.id, 2)
+    rid = s.start_run(a.id, "messages", None, str(cfg.root), False)
+    s.set_agent(a.id, state="running", current_run=rid)
+    s.kv_set(f"run_mail.{rid}", [1, 2])
     states = engine.publish_wait_states()
     assert states[a.id] == dict(waiting_on=None, mail_queued=0, mail_reading=2)
     s.set_agent(a.id, state="idle")
