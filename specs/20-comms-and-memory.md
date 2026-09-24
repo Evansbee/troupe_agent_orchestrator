@@ -38,7 +38,8 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - FYI mail never triggers a wake. It's delivered in the recipient's next natural wake under "FYI since last time".
   - The engine ignores the flag, and the mail wakes as normal, for mail from the human, mail about the recipient's
     own active task or review, and blocking questions.
-  - Charter rule: mark mail `fyi=True` unless you need the recipient to act or reply. Until this ships, the team
+  - Charter rule, human-approved verbatim (question #12): "Mark mail fyi=True unless you need the recipient to act
+    or reply." Until this ships, the team
     convention is "FYI" in the subject and no replies to FYIs (lead, 2026-09-23).
   - Test: an FYI doesn't wake the recipient and appears in its next prompt; exempt mail still wakes.
 
@@ -194,3 +195,4 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
 - 2026-09-23 — COM-026 resolve questions answered in chat (#37; human request; charter line human-approved).
 - 2026-09-24 — COM-013 FYI mail (#46).
+- 2026-09-24 — COM-013 charter line recorded as human-approved (question #12).
