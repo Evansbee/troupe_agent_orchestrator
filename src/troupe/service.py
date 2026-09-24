@@ -92,6 +92,16 @@ def _locked(state: Path) -> bool:
         return False
 
 
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not ours
+    return True
+
+
 def service_status(root: Path) -> dict:
     state = root / ".troupe"
     if not state.is_dir():
@@ -103,6 +113,10 @@ def service_status(root: Path) -> dict:
     except (OSError, ValueError, TypeError):
         record = {}
     pid = record.get("pid")
+    heartbeat = 0
+    if (state / "troupe.db").exists():
+        heartbeat = Store(state / "troupe.db").kv_get("heartbeat", 0) or 0
+    heartbeat_age = time.time() - heartbeat if heartbeat else None
     live = bool(
         type(pid) is int
         and pid > 0
@@ -110,17 +124,29 @@ def service_status(root: Path) -> dict:
         and record.get("identity")
         and _identity(pid) == record["identity"]
     )
-    heartbeat = 0
-    if (state / "troupe.db").exists():
-        heartbeat = Store(state / "troupe.db").kv_get("heartbeat", 0) or 0
+    # Pre-#24 builds wrote a bare integer and never flocked engine.lock, so they're invisible to
+    # the check above. Recognize them by pid liveness + a fresh heartbeat (REQ-ENG-005) instead,
+    # so `troupe up` attaches to them rather than starting a second engine (REQ-ENG-003).
+    legacy = bool(
+        not live
+        and record
+        and "identity" not in record
+        and type(pid) is int
+        and pid > 0
+        and heartbeat_age is not None
+        and heartbeat_age < 5
+        and _process_alive(pid)
+    )
+    live = live or legacy
     return dict(
         state="running" if live else "stale" if record else "stopped",
         pid=pid if live else None,
+        legacy=legacy,
         version=record.get("version", ""),
         started_at=record.get("started_at", 0),
         uptime=max(0, time.time() - record.get("started_at", time.time())),
         heartbeat=heartbeat,
-        heartbeat_age=time.time() - heartbeat if heartbeat else None,
+        heartbeat_age=heartbeat_age,
     )
 
 
@@ -192,6 +218,23 @@ def _kill_descendants(pid: int) -> None:
                 pass
 
 
+def _stop_legacy(cfg, pid: int, timeout: float) -> bool:
+    """Pre-#24 engines hold no lock, so wait for the heartbeat to go stale instead of the lock."""
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if service_status(cfg.root)["state"] != "running":
+            break
+        time.sleep(0.05)
+    else:
+        if _process_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+    recover_interrupted(Store(cfg.db_path))
+    (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+    write_service_state(cfg.state_dir, "stopped", "Stopped legacy engine")
+    return True
+
+
 def stop_service(cfg, timeout: float = 15) -> bool:
     status = service_status(cfg.root)
     if status["state"] != "running":
@@ -199,6 +242,8 @@ def stop_service(cfg, timeout: float = 15) -> bool:
             (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
         return False
     pid = status["pid"]
+    if status["legacy"]:
+        return _stop_legacy(cfg, pid, timeout)
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
