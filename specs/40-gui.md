@@ -17,6 +17,16 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
 - **REQ-GUI-006 [x]** Idle at 20 fps when nothing is happening; 60 fps when animating/working.
 - **REQ-GUI-007 [x]** F12 saves a screenshot to `.troupe/`; `TROUPE_SHOT=path TROUPE_TAB=Board troupe gui`
   renders one frame to a PNG and exits (for agents to verify UI work visually).
+- **REQ-GUI-042 [x]** Global UI zoom, not per-widget font bumping: one factor scales the whole logical
+  coordinate system (fonts *and* layout metrics — `TOP_H`/`SIDEBAR_W`/`GAP`/`RADIUS`/etc.), so everything
+  stays proportional. (#23; human request via live chat, "text should be a bit larger on retina")
+  - Default 115% (bigger than 100%, per the human's ask). ⌘= / ⌘+ zoom in, ⌘- zoom out, ⌘0 resets to
+    default, in 5% steps, range 80–160%. A toast ("Zoom 115%") confirms each change.
+  - Fonts are rasterized at `size × dpi × zoom` so zoomed text is real texture detail, not a blown-up
+    bitmap; text stays crisp on Retina at any zoom level.
+  - The zoom persists across launches (`kv.gui_zoom`).
+  - Font atlases are cached per rasterized px size and evicted (not endlessly accumulated) when zoom
+    changes; idle fps stays at 20 (REQ-GUI-006) — no per-frame font loading.
 
 ## Views
 - **REQ-GUI-010 [x]** Chat: partner list (PM, Spec, Lead first), markdown bubbles, live "is working" bubble with
