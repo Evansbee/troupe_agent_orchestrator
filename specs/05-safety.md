@@ -47,22 +47,39 @@ normal project work, including pushing to the project's own remote with the huma
     quietly dropped or shrunk. The mechanics (★ flag, reporting back) are task #45.
 
 ## Kill switch (#42)
-- **REQ-SAFE-010 [~]** **Stop everything** (CLI + raylib GUI + API shipped, #57; Mac via REQ-MAC) is available as:
+- **REQ-SAFE-010 [~]** **Stop everything** (CLI + raylib GUI shipped; API via #48, Mac via REQ-MAC) is available as:
   - a GUI button plus ⌘⇧. (raylib and Mac app);
   - `troupe stop --now`;
-  - the API `stop_now` command (specs/50-api.md), which calls the same `safety.stop_now()` the CLI does — one
-    implementation, not a second one behind the socket.
+  - the API `stop_now` command (specs/50-api.md).
   Within **2 s** every running agent process group gets SIGTERM, then SIGKILL, and the engine enters `stopped` state.
   - No runs start, **chat included**, until the human resumes.
   - The service stays up so the human can inspect. Runs that were in flight are marked `interrupted` and their mail is
     re-queued.
-  - Resume is human-only: the GUI Resume button, `troupe resume`, or the API. Agents have no tool that resumes or
-    stops everything — `stop_now`/`resume`/approval decisions aren't exposed as agent tools, only through the GUI,
-    CLI and the local-user-only (0600) API socket.
+  - Resume is human-only: the GUI Resume button, `troupe resume`, or the API. Agents have no tool that resumes.
   - The stopped state persists in kv across reload, restart and crash recovery (REQ-ENG-009/042).
   - Differs from `troupe stop` (REQ-ENG-006), which shuts the service down.
   - Test: with 2 runs in flight, both the CLI and the API command leave zero agent processes within 2 s, and nothing
-    launches until resumed; no agent-tool path can reach resume or an approval decision.
+    launches until resumed.
+- **REQ-SAFE-011 [ ]** (#78; human, question #17) **Kill** is the hard stop, distinct from the graceful Stop everything
+  (SAFE-010). It's triggered only by the human, from a whistleblower concern (REQ-COM-029) or the TUI/API human-only
+  command.
+  - **Immediately**, SIGKILL every agent process group, their verified descendants and the engine's run workers. There's
+    no SIGTERM grace and no drain. Within **1 s** no agent process remains, including stubborn ones that ignore SIGTERM.
+  - The engine enters state `killed`, persisted in kv across restarts. Runs become `killed`, and their mail is
+    re-queued but not delivered while killed.
+  - While killed:
+    - no run of any kind starts, and the human's chat with the PM is unavailable too;
+    - the TUI turns entirely red with "KILLED" (the GUI/API show the same state);
+    - the engine stays up so the human can inspect.
+  - Resume is human-only, with an explicit confirmation ("Resume the team after a Kill? y/N"). Agents have no path to
+    it, through tools, the API (human-only command, #57 peer check) or config.
+  - Audited (REQ-SAFE-040), with the concern id that triggered it.
+  - Test:
+    - stubborn fake runs (ignoring SIGTERM) are gone within 1 s;
+    - state is `killed`, and nothing starts, chat included;
+    - the red TUI screenshot;
+    - resume requires confirmation;
+    - no agent tool or agent-originated API call can resume.
 
 ## Human gate on safety-critical changes (#42)
 - **REQ-SAFE-020 [x]** `[safety] protected` in `troupe.toml` lists paths (files or directories) that agents can't change
@@ -133,8 +150,6 @@ Blocked actions return a tool error telling the agent what was blocked and to us
   - Each is an event of kind `safety` in the feed (redacted) and a line in `engine.log`.
   - Each triggers a needs-help notification (task #35), except resume and approvals the human just made.
   - The Pulse/Stage ticker (REQ-GUI-035) shows them.
-  - The API's `stop_now`/`resume`/approval-decision commands (#57) go through the same `safety.audit()` call as the
-    CLI and GUI, so they're recorded identically — no separate audit path for the API.
 
 ## Least-privilege sandbox (#43)
 - **REQ-SAFE-050 [ ]** No run uses `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox`
@@ -206,3 +221,4 @@ Wake-prompt footer: `Principle 0 applies: the human comes first.`
 ## Changelog
 - 2026-09-23 — written (human request via pm; tasks #42, #43, #44). SAFE-001/004 shipped with #44. Principle 0 as refined by the human: independence
   preserved, ask only for real risk, guards target secret exposure, foreign remotes and force-push.
+- 2026-09-24 — SAFE-011 Kill: the hard stop from the whistleblower board (#78, human answer to question #17).
