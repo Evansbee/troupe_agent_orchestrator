@@ -119,6 +119,31 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   - The PM prompt gives the triage duty: answer what's already decided, batch what isn't urgent, frame everything
     with options, and never sit on anything. Every agent's charter says to reach the human through the PM. The
     `roles.py` change is protected, so the human approves it.
+- **REQ-COM-049 [~]** (the human, question #42 option A, 2026-09-24 19:17, after about 20 asks in one afternoon)
+  **The approval bar.** The human approves only:
+  - (a) changes to protected paths: safety, sandbox, merge-gate and runner code, and the protected specs
+    (REQ-SAFE-020/021);
+  - (b) anything that weakens security or the human's oversight;
+  - (c) spending money or subscription budget;
+  - (d) anything public in the human's name: pushes, releases, messages to other people;
+  - (e) product direction.
+  - Everything else is the PM's call, **decided and reported to the human in one line**. That covers routine
+    operational choices (provider or roster swaps, pausing agents, deleting already-scanned branches, reinstall
+    timing, config housekeeping), triage order, and reversible team-process decisions. The lead routes those to the
+    PM and never files `ask_human` for them.
+  - Questions that do reach the human carry options and a recommendation, and are batched unless urgent
+    (REQ-COM-028).
+  - Engine-generated cards follow the same bar. A protected-change card is raised at most once per distinct
+    protected change, and a status-marker-only edit to a protected spec raises none (REQ-SAFE-021, #118). The bar
+    never suppresses the items in REQ-COM-029 that go direct to the human, and it never touches the whistleblower
+    board: those stay the human's.
+  - Status: the rule is live as a PM/lead decision (memories #303/#304). Still pending: the PM and lead charter
+    lines in `roles.py`, which is protected and frozen, and #118's card rules.
+  - Test:
+    - the PM and lead prompts contain the bar;
+    - a day's Needs-you cards from `forward_to_human` each map to one of (a)–(e);
+    - a status-marker-only protected-spec diff raises no card;
+    - the same protected hunk seen twice by one task raises one card.
 - **REQ-COM-029 [~]** Nothing can be buried: bypass and auto-forward. Storage + PM-invisibility
   shipped (#65: escalation bypass, auto-forward timer, report_concern, the content-free notification
   and `troupe concerns` CLI); the whistleblower board's human-facing UI and Raise / Suppress / Kill /
