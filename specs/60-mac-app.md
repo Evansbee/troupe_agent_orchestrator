@@ -178,6 +178,17 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   hello + snapshot + events (the REQ-MAC-016 format), replayed on a fixed clock, so a screenshot is the same on
   every run. Commands are logged to stderr and ignored. Repository fixtures cover 1 and 3 projects, an 8-agent and
   a 12-agent team, and an offline project.
+- **REQ-MAC-052 [ ]** Motion evidence. A still can't show whether Pulse and Stage are alive, so tasks touching animated
+  scenes also attach a short recording.
+  - `TROUPE_REC=/path.mov` (plus `TROUPE_REC_SECONDS`, default 10) records the main window from a fixture
+    (REQ-MAC-051) or live data and exits 0.
+  - The review includes it together with a measured frame-time/fps figure for the scene (REQ-MAC-041 targets).
+    Headless, like REQ-MAC-050.
+- **REQ-MAC-053 [ ]** Design fidelity gate. Before the human's first look at any new Mac view, the designer reviews
+  screenshots and the recording against `design/*.md` and writes a punch list (for the spike:
+  `design/mac-fidelity.md`). Every P0 item is fixed and checked off by the designer before the view is shown to the
+  human. (pm/lead decision: the first impression of the Swift direction must not look worse than raylib; the
+  human's "don't lose the sexiness".)
 
 ## Performance & resources
 - **REQ-MAC-060 [ ]** Idle CPU stays below 1% (averaged over 60 s) with 3 projects attached, no agent working and
@@ -223,3 +234,5 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 - 2026-09-23 — minimum macOS is 26+ (pm's call, confirmed by the lead after a crossed decision; closes that open
   question). `troupe start` and
   `service.json` wired into REQ-MAC-015.
+- 2026-09-24 — MAC-052 motion recording evidence and MAC-053 design fidelity gate (pm/lead decisions after the #49
+  review; #58/#59).
