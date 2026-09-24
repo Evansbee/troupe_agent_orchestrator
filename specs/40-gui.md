@@ -84,10 +84,30 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
     that arrived (still open ones first). Each group shows a count; each item is clickable and navigates to it.
   - "Got it" or Esc closes the panel and advances `human_last_seen`. Nothing notable → no panel.
   - Test: selecting catch-up items from a fixture DB for a given `last_seen` is a pure function with unit tests.
-- **REQ-GUI-029 [ ]** (#24) Offline and version states: with no service running, the top bar pill says "Engine offline"
-  and offers **Start team** (REQ-ENG-001). With a version mismatch (REQ-ENG-006), the pill shows "Restart needed".
-- **REQ-GUI-040 [ ]** Project switcher: lists projects from the registry (REQ-ENG-008) with each one's service state;
-  choosing one re-opens the GUI on that project. (Not yet tasked.)
+- **REQ-GUI-029 [ ]** Service states in the engine pill:
+  - (#24) "Engine offline" with **Start team** (REQ-ENG-001).
+  - (#28) "Reloading… 2 runs draining" during a reload (REQ-ENG-009) and "Restarting…" after a crash (REQ-ENG-042).
+  - (#28) "Crashed — see engine.log" with **Start team** after a crash loop.
+- **REQ-GUI-040 [ ]** (#29; design #31) Multi-project window (human: "the gui can connect to multiple instances that
+  are running, we might want you on multiple projects at a time"). One window is attached to every registered project
+  (REQ-ENG-008); each project keeps its own service.
+  - **Project rail:** every registered project with a state dot (working / idle / paused / offline / crashed), the
+    number of working agents, and a needs-you badge. Click or ⌘⌥1–9 switches, and the switched-to project's full UI
+    appears on the next frame (from its cached snapshot). Switching shows "While you were away" (GUI-028) for that
+    project if it applies.
+  - **Needs you across projects:** the inbox toggles "This project / All". In All, each card is tagged with its
+    project, and answering it delivers the answer to the right agent in the right project's DB.
+    - Notifications for background-project questions name the project; clicking one switches to it.
+    - The window title count (GUI-027) is the total across projects.
+  - **Handles:** anything that mixes projects (the All inbox, notifications, rail tooltips) uses full `role_N@project`
+    handles. Views inside the current project follow REQ-COM-005.
+  - **Start / add / remove:** an offline project can be started from the rail (detached service, no second window).
+    **Add project…** picks a directory, runs `troupe init` if it has no `.troupe/`, and registers it. **Remove from
+    rail** unregisters it without touching its files or stopping its service.
+  - **Performance:** only the visible project refreshes at full rate. Background projects refresh at most every 2 s,
+    for rail and inbox data only. No DB I/O in draw code. The frame rate stays at 20 fps idle with 3 projects.
+  - Top-bar stats and budget stay per project. An aggregate cost across projects is out of scope for now.
+  - Test: per-project snapshots and cross-project answer routing, plus a TROUPE_SHOT of the rail with 2+ projects.
 - **REQ-GUI-041 [ ]** Decisions tab: the human reviews major decisions and comments on them. (#27; design
   `design/decisions.md`, #26. Human: "a tab should be for major decisions that were made with comments that the
   lead/manager can review in case I have comments.")
@@ -119,6 +139,7 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - **REQ-GUI-031 [ ]** Agents: every enabled agent is a node around a central "YOU" node, in its role color.
   - Idle, working, parked (owes work, REQ-GUI-002) and throttled or rate-limited (REQ-ENG-016) are visually
     distinct. A working node shows its current activity (e.g. tool name) as a short label.
+  - Up to 16 agents render without overlapping nodes or labels (above 9, two rings; layout in `design/stage.md`).
   - Adding, removing or disabling agents (REQ-ENG-019) adds or removes nodes with an animation, not a jump.
 - **REQ-GUI-032 [ ]** Messages are comets that travel from sender to recipient, labeled with the subject (or the
   first ~40 characters of the body if there is no subject).
@@ -128,7 +149,8 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
     flight, further ones on the same edge merge into one comet with a count ("×4").
   - Each comet stays on screen long enough to read its label (≥1.5 s).
 - **REQ-GUI-033 [ ]** Tasks are cards that move with their lifecycle (REQ-ENG-030..040):
-  - `ready` → flies to the assignee when it goes `in_progress` and stays attached to that node showing id + title.
+  - `ready` tasks wait in a ready-queue tray (see `design/stage.md`) and fly from it to the assignee when they go
+    `in_progress`. The card stays attached to that node, showing id + title.
   - `review` → flies to the reviewer. Merged (`done` via merge) → a burst effect and the card leaves.
   - Rejected, merge conflict, or checks failed (REQ-ENG-040) → a visibly different "bounce" back to the builder.
   - `blocked` → the card is marked blocked on its node.
@@ -151,3 +173,5 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-23 — Stage REQ-GUI-030..037 (human request via pm; #22, design #21).
 - 2026-09-23 — GUI-028 "While you were away", GUI-029 offline/restart states, GUI-040 project switcher (service model).
 - 2026-09-23 — GUI-041 Decisions tab (human request via pm; #27, design #26). Decisions leave the Memory tab.
+- 2026-09-23 — GUI-040 rewritten as the multi-project window (#29), replacing the single-project switcher. GUI-029 gains
+  reload/crash states (#28). Stage: ready-queue tray origin and a 16-agent layout bound (from design/stage.md).

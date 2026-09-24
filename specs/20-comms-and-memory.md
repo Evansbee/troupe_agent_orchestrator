@@ -87,7 +87,7 @@ complete_task, review_task, remember, recall, set_status, team` (+ `update_decis
   - `acknowledged`: the decision stands; a comment is required saying why.
   - `revised`: the decision's content/rationale are updated in place. The previous text stays visible in the thread.
   - `superseded`: a new decision is created with `remember(..., supersedes=id)` (REQ-COM-032). Doing that while a
-    human comment is open records this outcome automatically.
+    human comment is open records this outcome automatically, shown exactly like a manually set one.
   - `reverted`: the decision is withdrawn and, like a superseded one, excluded from prompts and default recall.
   - Setting an outcome with no open human comment is allowed (the lead cleaning up). An invalid outcome returns
     `ERROR:` listing the valid ones.
