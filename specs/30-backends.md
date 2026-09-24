@@ -70,6 +70,19 @@ should be able to move to codex or even local models as defined in the setup yam
   - A provider that reports nothing is treated as uncapped, with a one-time event saying so. Local is never capped.
   - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
   - Test: parsing each backend's usage events into per-window %, and cap comparison.
+- **REQ-BE-016 [ ]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
+  - `[budget] claude_cap_percent` (default 50; 0 = off) in `troupe.toml`. If the latest Claude usage in the 5h or 7d
+    window is ≥ the cap, no new **autonomous** runs start for claude-backed agents. Codex and local agents are
+    unaffected, and in-flight runs finish.
+  - Chat with the human still runs, since they're present and can decide, but it's labeled as over the cap. This
+    differs from real rate limits (REQ-ENG-016), which block chat, because the cap is troupe's own seatbelt.
+  - It reuses the ENG-016 per-backend limit state with reason `cap` and resets when the window resets. Affected agents
+    show `waiting_on` kind `providers` (REQ-ENG-046).
+  - A feed event and a needs-help notification (REQ-ENG-047) fire when it engages. The API usage snapshot exposes the
+    cap and "capped until HH:MM" for the TUI header (REQ-TUI-010).
+  - When #38 ships, `provider_limits.claude` (BE-011) replaces this key. A present `claude_cap_percent` is migrated
+    to it once, with an event.
+  - Test: above, below and off; the reset clears it; codex/local are unaffected; chat is allowed.
 - **REQ-BE-012 [ ]** Provider selection at each wake.
   - A provider is **available** when it is under all its caps, not rate-limited (REQ-ENG-016), and up. Up means its
     CLI is present and, for local, the server answers.
@@ -133,6 +146,7 @@ should be able to move to codex or even local models as defined in the setup yam
 - 2026-09-23 — BE-014 Codex usage from rollout `rate_limits` (#52, human request).
 - 2026-09-24 — BE-011 shared window names (five_hour/seven_day/window_<minutes>) and stale-sample rule (#52/#38).
 - 2026-09-24 — BE-015 isolated CODEX_HOME for agents (#62).
+- 2026-09-24 — BE-016 MVP Claude cap (#72).
 
 ## Open questions
 - Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52
