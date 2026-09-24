@@ -62,7 +62,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   for a TUI. No other additions without a reason in the task summary.
 
 ## Layout
-- **REQ-TUI-010 [~]** Panes, dense and calm (Header/Team/Tasks done, #66; Needs you done, #67; Comms/Chat are #68/#69):
+- **REQ-TUI-010 [~]** Panes, dense and calm (Header/Team/Tasks done, #66; Needs you done, #67; Comms done, #69; Chat is #68):
   - **Header:** project, engine state (REQ-GUI-029 states, including Stopped), active milestone progress
     (REQ-ENG-045), and provider usage meters (REQ-BE-011/014).
   - **Team:** one line per agent: handle, state (working / idle / waiting-on-X from `waiting_on`, REQ-ENG-046),
@@ -102,7 +102,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - Test: the badge appears on a new concern; each action's effect; the red KILLED screenshot; resume asks first.
 
 ## Keys
-- **REQ-TUI-020 [x]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `/` done, #83; `s` confirmation detail done, #69):
+- **REQ-TUI-020 [x]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `s`'s STOPPED/Resume detail and Comms' `f`/`d`/`[`/`]` filters done, #69; `/` done, #83):
 
   | key | action |
   |---|---|

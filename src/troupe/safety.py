@@ -48,6 +48,7 @@ def audit(store, text: str, *, notify: bool = True) -> None:
 
 def parse_settings(raw: dict, root: Path) -> dict:
     from .gitops import git
+    from .sandbox import parse_role_profiles
     settings = dict(raw)
     settings.setdefault('protected', list(PROTECTED))
     if 'remotes' not in settings:
@@ -58,6 +59,7 @@ def parse_settings(raw: dict, root: Path) -> dict:
     for key in ('protected', 'remotes', 'secret_allow'):
         if not isinstance(settings[key], list) or not all(isinstance(x, str) for x in settings[key]):
             raise ValueError(f'safety.{key} must be a list of strings')
+    settings['roles'] = parse_role_profiles(settings.get('roles', {}))
     return settings
 
 
@@ -75,6 +77,17 @@ def secret_path(path: str, cwd: Path) -> bool:
     return p in [home / x for x in ('.aws/credentials', '.config/gh/hosts.yml', '.netrc', '.docker/config.json')]
 
 
+def state_path(path: str, cwd: Path) -> bool:
+    """True if `path` resolves into a `.troupe/` dir's troupe.db (incl. -wal/-shm) or api.sock —
+    same files the Bash-command regex below blocks, but reached via a file-editing tool's own path
+    argument instead of a shell command (e.g. Claude's Write/Edit tools, not just Bash)."""
+    if not path:
+        return False
+    p = Path(os.path.expandvars(os.path.expanduser(path)))
+    p = (cwd / p).resolve()
+    return p.parent.name == '.troupe' and (p.name == 'api.sock' or p.name.startswith('troupe.db'))
+
+
 def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
     """Conservative command inspection, not an OS sandbox (see safety ADR)."""
     raw = json.dumps(args)
@@ -83,6 +96,13 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
     if tool in ('Read', 'Edit', 'Write', 'read_file', 'write_file'):
         if secret_path(args.get('file_path', args.get('path', '')), cwd):
             return 'Reading or modifying a secret store'
+    if tool in ('Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'read_file', 'write_file'):
+        # The Bash regex below blocks cat/sqlite3/nc/curl access to these same files; a file-editing
+        # tool's own path argument is an equally direct route and must be blocked the same way,
+        # for both reads (leaking kv contents) and writes (clobbering the DB or socket).
+        path = args.get('file_path', args.get('notebook_path', args.get('path', '')))
+        if state_path(path, cwd):
+            return "Direct access to troupe's database or local API socket; use the provided tools"
     if tool != 'Bash':
         return None
     command = args.get('command', '')
@@ -94,6 +114,12 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         return 'Expanding secret environment variables into tool output or requests'
     if re.search(r'\bsecurity\s+find-\S*password\b|\bprintenv\b|\benv(?:\s+-[0u]+)*\s*(?:$|[|;>])', command):
         return 'Dumping credentials or environment secrets'
+    if re.search(r'\btroupe\.db\b|\bapi\.sock\b', command):
+        # Direct DB/socket access would bypass the MCP tool layer entirely (an agent could write
+        # kv or questions, or reach the human-only API, without going through any of the guards or
+        # review gates those tools enforce). Legitimate access is always through the MCP server's
+        # own process, never a Bash command the agent runs itself.
+        return "Direct access to troupe's database or local API socket; use the provided tools"
     if any(secret_path(w, cwd) for w in words if '/' in w):
         # Authentication consumes keys without putting them in the model context.
         if not (words and Path(words[0]).name == 'ssh' and all(i > 0 and words[i-1] == '-i' for i, w in enumerate(words) if '/' in w and secret_path(w, cwd)) and not re.search(r'[;|&><`]|\$\(', command)):

@@ -475,6 +475,10 @@ class Data:
                 for r in s.q("SELECT * FROM kv WHERE key LIKE 'config_error.%'")
                 if json.loads(r["value"])
             ],
+            # #74/REQ-COM-013: how much the deterministic FYI rule saved in the last hour, for the
+            # TUI header.
+            fyi_wakes_avoided_1h=s.count_events_since("fyi_wake_avoided", time.time() - 3600),
+            fyi_model_calls_avoided_1h=s.count_events_since("fyi_model_call_avoided", time.time() - 3600),
         )
 
     def usage(self):
@@ -484,11 +488,21 @@ class Data:
             until = s.kv_get("limit." + provider) or 0
             reason = (s.kv_get(f"limit_meta.{provider}") or {}).get("reason", "provider")
             windows = []
-            raw = (
-                (s.kv_get("claude_ratelimit") or {}).get("unifiedWindows", {})
-                if provider == "claude"
-                else {}
-            )
+            extra = {}
+            if provider == "claude":
+                raw = (s.kv_get("claude_ratelimit") or {}).get("unifiedWindows", {})
+            elif provider == "codex":
+                codex = s.kv_get("usage:codex") or {}
+                raw = codex.get("unifiedWindows", {})
+                if codex:
+                    observed_at = codex.get("observed_at")
+                    extra = dict(
+                        plan=codex.get("plan_type"),
+                        age=max(0, time.time() - observed_at) if observed_at else None,
+                        source=codex.get("source"),
+                    )
+            else:
+                raw = {}
             for key, window in raw.items():
                 reset = (
                     window.get("resetsAt")
@@ -509,6 +523,8 @@ class Data:
                     dict(
                         name={"five_hour": "5h", "seven_day": "7d"}.get(key, key),
                         used_pct=float(window.get("utilization") or 0) * 100,
+                        used_percent=window.get("used_percent"),
+                        window_minutes=window.get("window_minutes"),
                         cap_pct=self.cfg.provider_limits.get(provider, {}).get(key) or (mvp_cap or None),
                         resets_at=reset,
                     )
@@ -520,6 +536,7 @@ class Data:
                     limited_until=until if until > time.time() else None,
                     capped=capped,
                     windows=windows,
+                    **extra,
                 )
             )
         return dict(

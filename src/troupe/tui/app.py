@@ -10,22 +10,24 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Label, TabbedContent, TabPane
+from textual.widgets import Footer, Label, Static, TabbedContent, TabPane
 
 from .. import config as config_mod
+from ..api import APIError
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
 from .panes.chat import ChatPane, Composer
+from .panes.feed import FeedPane
 from .panes.header import HeaderPane
 from .panes.needs_you import NeedsYouPane
 from .panes.tasks import TasksPane
 from .panes.team import TeamPane
 
 # Pane registries — see panes/__init__.py for the Pane API. LEFT_PANES sit under the header on
-# the left (Team/Tasks); RIGHT_PANES sit on the right (Needs-you, then Chat, then Comms once #69
-# lands — one line each to add here, per design/tui.md's pane-priority order).
+# the left (Team/Tasks); RIGHT_PANES sit on the right, in design/tui.md's pane-priority order
+# (Needs-you first when non-empty, then Comms, then Chat).
 LEFT_PANES: list[type] = [TeamPane, TasksPane]
-RIGHT_PANES: list[type] = [NeedsYouPane, ChatPane]
+RIGHT_PANES: list[type] = [NeedsYouPane, FeedPane, ChatPane]
 
 # REQ-TUI-011: below this width or height, panes collapse from side-by-side to tabs.
 COMPACT_WIDTH = 80
@@ -51,6 +53,26 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(event.key == "y")
 
 
+class StoppedBanner(Static):
+    """REQ-SAFE-010: obvious while the kill switch is engaged — no runs start, chat included, until
+    the human resumes. Collapses to nothing the rest of the time, so it never costs a permanent
+    line of screen space. No design/tui.md guidance for this state existed yet at the time of #69;
+    flagged for design review, kept in the existing color vocabulary rather than inventing one."""
+
+    DEFAULT_CSS = """
+    StoppedBanner { height: 0; padding: 0 1; color: $error; text-style: bold; }
+    StoppedBanner.-visible { height: 1; }
+    """
+
+    def show(self) -> None:
+        self.update("■ STOPPED — no runs start, chat included. Shift+R to resume.")
+        self.add_class("-visible")
+
+    def hide(self) -> None:
+        self.remove_class("-visible")
+        self.update("")
+
+
 class TroupeApp(App):
     CSS = """
     #body { height: 1fr; }
@@ -63,6 +85,11 @@ class TroupeApp(App):
         # (Textual's own default binding, see action_quit below) always works, so the footer says so.
         Binding("q", "quit_app", "Quit (^Q always)"),
         Binding("s", "stop_everything", "Stop"),
+        # A real terminal reports Shift+R as the plain character "R" (there's no separate shift
+        # modifier byte for a printable ASCII letter) — the same caveat panes/chat.py notes for
+        # shift+enter. Binding "shift+r" here worked in Pilot's tests (which match by name, not by
+        # simulating an actual keystroke) but silently never fired from a live terminal.
+        Binding("R", "resume_action", "Resume", show=False),
         Binding("r", "restart_engine_action", "Restart"),
         Binding("/", "focus_chat", "Chat"),
         Binding("tab", "focus_next", "Next pane", show=False),
@@ -77,16 +104,17 @@ class TroupeApp(App):
         self.title = cfg.project
         self._events_task: asyncio.Task | None = None
         self._panes: list = []  # left column: Team, Tasks
-        self._right_panes: list = []  # right column: Needs-you, (Comms/Chat once #68/#69 land)
+        self._right_panes: list = []  # right column: Needs-you, Comms, Chat
         self._header: HeaderPane | None = None
+        self._stopped_banner: StoppedBanner | None = None
+        self._engine_stopped = False
         self._compact: bool | None = None  # unknown until first layout, forcing an initial build
 
     @property
     def _all_panes(self) -> list:
         """design/tui.md's pane priority for the collapsed 80x24 tab order: Needs-you first (when
         present), then the left column (Team, Tasks), then the rest of the right column in its own
-        stacking order (Chat now; Comms would slot in before Chat once #69 lands, since the right
-        column's own order is Needs-you, Comms, Chat top-to-bottom)."""
+        stacking order (Comms, then Chat)."""
         if not self._right_panes:
             return list(self._panes)
         return [self._right_panes[0], *self._panes, *self._right_panes[1:]]
@@ -94,10 +122,17 @@ class TroupeApp(App):
     def compose(self) -> ComposeResult:
         self._header = HeaderPane(self.client, self.cfg.project)
         yield self._header
+        self._stopped_banner = StoppedBanner()
+        yield self._stopped_banner
         self._panes = [cls(self.client) for cls in LEFT_PANES]
         self._right_panes = [cls(self.client) for cls in RIGHT_PANES]
         yield Container(id="body")
         yield Footer()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "resume_action":
+            return self._engine_stopped
+        return True
 
     def _is_compact(self, size=None) -> bool:
         size = size if size is not None else self.size
@@ -185,6 +220,11 @@ class TroupeApp(App):
                 self._header.set_offline()
             return
         await asyncio.gather(self._header.load(), *(p.load() for p in self._all_panes))
+        try:
+            engine = await self.client.call("engine", timeout=3.0)
+            self._set_stopped(engine.get("stopped", False))
+        except Exception:
+            pass
 
     def _refresh_connection_state(self) -> None:
         if self._header and not self.client.connected:
@@ -196,6 +236,18 @@ class TroupeApp(App):
                 self._header.on_troupe_event(event)
             for pane in self._all_panes:
                 pane.on_troupe_event(event)
+            if event["event"] == "engine.state":
+                self._set_stopped(event["data"]["engine"].get("stopped", False))
+
+    def _set_stopped(self, stopped: bool) -> None:
+        self._engine_stopped = stopped
+        if self._stopped_banner is None:
+            return
+        if stopped:
+            self._stopped_banner.show()
+        else:
+            self._stopped_banner.hide()
+        self.refresh_bindings()  # Resume's availability (check_action) just changed
 
     @work(exclusive=True)
     async def _snapshot_and_exit(self, path: str) -> None:
@@ -230,6 +282,7 @@ class TroupeApp(App):
             ok = await self.push_screen_wait(
                 ConfirmScreen(f"{running_runs} agents are working — stop them and quit? y/N"))
             if not ok:
+                self._focus_chat_composer()  # cancelled: back to the primary interaction (#83 QA)
                 return
         if self.owns_engine:
             await stop_owned_engine(self.cfg)
@@ -238,13 +291,47 @@ class TroupeApp(App):
     @work
     async def action_stop_everything(self) -> None:
         ok = await self.push_screen_wait(ConfirmScreen("Stop everything (kill switch)? y/N"))
+        # Textual restores whatever was focused before the modal, not necessarily the composer
+        # (reaching this action at all means it wasn't focused, since a focused composer eats "s")
+        # — return to it either way once the interruption's over, confirmed or cancelled (#83 QA).
+        self._focus_chat_composer()
         if not ok:
             return
-        if self.client.connected:
-            try:
-                await self.client.call("stop_now", timeout=5.0)
-            except Exception:
-                pass
+        if not self.client.connected:
+            self.notify("Not connected to the engine.", severity="error")
+            return
+        try:
+            await self.client.call("stop_now", timeout=5.0)
+            # No local state flip here: the STOPPED banner reacts to the pushed engine.state event,
+            # the same source of truth every other client (GUI, another TUI) would see it from.
+        except APIError as exc:
+            if exc.code == "unavailable":
+                self.notify("Kill switch isn't wired up yet (task #57).", severity="warning")
+            else:
+                self.notify(f"Stop failed: {exc}", severity="error")
+        except Exception as exc:
+            self.notify(f"Stop failed: {exc}", severity="error")
+
+    @work
+    async def action_resume_action(self) -> None:
+        if not self._engine_stopped:
+            return
+        ok = await self.push_screen_wait(ConfirmScreen("Resume the team? y/N"))
+        self._focus_chat_composer()  # same reasoning as action_stop_everything above
+        if not ok:
+            return
+        if not self.client.connected:
+            self.notify("Not connected to the engine.", severity="error")
+            return
+        try:
+            await self.client.call("resume", timeout=5.0)
+        except APIError as exc:
+            if exc.code == "unavailable":
+                self.notify("Resume isn't wired up yet (task #57).", severity="warning")
+            else:
+                self.notify(f"Resume failed: {exc}", severity="error")
+        except Exception as exc:
+            self.notify(f"Resume failed: {exc}", severity="error")
 
     async def action_restart_engine_action(self) -> None:
         if self.client.connected:

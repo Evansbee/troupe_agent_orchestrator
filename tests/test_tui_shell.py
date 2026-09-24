@@ -2,6 +2,8 @@
 import asyncio
 import time
 
+import pytest
+
 from tui_fixture import FixtureServer
 
 from troupe.tui.app import TroupeApp
@@ -145,8 +147,10 @@ def test_full_size_uses_side_by_side_panes_not_tabs(project):
 
 
 def test_chatpane_is_mounted_alongside_needs_you_in_the_right_column(project):
-    """#77: ChatPane (#68) mounted into RIGHT_PANES, after Needs-you per design/tui.md."""
+    """#77: ChatPane (#68) mounted into RIGHT_PANES, after Needs-you and Comms (#69) per
+    design/tui.md."""
     from troupe.tui.panes.chat import ChatPane
+    from troupe.tui.panes.feed import FeedPane
     from troupe.tui.panes.needs_you import NeedsYouPane
 
     cfg, _store = project
@@ -161,7 +165,7 @@ def test_chatpane_is_mounted_alongside_needs_you_in_the_right_column(project):
                 await pilot.pause()
                 right = app.query_one("#right")
                 mounted = list(right.children)
-                assert [type(w) for w in mounted] == [NeedsYouPane, ChatPane]
+                assert [type(w) for w in mounted] == [NeedsYouPane, FeedPane, ChatPane]
                 await _wait_until(lambda: app.query_one(ChatPane).pm_id == "pm")
         finally:
             await server.stop()
@@ -186,7 +190,7 @@ def test_80x24_tab_order_matches_the_design_priority(project):
                 await pilot.pause()
                 titles = [tp._title.plain if hasattr(tp._title, "plain") else str(tp._title)
                          for tp in app.query(TabPane)]
-                assert titles == ["Needs you", "Team", "Tasks", "Chat"]
+                assert titles == ["Needs you", "Team", "Tasks", "Comms", "Chat"]
         finally:
             await server.stop()
 
@@ -314,7 +318,12 @@ def test_slash_focuses_the_chat_composer_from_another_pane(project):
     asyncio.run(scenario())
 
 
-def test_slash_switches_to_the_chat_tab_in_compact_mode(project):
+@pytest.mark.parametrize("source_tab, focus_target", [
+    ("tab-TeamPane", "Tabs"),
+    ("tab-NeedsYouPane", "#ny-cards"),
+    ("tab-FeedPane", "FeedPane"),
+])
+def test_slash_switches_to_the_chat_tab_in_compact_mode(project, source_tab, focus_target):
     from textual.widgets import TabbedContent
 
     from troupe.tui.panes.chat import Composer
@@ -331,9 +340,12 @@ def test_slash_switches_to_the_chat_tab_in_compact_mode(project):
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
                 tabs = app.query_one(TabbedContent)
-                tabs.active = "tab-TeamPane"
-                app.set_focus(None)
+                tabs.active = source_tab
                 await pilot.pause()
+                source = app.query_one(focus_target)
+                source.focus()
+                await pilot.pause()
+                assert app.focused is source
                 assert not isinstance(app.focused, Composer)
 
                 await pilot.press("/")
@@ -373,6 +385,42 @@ def test_resize_round_trip_restores_focus_to_the_composer(project):
                 await pilot.pause()
                 assert not app.query(TabbedContent)
                 assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(140, 42), (80, 24)])
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
+    from troupe.tui.app import ConfirmScreen
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, engine=ENGINE)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=size) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                for key, method in [("s", "stop_now"), ("R", "resume")]:
+                    if key == "R":
+                        await server.push_event("engine.state", {
+                            "engine": dict(ENGINE, state="stopped", stopped=True)})
+                        await _wait_until(lambda: app._engine_stopped)
+                        assert "STOPPED" in app._stopped_banner.content
+                    app.set_focus(None)
+                    await pilot.press(key)
+                    await _wait_until(lambda: isinstance(app.screen, ConfirmScreen))
+                    await pilot.press(answer)
+                    await pilot.pause()
+                    assert len(app.screen_stack) == 1
+                    assert isinstance(app.focused, Composer)
+                    assert any(m == method for m, _ in server.commands) == (answer == "y")
         finally:
             await server.stop()
 
