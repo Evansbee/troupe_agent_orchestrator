@@ -261,7 +261,7 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
   don't bump it. Removing or renaming anything, or changing a type or meaning, does. Clients must ignore unknown
   fields and unknown event types. The server rejects unknown **params** with `bad_request`, so typos surface.
 
-- **REQ-API-074 [~]** Service state when the socket is down: the supervisor (REQ-ENG-042) writes
+- **REQ-API-074 [~]** **DEFERRED** with the supervisor (REQ-ENG-042). Service state when the socket is down: the supervisor (REQ-ENG-042) writes
   `.troupe/service.json` = `{state: "running"|"restarting"|"crashed"|"stopped", reason, since, restarts}` on every
   transition. With no socket, clients read that file (a read-only local file, like docs) to show "Restarting…" or
   "Crashed" (REQ-GUI-029) instead of a bare "offline".

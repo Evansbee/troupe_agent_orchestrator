@@ -4,7 +4,11 @@ Code: `src/troupe/gui/` (`core.py` = immediate-mode toolkit on raylib, `app.py` 
 `data.py` = DB snapshots + actions, `theme.py` = colors/metrics). Fonts: Inter + JetBrains Mono (OFL).
 Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smooth easing, crisp HiDPI text.
 
-**Platform move:** the human confirmed a native SwiftUI app (`mac/`, specs/60-mac-app.md) talking to the engine over
+**Frozen (human, 2026-09-24):** the per-project TUI (specs/45-tui.md) is the primary interface, and the raylib GUI
+gets only fixes for breakage, no new features. Open `[ ]` REQs here are deferred, apart from those tagged to active
+bug-fix tasks. The behaviors remain the reference for the TUI and the future portfolio app.
+
+**Platform move (paused):** the human confirmed a native SwiftUI app (`mac/`, specs/60-mac-app.md) talking to the engine over
 the local API (specs/50-api.md). The REQ-GUI requirements here stay the behavioral source of truth for both clients.
 raylib remains the daily GUI until the Mac app reaches parity (REQ-MAC milestones), and new GUI features are built in
 the Mac app.
@@ -113,7 +117,7 @@ the Mac app.
   and the dock badge comes with the Mac app, REQ-MAC.)
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered.
-- **REQ-GUI-028 [x]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+- **REQ-GUI-028 [x]** (raylib behavior; in the TUI flow the catch-up is REQ-TUI-013) (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
     rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions
@@ -257,3 +261,4 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   selection (#47). GUI-022 gains older-run paging (#54). GUI-023 shipped (#7/#53). GUI-005 OS notifications move to ENG-047.
 - 2026-09-24 — GUI-027 marked partial (title shipped, #12). COM-025 shipped.
 - 2026-09-24 — GUI-017 shipped (#33 merged; the builder hadn't flipped the marker).
+- 2026-09-24 — raylib GUI frozen, TUI primary; open GUI REQs deferred.
