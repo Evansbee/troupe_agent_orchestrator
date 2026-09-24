@@ -37,6 +37,45 @@ def test_pass_checks_updated_worktree_then_merges(project):
     assert len(gitops.git(cfg.root, "rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
 
 
+def test_gui_change_runs_launch_smoke_and_bounces_on_failure(project):
+    cfg, store, engine, tid, tree = approved(project)
+    cfg.git.check = "true"
+    (tree / "src" / "troupe" / "gui").mkdir(parents=True)
+    (tree / "src" / "troupe" / "gui" / "widget.py").write_text("# gui change")
+    (tree / "scripts").mkdir()
+    (tree / "scripts" / "launch_smoke.py").write_text(
+        "import sys\nsys.stderr.write('Traceback (most recent call last):\\nboom\\n')\nsys.exit(1)\n")
+    gitops.commit_all(tree, "gui change")
+    engine.process_approved()
+    task = store.task(tid)
+    assert task["status"] == "in_progress"
+    assert "launch smoke failed" in task["review_notes"]
+    assert not (cfg.root / "feature.txt").exists()  # never merged
+
+
+def test_gui_change_skip_is_logged_but_still_merges(project):
+    cfg, store, engine, tid, tree = approved(project)
+    cfg.git.check = "true"
+    (tree / "src" / "troupe" / "tui").mkdir(parents=True)
+    (tree / "src" / "troupe" / "tui" / "widget.py").write_text("# tui change")
+    (tree / "scripts").mkdir()
+    (tree / "scripts" / "launch_smoke.py").write_text("print('SKIP: no display')\n")
+    gitops.commit_all(tree, "tui change")
+    engine.process_approved()
+    assert store.task(tid)["status"] == "done"
+    log = (cfg.state_dir / "checks" / f"t{tid}.log").read_text()
+    assert "launch smoke not run: SKIP: no display" in log
+
+
+def test_non_gui_tui_change_never_runs_launch_smoke(project):
+    cfg, store, engine, tid, tree = approved(project)
+    cfg.git.check = "true"
+    engine.process_approved()
+    assert store.task(tid)["status"] == "done"
+    log = (cfg.state_dir / "checks" / f"t{tid}.log").read_text()
+    assert "launch smoke" not in log
+
+
 def test_failure_preserves_main_and_routes_through_qa(project):
     cfg, store, engine, tid, tree = approved(project)
     cfg.git.check = "i=0; while [ $i -lt 80 ]; do echo line-$i; i=$((i+1)); done; echo failure >&2; exit 7"

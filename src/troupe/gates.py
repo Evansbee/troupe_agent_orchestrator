@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -11,6 +13,41 @@ from .safety import audit, fingerprint, protected, redact
 
 MERGE_RETRY_ATTEMPTS = 3  # #81: how many times to re-check after "repository changed during checks"
 MERGE_RETRY_BACKOFF_SECONDS = 2.0  # wait between retries, so main has a moment to settle
+LAUNCH_SMOKE_PREFIXES = ("src/troupe/gui/", "src/troupe/tui/")
+LAUNCH_SMOKE_TIMEOUT = 90  # scripts/launch_smoke.py itself budgets well under 60s
+
+
+def needs_launch_smoke(files: list[str]) -> bool:
+    return any(f.startswith(LAUNCH_SMOKE_PREFIXES) for f in files)
+
+
+def run_launch_smoke(tree: Path, log_path: Path) -> str:
+    """#92/REQ-ENG-059: any change touching gui/ or tui/ must actually launch the client, because
+    the merge gate's normal `cfg.git.check` (pytest) never opens a real window. Appends to the same
+    check log as the main check. Returns "" on a pass; a skip is logged but also returns "" (a skip
+    is not a failure, but it must never be silently indistinguishable from a real pass); anything
+    else is a real failure that bounces the task like a failed check."""
+    script = tree / "scripts" / "launch_smoke.py"
+    with log_path.open("a") as log:
+        log.write("\n$ uv run python scripts/launch_smoke.py  (gui/tui change)\n")
+        if not script.exists():
+            log.write("launch smoke not run: scripts/launch_smoke.py missing from this tree\n")
+            return ""
+        try:
+            p = subprocess.run([sys.executable, str(script)], cwd=tree, capture_output=True,
+                               text=True, timeout=LAUNCH_SMOKE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            log.write(f"launch smoke timed out after {LAUNCH_SMOKE_TIMEOUT:g}s\n")
+            return f"launch smoke timed out after {LAUNCH_SMOKE_TIMEOUT:g}s"
+        log.write(p.stdout)
+        log.write(p.stderr)
+        if "SKIP:" in p.stdout:
+            reason = next((l for l in p.stdout.splitlines() if l.startswith("SKIP:")), "SKIP: unknown")
+            log.write(f"launch smoke not run: {reason}\n")
+            return ""
+        if p.returncode != 0:
+            return f"launch smoke failed (exit {p.returncode}):\n{p.stderr[-4000:]}"
+        return ""
 
 
 def request(store, key: str, title: str, context: str, payload: dict, task_id=None) -> dict:
@@ -215,6 +252,15 @@ class MergeGateMixin:
                     tail = "".join(deque(log, maxlen=50))[-12000:]
                 self.check_failed(t, tail or outcome)
                 return False, outcome, True
+            files = gitops.git(tree, "diff", "--no-renames", "--name-only", main_head, task_head).splitlines()
+            if needs_launch_smoke(files):
+                reason = run_launch_smoke(tree, log_path)
+                current = s.task(t["id"])
+                if self._stop.is_set() or not current or current["status"] != "approved":
+                    return False, reason or "stopped during launch smoke", True
+                if reason:
+                    self.check_failed(t, reason)
+                    return False, reason, True
             s.kv_set(f"check_failures.{t['id']}", 0)
             if not task_gate(cfg, s, s.task(t["id"])):
                 return False, "awaiting protected-path approval", True

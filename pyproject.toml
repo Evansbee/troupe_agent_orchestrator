@@ -28,3 +28,8 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "launch_smoke: REQ-ENG-059 real GUI/TUI launch smoke (scripts/launch_smoke.py); slow, opens a window",
+]
