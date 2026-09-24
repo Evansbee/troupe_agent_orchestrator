@@ -93,6 +93,14 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - The TUI connects with `notifications: false` (REQ-API-010), so the engine keeps sending OS notifications while
     the human is elsewhere in tmux.
 
+- **REQ-TUI-014 [ ]** (#78) Concerns and Kill.
+  - A red "⚑ N" concern badge in the header, and a Concerns pane listing the whistleblower board (REQ-COM-029), with
+    the actions Raise / Suppress / Kill / Reply. The content is shown only here, never in panes an agent's text flows
+    through.
+  - Kill asks for confirmation. Once confirmed, the whole screen turns red with "KILLED" (REQ-SAFE-011) until the
+    human resumes, which also asks for confirmation. The PM chat is disabled while killed.
+  - Test: the badge appears on a new concern; each action's effect; the red KILLED screenshot; resume asks first.
+
 ## Keys
 - **REQ-TUI-020 [~]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `/` is #68, `s` confirmation detail is #69):
 
@@ -105,15 +113,14 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   | `s` | Stop everything (REQ-SAFE-010), after a y/N confirmation |
   | `q` | quit: stops this project's engine and runs if the TUI owns it, after confirmation when runs are in flight (TUI-001) |
   | `r` | restart the engine when it's offline |
-- **REQ-TUI-021 [~]** Chat with the PM works end to end: send, the streaming working state, and the reply shown
-  (REQ-COM-020). Chatting with another agent is possible (`:chat <handle>`), but the default is always the PM
-  (REQ-COM-029).
+- **REQ-TUI-021 [x]** Chat with the PM works end to end: send, the streaming working state, and the reply shown
+  (REQ-COM-020). The chat is **PM-only**: the human interacts only with the PM (REQ-COM-029), and there's no way to
+  chat with other agents.
   - Done (#68, `src/troupe/tui/panes/chat.py`): send (Enter, Shift+Enter for a newline where the terminal
     reports it distinctly), a "PM is working…" line while the PM is running and the human sent the last
     message, rendered markdown, sticky-to-bottom (REQ-GUI-017 semantics), a bordered "CHAT — pm_1" pane. Native
     terminal selection isn't blocked by any custom mouse handling (REQ-TUI-012's other half — OSC 52 `y` — is
     global and not part of this slice).
-  - Deferred to a later task: `:chat <handle>` for non-PM agents (MVP scope per lead, #68 notes).
 
 ## Verification
 - **REQ-TUI-030 [x]** Snapshot mode: `TROUPE_SHOT=/path.svg troupe tui` renders once data has loaded (via Textual's
@@ -138,6 +145,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   TUI-013 details and catch-up.
 - 2026-09-24 — TUI-001 rewritten: the TUI owns its engine (quit and SIGHUP stop everything, confirm if runs are in flight,
   resume on next start, attach without owning if already running). Slices mapped to #66–#69.
-- 2026-09-24 — TUI-021 partially implemented (#68): PM chat pane, coded against the shared `Pane(client)` /
+- 2026-09-24 — TUI-021 implemented (#68): PM chat pane, coded against the shared `Pane(client)` /
   `load()` / `on_troupe_event()` interface with a local fixture client ahead of #66's `tui/client.py` landing.
-  `:chat <handle>` deferred.
+- 2026-09-24 — TUI-021: chat is PM-only (human).
+- 2026-09-24 — TUI-014 Concerns pane and red KILLED state (#78).
