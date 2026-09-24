@@ -16,6 +16,7 @@ from .. import config as config_mod
 from ..api import APIError
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
+from .panes.chat import ChatPane
 from .panes.feed import FeedPane
 from .panes.header import HeaderPane
 from .panes.needs_you import NeedsYouPane
@@ -24,10 +25,9 @@ from .panes.team import TeamPane
 
 # Pane registries — see panes/__init__.py for the Pane API. LEFT_PANES sit under the header on
 # the left (Team/Tasks); RIGHT_PANES sit on the right, in design/tui.md's pane-priority order
-# (Needs-you first when non-empty, then Comms). ChatPane (#68, panes/chat.py) isn't mounted here
-# yet — left for whoever picks that wiring up, same as this list was for Needs-you/Comms.
+# (Needs-you first when non-empty, then Comms, then Chat).
 LEFT_PANES: list[type] = [TeamPane, TasksPane]
-RIGHT_PANES: list[type] = [NeedsYouPane, FeedPane]
+RIGHT_PANES: list[type] = [NeedsYouPane, FeedPane, ChatPane]
 
 # REQ-TUI-011: below this width or height, panes collapse from side-by-side to tabs.
 COMPACT_WIDTH = 80
@@ -101,7 +101,7 @@ class TroupeApp(App):
         self.title = cfg.project
         self._events_task: asyncio.Task | None = None
         self._panes: list = []  # left column: Team, Tasks
-        self._right_panes: list = []  # right column: Needs-you, Comms (Chat once #68's wiring lands)
+        self._right_panes: list = []  # right column: Needs-you, Comms, Chat
         self._header: HeaderPane | None = None
         self._stopped_banner: StoppedBanner | None = None
         self._engine_stopped = False
@@ -109,7 +109,12 @@ class TroupeApp(App):
 
     @property
     def _all_panes(self) -> list:
-        return self._right_panes + self._panes  # Needs-you first, matching design/tui.md's order
+        """design/tui.md's pane priority for the collapsed 80x24 tab order: Needs-you first (when
+        present), then the left column (Team, Tasks), then the rest of the right column in its own
+        stacking order (Comms, then Chat)."""
+        if not self._right_panes:
+            return list(self._panes)
+        return [self._right_panes[0], *self._panes, *self._right_panes[1:]]
 
     def compose(self) -> ComposeResult:
         self._header = HeaderPane(self.client, self.cfg.project)
