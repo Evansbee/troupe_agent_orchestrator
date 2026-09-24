@@ -394,12 +394,14 @@ class Engine:
         row = s.agent(a.id) or {}
         seen = s.max_event_id()
         prompt = self.build_prompt(a, w, msgs, task, row)
-        run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat)
+        system = self.system_prompt(a)
+        run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat,
+                             prompt=prompt, system=system)
         s.set_agent(a.id, state="running", current_run=run_id, activity=REASONS[w.reason], last_run_at=now(),
                     last_event_seen=seen)
         s.event(a.id, "run", f"{a.id} woke up: {REASONS[w.reason]}", ref=f"run:{run_id}", significant=False)
         runner = make_runner(a.backend)
-        spec = RunSpec(cfg=self.cfg, agent=a, system=self.system_prompt(a), prompt=prompt, cwd=cwd,
+        spec = RunSpec(cfg=self.cfg, agent=a, system=system, prompt=prompt, cwd=cwd,
                        session_id=row.get("session_id"), log_path=self.cfg.runs_dir / f"{run_id:06d}-{a.id}.jsonl")
         atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task, self._session_versions.get(a.id, 0)))
         self.running[a.id] = (runner, atask, w)
@@ -472,6 +474,10 @@ class Engine:
                 from .runners import RunResult
                 res = RunResult(ok=False, error="stopped during setup")
             else:
+                # setup_worktree may have appended failure context to spec.prompt; re-persist so the
+                # inspector shows exactly what's about to be sent. The launch()-time write already
+                # covers a crash during setup itself (nothing to update to in that case).
+                s.update_run_prompt(run_id, spec.prompt)
                 res = await runner.run(spec, emit)
         except Exception as e:
             from .runners import RunResult

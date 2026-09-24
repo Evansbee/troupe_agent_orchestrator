@@ -28,6 +28,7 @@ class App:
         self.sel_agent = next((a.id for a in cfg.agents if a.role == "lead"), cfg.agents[0].id)
         self.sel_task: int | None = None
         self.sel_run: int | None = None
+        self.run_view = "Transcript"
         self.mail_filter: str | None = None
         self.mem_filter: str | None = None
         self.doc_sel: str | None = None
