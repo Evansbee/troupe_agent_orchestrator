@@ -539,6 +539,84 @@ def test_forced_stop_marks_runs_and_requeues_checkpoint(project):
     assert not (cfg.state_dir / "engine.pid").exists()
 
 
+def test_foreground_engine_sighup_stops_the_engine_and_its_run(monkeypatch):
+    """#122: closing the terminal of a foreground `troupe engine` delivers it SIGHUP. Before this
+    fix, run_foreground handled only SIGTERM/SIGINT, so the default SIGHUP disposition killed the
+    engine process instantly -- its own shutdown (which kills every in-flight run's process group,
+    engine.py's _serve()) never ran, orphaning a real claude/codex process that keeps running (and
+    spending the human's quota) with nothing left to supervise it."""
+    with tempfile.TemporaryDirectory(prefix="troupe-service-sighup-", dir="/tmp") as tmp:
+        root = Path(tmp) / "project"
+        state = root / ".troupe"
+        state.mkdir(parents=True)
+        home = Path(tmp) / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        fake = Path(tmp) / "fake.py"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, time\n"
+            "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 'x'}), flush=True)\n"
+            "time.sleep(300)\n"
+        )
+        fake.chmod(0o755)
+        (state / "troupe.toml").write_text(
+            '[project]\nname="SIGHUP Test"\n[git]\nautocommit=false\n'
+            f'[backends]\nclaude_command="{fake}"\ncodex_command="{fake}"\n'
+            'local_base_url="http://127.0.0.1:9"\n'
+        )
+        (state / "team.yaml").write_text(
+            "agents:\n"
+            "  - id: builder-1\n    role: builder\n    provider: claude\n"
+            "  - id: lead\n    role: lead\n    provider: local\n    enabled: false\n"
+        )
+        cfg = config.load(root)
+        track_engine_state_dir(state)
+        try:
+            store = Store(cfg.db_path)
+            baseline = store.kv_get("safety.config")
+            store.answer(baseline["qid"], "Approve")
+            store.add_task("Do the thing", status="ready", assignee="builder-1")
+
+            env = os.environ.copy()
+            env["TROUPE_EXIT_WITH_PARENT_PID"] = str(os.getpid())
+            proc = subprocess.Popen([sys.executable, "-m", "troupe.cli", "engine"], cwd=root, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            try:
+                fake_pid = None
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and fake_pid is None:
+                    found = subprocess.run(["pgrep", "-f", str(fake)], capture_output=True,
+                                           text=True).stdout.split()
+                    if found:
+                        fake_pid = int(found[0])
+                    else:
+                        time.sleep(0.1)
+                assert fake_pid is not None, "the fake backend never got dispatched a run"
+
+                os.kill(proc.pid, signal.SIGHUP)
+                assert proc.wait(timeout=10) is not None  # the engine itself exits
+
+                deadline = time.monotonic() + 10
+                orphaned = True
+                while time.monotonic() < deadline and orphaned:
+                    orphaned = bool(subprocess.run(["ps", "-p", str(fake_pid)], capture_output=True,
+                                                   text=True).stdout.strip().splitlines()[1:])
+                    if orphaned:
+                        time.sleep(0.1)
+                assert not orphaned, "the fake backend process outlived the engine (orphaned)"
+
+                assert json.loads((state / "service.json").read_text())["state"] == "stopped"
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        finally:
+            _kill_engine_by_pid_file(state)
+            untrack_engine_state_dir(state)
+
+
 def _wait_for_child_exit(pid: int, timeout: float) -> bool:
     """True once `pid` — a direct child of this test process, via start_service's subprocess.Popen
     — has exited. Reaps it via waitpid rather than checking `os.kill(pid, 0)`: a kill-0 check can't
