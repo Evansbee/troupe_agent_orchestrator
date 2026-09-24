@@ -51,17 +51,42 @@ time.sleep(300)
 # actually trying to open a throwaway window -- not by guessing from the real run's exit code
 # afterward. Once past this point, any non-zero exit from the real client (including a negative
 # one, i.e. killed by a signal such as a segfault) is an unambiguous FAILURE, never a skip.
+#
+# LOG_WARNING, not LOG_NONE (#112): raylib's own InitWindow() gracefully reports "couldn't open a
+# window" back to Python via is_window_ready() == False, with no exception and no crash -- but it
+# only says *why* (the "Failed to initialize GLFW/Window" text this script matches on below) via
+# its own TraceLog warning. LOG_NONE suppressed that along with everything else, leaving nothing
+# to positively identify -- which is exactly how any failure, not just "no display", used to look
+# identical and get silently skipped.
 WINDOW_PROBE = f"""
 import sys
 sys.path.insert(0, {str(REPO_ROOT / "src")!r})
 import pyray as rl
-rl.set_trace_log_level(rl.TraceLogLevel.LOG_NONE)
+rl.set_trace_log_level(rl.TraceLogLevel.LOG_WARNING)
 rl.init_window(2, 2, "launch-smoke-probe")
 ok = rl.is_window_ready()
 if ok:
     rl.close_window()
 sys.exit(0 if ok else 1)
 """
+
+# The only text this script trusts as a *positive* "there is genuinely no display here" signal
+# (#112) -- raylib's own rcore.c TraceLog wording when GLFW can't initialize or can't create a
+# window, which is the graceful, no-exception, no-crash path InitWindow takes when there's no
+# display to open a window on. Extend this list if a real environment's exact wording turns up
+# something new; anything NOT on this list is a FAILURE, never a silent skip -- a probe traceback
+# (e.g. a broken pyray import), a signal, a timeout, or any other unrecognized failure must never
+# be read as "no display", since that's exactly the hole that let the #90 crash class through.
+NO_DISPLAY_MARKERS = (
+    "Failed to initialize GLFW",
+    "Failed to initialize Window",
+    "Cocoa: Failed to find service port for display",  # macOS: no WindowServer session (headless/CI)
+    "X11: Failed to open display",
+    "X11: The DISPLAY environment variable is missing",
+    "Wayland: Failed to connect to display",
+)
+
+PROBE_TIMEOUT_RETRIES = 1  # a timeout on a loaded machine gets one retry, then it's a FAILURE
 
 
 def isolated_env(tmp: Path) -> dict:
@@ -75,15 +100,43 @@ def isolated_env(tmp: Path) -> dict:
     return env
 
 
-def can_open_a_window(env: dict) -> tuple[bool, str]:
+def classify_probe_result(returncode: int, output: str) -> tuple[str, str]:
+    """Pure classification of an already-completed probe run: "ok" (a real window opened), "skip"
+    (a positively recognized no-display signal -- the *only* case allowed to skip the real
+    GUI/TUI launch), or "fail" (anything else). Split out from can_open_a_window so the decision
+    logic is directly testable without spawning a real subprocess for every case (#112)."""
+    if returncode == 0:
+        return "ok", ""
+    if "Traceback (most recent call last)" in output:
+        return "fail", f"window probe raised an exception:\n{output.strip()[-2000:]}"
+    if returncode < 0:
+        return "fail", f"window probe was killed by signal {-returncode}:\n{output.strip()[-2000:]}"
+    if any(marker in output for marker in NO_DISPLAY_MARKERS):
+        return "skip", (output.strip() or f"window probe exited {returncode}")[-500:]
+    return "fail", (f"window probe exited {returncode} with unrecognized output "
+                    f"(not a known no-display signal):\n{output.strip()[-2000:]}")
+
+
+def _run_probe_once(env: dict) -> subprocess.CompletedProcess | None:
+    """None means the probe timed out."""
     try:
-        p = subprocess.run([sys.executable, "-c", WINDOW_PROBE], cwd=REPO_ROOT, env=env,
-                           capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+        return subprocess.run([sys.executable, "-c", WINDOW_PROBE], cwd=REPO_ROOT, env=env,
+                              capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return False, "window probe timed out"
-    if p.returncode == 0:
-        return True, ""
-    return False, (p.stderr.strip() or p.stdout.strip() or f"window probe exited {p.returncode}")[-500:]
+        return None
+
+
+def can_open_a_window(env: dict) -> tuple[str, str]:
+    """Runs the real window probe (with PROBE_TIMEOUT_RETRIES retries on a timeout -- a loaded
+    machine can cause a one-off slow probe that isn't actually "no display"), then classifies the
+    result. Returns (verdict, detail): verdict is "ok", "skip", or "fail" -- see
+    classify_probe_result."""
+    for attempt in range(PROBE_TIMEOUT_RETRIES + 1):
+        p = _run_probe_once(env)
+        if p is not None:
+            return classify_probe_result(p.returncode, (p.stderr or "") + (p.stdout or ""))
+    attempts = PROBE_TIMEOUT_RETRIES + 1
+    return "fail", f"window probe timed out {attempts} time{'s' if attempts != 1 else ''} in a row ({PROBE_TIMEOUT}s each)"
 
 
 def make_project(tmp: Path, env: dict) -> Path:
@@ -163,7 +216,15 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="troupe-launch-smoke-", dir="/tmp") as tmp_str:
         tmp = Path(tmp_str)
         env = isolated_env(tmp)
-        gui_ok, gui_skip_reason = can_open_a_window(env)
+        verdict, detail = can_open_a_window(env)
+        if verdict == "fail":
+            # #112: a probe traceback, a signal, or a timeout (even after a retry) is never "no
+            # display" -- it's a failure of the gate itself (a broken import, a broken environment,
+            # or a real regression like #90's crash class), and the real GUI/TUI would only hit
+            # the same problem, so this fails fast instead of spending the full run finding that out.
+            print(detail, file=sys.stderr)
+            return 1
+        gui_ok = verdict == "ok"
         proj: Path | None = None
         gui_proc = tui_proc = None
         try:
@@ -192,7 +253,7 @@ def main() -> int:
             print("\n\n".join(failures), file=sys.stderr)
             return 1
         if not gui_ok:
-            print(f"SKIP: gui: {gui_skip_reason}")
+            print(f"SKIP: gui: {detail}")
             return 0
         print(f"launch smoke passed: {gui_png.stat().st_size}B GUI shot, {tui_png.stat().st_size}B TUI shot")
         return 0
