@@ -57,7 +57,7 @@ the Mac app.
   - Invalid input (a negative number, unknown provider or level, removing the only lead) is rejected inline using
     the same validation as ENG-019, and nothing is written.
   - Verified by unit tests of the YAML and TOML write round-trips and a TROUPE_SHOT screenshot.
-- **REQ-GUI-022 [ ]** Prompt inspector in the Agent view. (#1)
+- **REQ-GUI-022 [x]** Prompt inspector in the Agent view. (#1)
   - A Transcript / Prompt toggle next to the run chips; Prompt shows the selected run's system prompt and wake
     prompt (REQ-ENG-018) as separate, collapsible, monospace sections. The choice persists when switching runs.
 - **REQ-GUI-023 [ ]** Copy text from chat, docs and transcripts. (#7)
