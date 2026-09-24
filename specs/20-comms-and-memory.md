@@ -337,3 +337,6 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
 - 2026-09-24 — COM-027/028 marked [x], COM-029 marked [~] (#65 shipped: escalation bypass, PM triage tools, auto-forward,
   report_concern's storage + content-free notification + `troupe concerns` CLI; the board UI and Raise/Suppress/Kill/
   Reply actions remain #78).
+- 2026-09-24 — New COM-049: the human's approval bar (question #42 A, 19:17). The human approves protected paths,
+  security/oversight weakening, spending, public actions and product direction; the PM decides the rest and reports
+  in one line. Protected cards come once per distinct change, with none for marker-only spec edits (#118).
