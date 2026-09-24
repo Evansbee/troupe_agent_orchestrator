@@ -36,6 +36,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-ENG-035 | E `unfinished_task_backs_off_then_escalates`: first retry delayed 45s, configured attempt cap blocks and mails Lead. |
 | REQ-ENG-036 | E `main_checkout_autocommit_policy` (builder/spec): idle builder gets no-edit instruction and no automatic commit; spec changes are committed. |
 | REQ-ENG-038 | `tests/test_worktree_setup.py`: real temporary git repositories verify config default/command, setup once across restart, stdout/stderr and exit logging, failure note/prompt with provider continuation, responsive event loop and stop during setup, merged branch deletion, and startup removal of closed/missing trees while preserving open/external worktrees. |
+| REQ-ENG-019 / REQ-ENG-041 (existing roles) / REQ-BE-010 | `tests/test_team_yaml.py`: legacy migration/one-time notices, ordered/shorthand providers, derived IDs, comment round-trip, validation, independent last-good reloads, in-flight/session protection, task reassignment, CLI init/default roster/local detection, MCP fallback, and all backend/level pairs. Visual error pill verified in isolated GUI (`/tmp/troupe-t20-error.png`). Architect/researcher rows remain #36/#41; local Settings label remains #5. |
 
 ## Safety — specs/05-safety.md
 

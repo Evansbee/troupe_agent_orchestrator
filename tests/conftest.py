@@ -7,7 +7,9 @@ from troupe.store import Store
 @pytest.fixture
 def project(tmp_path):
     """A fresh troupe project with the default team, in a git repo."""
-    config.write_default(tmp_path, "test-project")
+    state = tmp_path / config.STATE_DIR
+    state.mkdir()
+    (state / config.CONFIG_FILE).write_text(config.DEFAULT_TOML.format(name="test-project", local_model="local-test"))
     gitops.ensure_repo(tmp_path)
     cfg = config.load(tmp_path)
     store = Store(cfg.db_path)

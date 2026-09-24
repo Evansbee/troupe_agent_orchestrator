@@ -10,7 +10,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitops
+from . import gitops, config as config_mod
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
 from .runners import RunSpec, make_runner, Runner, usage_limit, reported_reset
@@ -53,6 +53,63 @@ class Engine:
         self.pokes: set[str] = set()
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
+        self._config_stamps = self.config_stamps()
+        self._session_versions: dict[str, int] = {}
+        self.save_config_snapshot()
+
+    def save_config_snapshot(self) -> None:
+        self.store.kv_set("config.last_good", {"toml": self.cfg.toml_data, "team": self.cfg.team_data})
+
+    def config_stamps(self) -> dict[str, tuple[int, int] | None]:
+        stamps = {}
+        for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
+            try:
+                stat = (self.cfg.state_dir / name).stat()
+                stamps[name] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamps[name] = None
+        return stamps
+
+    def reload_config(self) -> None:
+        for name, stamp in self.config_stamps().items():
+            if stamp == self._config_stamps.get(name):
+                continue
+            self._config_stamps[name] = stamp
+            try:
+                team = config_mod.read_team(self.cfg.root) if name == config_mod.TEAM_FILE else self.cfg.team_data
+                raw = config_mod.read_toml(self.cfg.root) if name == config_mod.CONFIG_FILE else self.cfg.toml_data
+                updated = config_mod.load(self.cfg.root, team_data=team, toml_data=raw)
+            except (ValueError, TypeError, KeyError) as e:
+                message = f"{name} invalid: {e}"
+                self.store.kv_set(f"config_error.{name}", message)
+                self.store.event("system", "error", message, significant=False)
+                lead = next(a.id for a in self.cfg.agents if a.role == "lead")
+                self.store.send("system", lead, message, subject=f"{name} invalid", kind="system")
+                continue
+            self.sync_config_agents(updated)
+            self.cfg = updated
+            self.save_config_snapshot()
+            self.store.kv_set(f"config_error.{name}", "")
+            self.store.event("system", "config", f"Reloaded {name}", significant=False)
+
+    def sync_config_agents(self, updated: Config) -> None:
+        for old in self.store.agents():
+            aid = old["id"]
+            new = updated.agent(aid)
+            if not new or old["role"] != new.role:
+                tasks = self.store.q("SELECT * FROM tasks WHERE status NOT IN ('done','cancelled') "
+                                     "AND (assignee=? OR reviewer=?)", aid, aid)
+                for task in tasks:
+                    self.store.update_task(task["id"], actor="system", status="ready", assignee=None,
+                                           reviewer=None, next_attempt_at=0,
+                                           event_text=f"#{task['id']} returned to ready after {aid} changed")
+            if not new or old["backend"] != new.backend:
+                self._session_versions[aid] = self._session_versions.get(aid, 0) + 1
+                self.store.set_agent(aid, session_id=None, session_runs=0)
+                self.store.kv_set(f"local_history:{aid}", [])
+        self.store.sync_agents(updated.agents)
+        for a in updated.agents:
+            self.store.set_agent(a.id, enabled=int(a.enabled))
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start_thread(self) -> threading.Thread:
@@ -65,7 +122,9 @@ class Engine:
 
     def recover(self) -> None:
         s = self.store
-        s.sync_agents(self.cfg.agents)
+        self.sync_config_agents(self.cfg)
+        for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
+            s.kv_set(f"config_error.{name}", "")
         s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
         s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
         for a in self.cfg.agents:
@@ -108,6 +167,7 @@ class Engine:
     async def tick(self) -> None:
         s = self.store
         s.kv_set("heartbeat", now())
+        self.reload_config()
         self.handle_commands()
         await asyncio.to_thread(self.process_approved)
         paused = bool(s.kv_get("paused", False))
@@ -341,7 +401,7 @@ class Engine:
         runner = make_runner(a.backend)
         spec = RunSpec(cfg=self.cfg, agent=a, system=self.system_prompt(a), prompt=prompt, cwd=cwd,
                        session_id=row.get("session_id"), log_path=self.cfg.runs_dir / f"{run_id:06d}-{a.id}.jsonl")
-        atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task))
+        atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task, self._session_versions.get(a.id, 0)))
         self.running[a.id] = (runner, atask, w)
 
     async def setup_worktree(self, runner: Runner, spec: RunSpec, task: dict | None, run_id: int) -> None:
@@ -385,7 +445,7 @@ class Engine:
                            + "\nContinue the task; fix setup if needed." + footer)
 
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
-                   task: dict | None) -> None:
+                   task: dict | None, session_version: int = 0) -> None:
         a, s = spec.agent, self.store
         limited = False
 
@@ -432,7 +492,9 @@ class Engine:
         row = s.agent(a.id) or {}
         fields = dict(state="idle", current_run=None, activity="", runs=(row.get("runs") or 0) + 1,
                       cost=(row.get("cost") or 0) + res.cost, tokens=(row.get("tokens") or 0) + res.tokens)
-        if res.session_id:
+        if session_version != self._session_versions.get(a.id, 0):
+            s.kv_set(f"local_history:{a.id}", [])
+        if res.session_id and self.cfg.agent(a.id) and session_version == self._session_versions.get(a.id, 0):
             fields["session_id"] = res.session_id
             fields["session_runs"] = (row.get("session_runs") or 0) + 1
         s.set_agent(a.id, **fields)
