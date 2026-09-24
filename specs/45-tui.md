@@ -13,6 +13,16 @@ The interface model (pm decision "Interface model…"):
 - **Mac app:** the cross-project portfolio view (specs/60-mac-app.md).
 All three are clients of the same engine API (specs/50-api.md).
 
+**Priority (human, 2026-09-24): the TUI is the primary interface.** The raylib GUI is frozen, and the Mac app is
+deferred. The lead builds #66 in four slices:
+| slice | REQs |
+|---|---|
+| 1. Shell + status | TUI-001, 002, 003, 010 (header, Team, Tasks), 011, 012, 013, 030, 031 (its parts) |
+| 2. Needs you | TUI-010 (Needs you pane), 020 (`a` answering) |
+| 3. PM chat | TUI-021 |
+| 4. Feed + kill switch | TUI-010 (Comms), 020 (`s`) |
+Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
+
 ## Launch
 - **REQ-TUI-001 [ ]** `troupe` with no arguments (or `troupe tui`) in a project directory:
   - starts the service if it isn't running (`troupe start` semantics, REQ-ENG-006), then opens the TUI;
@@ -47,6 +57,19 @@ All three are clients of the same engine API (specs/50-api.md).
   - Honors the terminal's color scheme, with role colors from `design/system.md` mapped to the nearest terminal
     color. No meaning carried by emoji or color alone.
   - Mouse is optional; everything works from the keyboard.
+- **REQ-TUI-012 [ ]** Copy anything. The human's copy/paste pain must not come back.
+  - The terminal's native selection works over every pane (the Textual/terminal modifier-drag, documented in the
+    footer help).
+  - `y` copies the focused item (message, card, task brief) to the clipboard via OSC 52, which works in tmux and
+    over SSH, and shows a "Copied" flash.
+  - Test: `y` on a focused message emits an OSC 52 sequence with its exact text.
+- **REQ-TUI-013 [ ]** Details and catch-up.
+  - Enter on a task, message or agent opens a detail view (brief and notes, full message, agent status and recent
+    runs). Esc goes back.
+  - When the TUI starts, or refocuses after ≥10 min away (`human_last_seen`, REQ-GUI-028), a one-line "Since you
+    looked: 2 merged, 1 blocked, 3 decisions" appears. Enter opens the list.
+  - The TUI connects with `notifications: false` (REQ-API-010), so the engine keeps sending OS notifications while
+    the human is elsewhere in tmux.
 
 ## Keys
 - **REQ-TUI-020 [ ]** Key bindings (shown in a footer):
@@ -82,3 +105,5 @@ All three are clients of the same engine API (specs/50-api.md).
 
 ## Changelog
 - 2026-09-24 — written (human request via pm msg #418; task #66).
+- 2026-09-24 — TUI made the primary interface; slice plan; new TUI-012 copy (OSC 52 plus native selection) and
+  TUI-013 details and catch-up.

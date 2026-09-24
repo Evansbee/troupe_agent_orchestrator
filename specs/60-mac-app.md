@@ -1,5 +1,9 @@
 # Mac app — the native SwiftUI client
 
+> **DEFERRED (human, 2026-09-24):** the per-project TUI (specs/45-tui.md) is the primary interface now. The Swift app
+> is paused and will return later as the cross-project portfolio view. These REQs stay as the plan, but no new
+> Mac work starts until the human un-pauses it. #49 is merged as plumbing and its later tasks (#59, …) are on hold.
+
 The desktop GUI moves from raylib/Python to a native macOS app. The GUI requirements in `specs/40-gui.md`
 (REQ-GUI-0xx) stay the behavioral source of truth; this file says how the Mac app meets them, adds
 native-only requirements, and sets milestones. The app is a pure client of the engine local API (the API,
@@ -242,3 +246,4 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 - 2026-09-24 — MAC-052 motion recording evidence and MAC-053 design fidelity gate (pm/lead decisions after the #49
   review; #58/#59).
 - 2026-09-24 — noted the portfolio-view direction and question #15 as open; the TUI is specs/45-tui.md.
+- 2026-09-24 — marked DEFERRED: the TUI is primary (human focus shift via pm msg #426).
