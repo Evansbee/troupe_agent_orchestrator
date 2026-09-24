@@ -259,3 +259,32 @@ def test_missing_baseline_requires_explicit_human_approval(project):
     assert store.kv_get('safety.approved') is not None
     Engine(loaded).process_approved()
     assert store.task(tid)['status'] == 'done'
+
+
+def test_approval_with_ui_note_is_accepted(project):
+    cfg, store = project
+    tid, _ = protected_task(project)
+    assert not task_gate(cfg, store, store.task(tid))
+    store.answer(store.questions()[0]['id'], 'Approve — reviewed the diff')
+    assert task_gate(cfg, store, store.task(tid))
+
+
+def test_renaming_protected_file_still_needs_approval(project):
+    cfg, store = project
+    # Establish the protected file by explicit human approval first.
+    tid, _ = protected_task(project)
+    task_gate(cfg, store, store.task(tid))
+    store.answer(store.questions()[0]['id'], 'Approve')
+    Engine(cfg).process_approved()
+    next_id = store.add_task('Rename', assignee='builder-1', status='review')
+    branch, tree = gitops.create_worktree(cfg.root, cfg.worktrees_dir, next_id, 'Rename')
+    gitops.git(tree, 'mv', 'src/troupe/roles.py', 'src/troupe/moved.py')
+    gitops.commit_all(tree, 'rename protected file')
+    store.update_task(next_id, branch=branch, worktree=str(tree))
+    assert not task_gate(cfg, store, store.task(next_id))
+    assert 'roles.py' in store.questions()[0]['context']
+
+
+def test_agent_roster_cannot_claim_human_identity():
+    with pytest.raises(ValueError, match='reserved identity'):
+        config.parse_agents({'agents': [{'id': 'human', 'role': 'lead', 'provider': 'codex'}]})

@@ -90,6 +90,8 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         words = shlex.split(command.replace('\n', ' ; '))
     except ValueError:
         return 'Unparseable shell command'
+    if re.search(r'\$\{?[A-Z_]*(?:TOKEN|PASSWORD|SECRET|API_KEY)[A-Z_]*', command):
+        return 'Expanding secret environment variables into tool output or requests'
     if re.search(r'\bsecurity\s+find-\S*password\b|\bprintenv\b|\benv(?:\s+-[0u]+)*\s*(?:$|[|;>])', command):
         return 'Dumping credentials or environment secrets'
     if any(secret_path(w, cwd) for w in words if '/' in w):
@@ -117,7 +119,11 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
             return 'Push destination is not an approved project remote'
         from .gitops import git
         default = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD', check=False).removeprefix('origin/')
-        if any(x in ('-f', '--force', '--mirror') or x.startswith('--force-with-lease') or x.startswith('+') for x in tail):
+        if not default:
+            common = Path(git(cwd, 'rev-parse', '--git-common-dir', check=False))
+            root = (cwd / common).resolve().parent
+            default = git(root, 'symbolic-ref', '--short', 'HEAD', check=False)
+        if any(x == '--mirror' or x.startswith('--force') or re.match(r'^-[^-]*f', x) or x.startswith('+') for x in tail):
             # Without an explicit safe destination, force can affect the default branch.
             refs = positional[1:]
             if not refs or any(x.lstrip('+').split(':')[-1].removeprefix('refs/heads/') in ('main', 'master', 'HEAD', default) for x in refs):

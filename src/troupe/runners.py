@@ -215,7 +215,7 @@ class Runner:
         err_task = asyncio.create_task(read_err())
         spec.log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(spec.log_path, "a") as log:
-            log.write(json.dumps({"troupe_args": args, "cwd": str(spec.cwd)}) + "\n")
+            log.write(redact(json.dumps({"troupe_args": args, "cwd": str(spec.cwd)})) + "\n")
             while line := await self.proc.stdout.readline():
                 text = line.decode(errors="replace").strip()
                 if not text:
@@ -228,7 +228,7 @@ class Runner:
                 try:
                     on_json(obj)
                 except Exception as e:  # never let a parse bug kill the run
-                    log.write(json.dumps({"troupe_parse_error": repr(e)}) + "\n")
+                    log.write(redact(json.dumps({"troupe_parse_error": repr(e)})) + "\n")
         rc = await self.proc.wait()
         await err_task
         return rc, b"".join(err_chunks).decode(errors="replace")[-2000:]

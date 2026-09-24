@@ -345,6 +345,8 @@ def parse_agents(document: dict) -> list[AgentCfg]:
             raise ValueError(f"team.yaml: {aid}: {field}: {message}")
         if not isinstance(aid, str) or not aid.strip():
             error("id", "must be a non-empty string")
+        if aid.casefold() in ("human", "system", "user", "owner", "team", "all", "everyone"):
+            error("id", "reserved identity; choose an agent id")
         if aid in seen:
             error("id", "duplicate id")
         seen.add(aid)

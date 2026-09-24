@@ -259,6 +259,7 @@ class Store:
     def add_task(self, title: str, description: str = "", acceptance: str = "", territory: str = "",
                  status: str = "backlog", priority: int = 2, role: str = "builder", assignee: str | None = None,
                  created_by: str = "human", depends_on: list[int] | None = None) -> int:
+        title, description, acceptance = redact(title), redact(description), redact(acceptance)
         tid = self.x("""INSERT INTO tasks(created,updated,title,description,acceptance,territory,status,priority,
                         role,assignee,created_by,depends_on) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                      now(), now(), title, description, acceptance, territory, status, priority, role, assignee,
@@ -272,6 +273,7 @@ class Store:
             self.kv_set(f"check_failed.{task_id}", False)
         if "depends_on" in fields and not isinstance(fields["depends_on"], str):
             fields["depends_on"] = json.dumps(fields["depends_on"])
+        fields = {k: redact(v) if isinstance(v, str) else v for k, v in fields.items()}
         fields["updated"] = now()
         cols = ", ".join(f"{k}=?" for k in fields)
         self.x(f"UPDATE tasks SET {cols} WHERE id=?", *fields.values(), task_id)
@@ -279,7 +281,7 @@ class Store:
             self.event(actor or "system", "task", event_text, ref=f"task:{task_id}", significant=significant)
 
     def task_note(self, task_id: int, agent: str, text: str) -> None:
-        self.x("INSERT INTO task_notes(task_id,ts,agent,text) VALUES(?,?,?,?)", task_id, now(), agent, text)
+        self.x("INSERT INTO task_notes(task_id,ts,agent,text) VALUES(?,?,?,?)", task_id, now(), agent, redact(text))
 
     def task_notes(self, task_id: int) -> list[dict]:
         return self.q("SELECT * FROM task_notes WHERE task_id=? ORDER BY id", task_id)
@@ -305,6 +307,7 @@ class Store:
 
     def answer(self, qid: int, answer: str, status: str = "answered", *,
                via: str = "inbox", notify: bool = True) -> bool:
+        answer = redact(answer)
         qn = self.one("SELECT * FROM questions WHERE id=?", qid)
         if not qn or qn["status"] != "open":
             return False
@@ -327,6 +330,7 @@ class Store:
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",
                  scope: str = "team") -> int:
+        title, content, rationale = redact(title), redact(content), redact(rationale)
         mid = self.x("INSERT INTO memories(ts,agent,kind,title,content,rationale,scope) VALUES(?,?,?,?,?,?,?)",
                      now(), agent, kind, title, content, rationale, scope)
         self.event(agent, "memory", f"{agent} recorded {kind}: {title[:120]}", ref=f"mem:{mid}",

@@ -18,6 +18,6 @@ def project(tmp_path):
     cfg = config.load(tmp_path)
     # Tests start after human onboarding, with an empty activity/mail inbox.
     store.x("DELETE FROM messages")
-    store.x("DELETE FROM events")
+    store.x("DELETE FROM events WHERE kind IN ('safety','question','answer','message')")
     store.sync_agents(cfg.agents)
     return cfg, store

@@ -61,7 +61,7 @@ def task_gate(cfg, store, task: dict) -> bool:
         return True
     base = gitops.git(cfg.root, 'merge-base', 'HEAD', task['branch'])
     head = gitops.git(cfg.root, 'rev-parse', task['branch'])
-    files = gitops.git(cfg.root, 'diff', '--name-only', base, head).splitlines()
+    files = gitops.git(cfg.root, 'diff', '--no-renames', '--name-only', base, head).splitlines()
     guarded = [f for f in files if protected(f, cfg.safety)]
     if not guarded:
         return True
