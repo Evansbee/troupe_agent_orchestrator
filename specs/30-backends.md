@@ -80,15 +80,25 @@ should be able to move to codex or even local models as defined in the setup yam
     If either is unset it falls back to `claude_cap_percent` (default 50), so older configs keep working. Troupe's own
     values are the human's choice (question #18): **5h = 80, 7d = 50**.
   - Each window is checked against its own cap. If either window's latest Claude usage is ≥ its cap, no new
-    **autonomous** runs start for claude-backed agents until the window that tripped resets; displays say
-    "capped · resets in 4h" (countdown copy rule, REQ-ENG-016). Codex and local agents are unaffected, and in-flight runs finish.
+    **autonomous** runs start for claude-backed agents until usage is below the cap again, either because the
+    window resets or because the cap was raised. Displays say "capped · resets in 4h" (countdown copy rule,
+    REQ-ENG-016).
+  - [ ] (#110; the human raised 80→95 at 14:48 and nothing happened) **Cap changes apply within one tick.** On
+    each config reload and each tick, a `cap`-reason limit whose tripping window's latest usage is now below the
+    (new) cap is cleared and logged ("Claude cap raised to 95%: autonomous runs resume"). Lowering a cap below
+    current usage engages it on the next tick. Provider-reported limits (reason `provider`) are never cleared
+    this way.
+  - [ ] (#110) `troupe limits --clear claude` (and its API method) clears a `cap` limit as an explicit override.
+    It's human-only, like resume and approvals: refused for agents, and written to the safety audit.
+    - Test: engaged at 80 with usage 85, a reload with cap 95 clears it within one tick and logs the event;
+      usage 96 stays capped; a provider limit survives a cap change; `--clear` from an agent is refused. Codex and local agents are unaffected, and in-flight runs finish.
   - The API exposes `cap_pct` per window (REQ-API Usage).
   - Chat with the human still runs, since they're present and can decide, but it's labeled as over the cap. This
     differs from real rate limits (REQ-ENG-016), which block chat, because the cap is troupe's own seatbelt.
   - It reuses the ENG-016 per-backend limit state with reason `cap` and resets when the window resets. Affected agents
     show `waiting_on` kind `providers` (REQ-ENG-046).
   - A feed event and a needs-help notification (REQ-ENG-047) fire when it engages. The API usage snapshot exposes the
-    cap and "capped until HH:MM" for the TUI header (REQ-TUI-010).
+    cap and its `resets_at`, which the TUI header renders as "capped · resets in 4h" (REQ-TUI-010, countdown copy).
   - When #38 ships, `provider_limits.claude` (BE-011) replaces these keys. The present `claude_cap_*` values are
     migrated to `five_hour`/`seven_day` once, with an event.
   - **Deploying:** the live values must be in `troupe.toml` before the reinstall. Otherwise the default 50 on a busier
@@ -180,6 +190,8 @@ should be able to move to codex or even local models as defined in the setup yam
   - Test: mocked httpx for both tools and each search provider's parser, plus a live test marked skip-if-offline.
 
 ## Changelog
+- 2026-09-24 — BE-016 (#110): cap changes apply within one tick; human-only `troupe limits --clear claude`; the header
+  shows a countdown, not "capped until HH:MM".
 - 2026-09-24 — BE-002: troupe MCP pre-approval, no `.git` roots (#96). BE-016 cap display uses countdown copy (#105).
 - 2026-09-24 — BE-001/002 launch commands aligned with shipped #43 and SAFE-050; retained the OS-boundary gap.
 - 2026-09-23 — written from the bootstrap implementation.

@@ -366,12 +366,25 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     autocommits), the result is not a failure.
     - The worker re-merges main into the branch and re-runs the check, up to 3 times with backoff. It doesn't message
       the builder, and it doesn't count toward `max_task_attempts`.
-    - After 3 consecutive "main moved" retries, the task goes back to the builder with a clear message saying so.
-    - A real check failure or merge conflict goes back immediately; exhausting the main-moved limit also
-      goes back, with the distinct explanation above.
-    - The merge into main is always of the exact tree that passed the check, and the worker stays serial.
-    - Test: main moving during a check retries and merges silently; a real failure still goes back with output; the
-      3-retry limit sends it back; the merged tree equals the checked tree.
+    - [ ] (#107) **Doc-only movement doesn't count.** If every path changed on main since the checked main
+      head matches `[git] doc_only_paths`, the checked tree merges onto current main without a re-check, and
+      the merged tree contains both. The default globs are `specs/**`, `design/**`, `docs/**`, `*.md`,
+      `README*` and `LICENSE`. A commit set with any path outside the globs takes the re-merge + re-check path.
+      `doc_only_paths` is guarded by REQ-SAFE-021, since widening it would skip re-checks.
+      Config load also rejects over-broad patterns as a config error, even ones the human approved. That means
+      `*`, `**`, and any pattern matching a typical source, test or build path (`src/x.py`, `tests/test_x.py`,
+      `x.py`, `pyproject.toml`, `uv.lock`). The human's approval stays the primary guard, because those probe
+      paths assume a Python layout. Test: each probe-matching pattern is refused with a message naming it.
+    - [ ] (#107) **Exhausted retries don't bounce approved work.** After 3 consecutive "main moved" retries
+      caused by real code movement, the task stays `approved` and the merge is requeued with a backoff
+      (`next_attempt_at`). It's logged to the check log only: no builder mail, no builder wake, no QA re-review.
+      (This replaces the earlier rule that sent the task back to the builder.)
+    - A real check failure or merge conflict goes back immediately.
+    - The merge into main is always of the checked tree, plus only doc-only commits, and the worker stays serial.
+    - Test: main moving during a check retries and merges silently; a real failure still goes back with output; a
+      specs/*.md commit during the check merges on the first attempt with both changes; a src/ commit re-checks;
+      a mixed doc+code commit re-checks; exhausted retries leave the task approved and requeued, and
+      `check_failed` isn't called.
   - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
     output, a timeout counts as a failure, and an empty check merges directly.
 - **REQ-ENG-043 [ ]** (#36) Architecture review for **risky changes only** (human's answer). A task needs the architect's
@@ -589,6 +602,9 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-040: over-broad `doc_only_paths` patterns are rejected at load (#107, lead decision).
+- 2026-09-24 — ENG-040 (#107): doc-only main movement merges without a re-check (`[git] doc_only_paths`, guarded
+  by SAFE-021), and exhausted main-moved retries keep the task approved and requeued instead of bouncing it.
 - 2026-09-24 — ENG-059 hardened from QA's #92 review: runs the candidate tree's code, deterministic injection
   (10/10), skip decided up front (signal exit = fail), isolated HOME, cleanup in `finally`. New ENG-060: engines
   exit when their project disappears, plus test-session process hygiene (#103). ENG-008: missing-path entries
