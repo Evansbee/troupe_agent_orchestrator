@@ -385,13 +385,17 @@ class TeamAPI:
         (with its `rationale` — WHY), facts learned, the human's preferences, and parked ideas.
         Team memory is visible to everyone; `private=True` keeps a working note just for you.
         Pass `supersedes=<memory id>` when this replaces an earlier one — the old memory is marked
-        superseded (hidden from prompts and recall, never deleted) and the Memory view links to this one."""
+        superseded (hidden from prompts and recall, never deleted) and the Memory view links to this one.
+        You can't supersede a memory that's pinned, authored by the human, or a `preference` — those
+        are the human's; ask_human instead."""
         if supersedes is not None:
             old = self.store.memory(supersedes)
             if old is None:
                 return f"ERROR: memory #{supersedes} not found."
             if old["superseded_by"]:
                 return f"ERROR: memory #{supersedes} is already superseded by #{old['superseded_by']}."
+            if self.me != "human" and (old["pinned"] or old["agent"] == "human" or old["kind"] == "preference"):
+                return "ERROR: that's the human's — ask the human (ask_human) instead"
         mid = self.store.remember(self.me, title, content, rationale, kind, "private" if private else "team",
                                   supersedes=supersedes)
         return f"Remembered ({kind} #{mid})." + (f" Superseded #{supersedes}." if supersedes is not None else "")

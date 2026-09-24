@@ -120,3 +120,39 @@ def test_supersede_hides_from_recall_by_default(project):
     err = lead.remember("Another", supersedes=old_id)
     assert err == f"ERROR: memory #{old_id} is already superseded by #{new_id}."
     assert lead.remember("x", supersedes=999999).startswith("ERROR: memory #999999 not found")
+
+
+def test_agent_cannot_supersede_the_humans_memories(project):
+    """REQ-COM-032 Principle 0 guard (QA's #8 finding): superseding is a de-facto delete, so an agent
+    can't do it to anything pinned, human-authored, or a preference — only the human can."""
+    from troupe.engine import Engine, Wake
+
+    cfg, store = project
+    lead = TeamAPI(cfg, store, "lead")
+    a = cfg.agent("spec")
+
+    pinned_id = store.remember("lead", "Never push without asking", kind="decision")
+    store.update_memory(pinned_id, pinned=True)
+    err = lead.remember("Pushing is fine", supersedes=pinned_id)
+    assert err == "ERROR: that's the human's — ask the human (ask_human) instead"
+    assert store.memory(pinned_id)["superseded_by"] is None
+    prompt = Engine(cfg).build_prompt(a, Wake(1, a, "messages"), [], None, {})
+    assert "Never push without asking" in prompt  # still pinned in every prompt
+
+    human_authored_id = store.remember("human", "Human's own note", kind="decision")
+    err = lead.remember("Overriding it", supersedes=human_authored_id)
+    assert err == "ERROR: that's the human's — ask the human (ask_human) instead"
+
+    preference_id = store.remember("lead", "Prefers terse commit messages", kind="preference")
+    err = lead.remember("Verbose is fine now", supersedes=preference_id)
+    assert err == "ERROR: that's the human's — ask the human (ask_human) instead"
+
+    # Agent-to-agent supersedes of an ordinary decision are unaffected.
+    plain_id = store.remember("lead", "Ordinary decision")
+    assert not lead.remember("Revised decision", supersedes=plain_id).startswith("ERROR")
+
+    # The human's own supersede still works, through any of the three trigger conditions.
+    human = TeamAPI(cfg, store, "human")
+    result = human.remember("Pushing needs a heads-up now", supersedes=pinned_id)
+    assert not result.startswith("ERROR")
+    assert store.memory(pinned_id)["superseded_by"] is not None
