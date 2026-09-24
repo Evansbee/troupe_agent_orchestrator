@@ -414,6 +414,10 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
   - Every push, and every refusal, appears in the feed and the TUI (last push time and result).
   - The default for new projects is `never`. troupe's own posture (`per_task`, `merge_commit`, `on_merge` to
     `origin main`) only goes live after the human confirms via the PM.
+  - troupe's own values: `commit_email` is the human's chosen personal address (decision in memory; it isn't
+    repeated in specs). The existing history's work email is rewritten once, before the first public push, as a
+    human-directed one-off operation in a quiet window the lead arranges. The engine itself never rewrites history
+    (ENG-053).
   - Test, with a local bare remote:
     - each merge strategy produces the expected history;
     - `on_merge` pushes after a merge and `never` never pushes;
