@@ -94,19 +94,17 @@ Center, `T.HUMAN` colored ring (matches Pulse). Two states:
   — a fast ease (speed ~10), distinctly quicker than the slow breathing itself, so resolution reads as
   immediate relief rather than another cycle.
 
-### Agent nodes — four visually distinct states (REQ-GUI-031)
-All states share the base: `ui.avatar`-style ringed circle in the agent's role color
-(`design/system.md`'s role palette), name label below at the sizes in the table above.
+### Agent nodes — eight visually distinct states (REQ-GUI-031)
+**Superseded by `design/pulse.md`'s Layer 2** (the #32 redesign expanded this from four states to
+eight — idle, working, and five named "waiting" substates plus parked — with a two-tier
+coarse-silhouette/fine-treatment legend, dashed tethers to whatever's being waited on, and provider
+badges for the rate-limited case). Use `design/pulse.md`'s "Full state legend" table as the source of
+truth; this section is left in place only as a pointer, not a duplicate spec.
 
-| State | Treatment |
-|---|---|
-| **Idle** | Slow breathing glow, 5s sine period, low amplitude — calm, present, doing nothing. No caption. |
-| **Working** | The existing avatar `running` treatment (rotating arc, `sin(t·3.2)` pulse — same formula as `core.py`'s `ui.avatar`, so Stage and the sidebar agree) plus a caption beneath the name: the current tool/activity, truncated to fit, `TEXT_DIM`→role-color blend. |
-| **Parked** (owes work, REQ-GUI-002) | Static (non-pulsing) `T.ORANGE` outer ring plus a small `!` glyph badge at the node's upper-right. Deliberately *not* animated — parked means "stalled," and a pulsing warning would read as active/urgent, which is the wrong signal for "idle when it shouldn't be." |
-| **Throttled / rate-limited** (REQ-ENG-016) | Node desaturates toward `T.CYAN` (mixed 55% toward `T.BG`, ringed in `T.CYAN`) — a "frozen" look, distinct from the warm amber of parked. Caption shows the reset time ("resets 14:05"), same phrasing as the top-bar rate-limit pill in `design/system.md`. This is a new *semantic* use of `T.CYAN` (elsewhere it labels the "ready" task status) — no collision risk since a task-status pill and an agent-node ring never share a view. |
-
-Only one state applies at a time (a throttled agent can't also be "working" — REQ-ENG-016 blocks runs
-on a limited backend entirely).
+All states still share the base described here: `ui.avatar`-style ringed circle in the agent's role
+color (`design/system.md`'s role palette), name label below at the sizes in the table above, model chip
+beneath that (`design/pulse.md` Layer 4 — full chip at n≤9, glyph+pips only above 9, per that doc's
+Density section).
 
 ### Comets (REQ-GUI-032)
 A comet = a bright head (glow + core dot, same construction as Pulse's particles) trailing a short
