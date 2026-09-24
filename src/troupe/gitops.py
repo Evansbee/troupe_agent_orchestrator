@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fnmatch
 import re
 import os
 import signal
 import time
 import subprocess
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 # Serializes operations on the main checkout across engine threads.
@@ -156,15 +156,39 @@ def prune_worktrees(root: Path) -> None:
         git(root, "worktree", "prune")
 
 
+@lru_cache(maxsize=256)
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Translate a doc_only_paths glob into a path-aware regex (#107 QA round 2): a single `*`
+    never crosses a `/` (matches within one path segment, unlike `fnmatch` where `*` matches
+    everything), while `**` matches across any number of segments. So the default `*.md` means a
+    .md file in the repo root only, not `src/troupe/prompts/charter.md` — fnmatch's cross-segment
+    `*` let the documented "doc-only" defaults quietly match source/test paths."""
+    out = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if i + 1 < n and pattern[i + 1] == "*":
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("".join(out))
+
+
 def doc_only_since(root: Path, base: str, head: str, patterns: list[str]) -> bool:
     """True if every path that changed between `base` and `head` matches at least one glob in
-    `patterns` (fnmatch-style; `*` also spans `/`, so `specs/**` and `specs/*` behave the same).
-    `base == head` (nothing changed) is trivially doc-only — the caller only asks this when it
-    already knows the two differ, but this stays correct either way."""
+    `patterns` (see `glob_to_regex`). `base == head` (nothing changed) is trivially doc-only — the
+    caller only asks this when it already knows the two differ, but this stays correct either way."""
     if base == head:
         return True
     changed = git(root, "diff", "--name-only", base, head).splitlines()
-    return bool(changed) and all(any(fnmatch.fnmatchcase(p, pat) for pat in patterns) for p in changed)
+    regexes = [glob_to_regex(p) for p in patterns]
+    return bool(changed) and all(any(rx.fullmatch(p) for rx in regexes) for p in changed)
 
 
 def prepare_check(root: Path, tree: Path, branch: str) -> tuple[str, str]:

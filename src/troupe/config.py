@@ -105,6 +105,29 @@ class GitSettings:
         if not isinstance(self.doc_only_paths, list) or not all(
                 isinstance(p, str) for p in self.doc_only_paths):
             raise ValueError("troupe.toml: git.doc_only_paths must be a list of strings")
+        _validate_doc_only_paths(self.doc_only_paths)
+
+
+# #107 QA round 2: doc_only_paths lets a main commit skip the merge-gate re-check, so an
+# over-broad pattern is a way to slip code past review — reject any pattern that could plausibly
+# match real source/test paths, at load time, regardless of whether it's later approved as part
+# of the safety baseline (gates.guard_config). Probe paths mirror a typical Python project's
+# layout; `*`/`**` alone are rejected explicitly even though the probes already catch them, since
+# a future probe-set change shouldn't silently stop catching the worst case.
+_DOC_ONLY_PROBE_PATHS = ("src/x.py", "tests/test_x.py", "x.py", "pyproject.toml", "uv.lock")
+
+
+def _validate_doc_only_paths(patterns: list[str]) -> None:
+    from .gitops import glob_to_regex
+    for pattern in patterns:
+        if pattern in ("*", "**"):
+            raise ValueError(f"troupe.toml: git.doc_only_paths pattern {pattern!r} is too broad")
+        regex = glob_to_regex(pattern)
+        for probe in _DOC_ONLY_PROBE_PATHS:
+            if regex.fullmatch(probe):
+                raise ValueError(
+                    f"troupe.toml: git.doc_only_paths pattern {pattern!r} matches {probe!r} — "
+                    "too broad; doc_only_paths must not match source or test files")
 
 
 @dataclass

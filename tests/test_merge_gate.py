@@ -351,3 +351,60 @@ def test_doc_only_paths_config_default_and_validation():
         config.GitSettings(doc_only_paths="specs/**")  # must be a list, not a bare string
     with pytest.raises(ValueError, match="doc_only_paths"):
         config.GitSettings(doc_only_paths=[1, 2])
+
+
+@pytest.mark.parametrize("overbroad", [["**"], ["*"], ["src/**"], ["*.py"], ["tests/**"]])
+def test_doc_only_paths_rejects_overbroad_patterns_at_load(overbroad):
+    """#107 QA round 2: doc_only_paths lets a main commit skip the merge-gate re-check, so an
+    over-broad pattern is a way to slip code past review — reject it at load time, regardless of
+    whether it might later be "approved" as part of the safety baseline. Probed against a typical
+    Python project's layout (src/x.py, tests/test_x.py, x.py, pyproject.toml, uv.lock)."""
+    with pytest.raises(ValueError, match="doc_only_paths"):
+        config.GitSettings(doc_only_paths=overbroad)
+
+
+def test_doc_only_paths_matching_is_path_aware_not_fnmatch_style():
+    """#107 QA round 2: fnmatch's `*` crosses `/`, so the default `*.md` pattern also matched
+    src/troupe/prompts/charter.md and tests/fixtures/expected.md — any markdown read at runtime,
+    not just a top-level doc. With path-aware matching (a bare `*` stays within one segment): a
+    markdown file under src/ is a REAL change and forces a re-check, while README.md and a file
+    under specs/ are genuinely doc-only."""
+    from troupe.gitops import glob_to_regex
+    defaults = config.GitSettings().doc_only_paths
+
+    def is_doc_only(path):
+        return any(glob_to_regex(p).fullmatch(path) for p in defaults)
+
+    assert not is_doc_only("src/troupe/notes.md")
+    assert not is_doc_only("src/troupe/prompts/charter.md")
+    assert not is_doc_only("tests/fixtures/expected.md")
+    assert is_doc_only("README.md")
+    assert is_doc_only("specs/x.md")
+    assert is_doc_only("design/system.md")
+    assert is_doc_only("docs/adr/001.md")
+
+
+def test_doc_only_paths_is_part_of_the_approved_safety_baseline(project):
+    """#107 QA round 2 + lead decision: doc_only_paths must be gated by the same human-approval
+    baseline as `check`/`check_timeout` (guard_config), not read straight off troupe.toml — any
+    agent can edit troupe.toml, and this key controls whether the merge gate re-checks code at
+    all. Editing it must raise a pending safety.config question and the gate must keep using the
+    previously approved list until the human approves the change (same pattern as `check` in
+    test_check_config_validation)."""
+    cfg, _ = project
+    from troupe.store import Store
+    store = Store(cfg.db_path)
+    approved_before = store.kv_get("safety.approved")
+    assert approved_before["doc_only_paths"] == config.GitSettings().doc_only_paths
+
+    path = cfg.state_dir / config.CONFIG_FILE
+    path.write_text(path.read_text().replace(
+        'doc_only_paths = ["specs/**", "design/**", "docs/**", "*.md", "README*", "LICENSE"]',
+        'doc_only_paths = ["design/**"]'))
+    loaded = config.load(cfg.root)
+    assert loaded.git.doc_only_paths == approved_before["doc_only_paths"]  # unchanged until approved
+    pending = store.kv_get("safety.config")
+    assert pending["payload"]["doc_only_paths"] == ["design/**"]
+
+    store.answer(pending["qid"], "Approve")
+    assert config.load(cfg.root).git.doc_only_paths == ["design/**"]
