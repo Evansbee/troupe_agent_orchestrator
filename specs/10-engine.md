@@ -82,6 +82,27 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
 - **REQ-ENG-015 [x]** Failed runs back off exponentially per agent (30s → 10m) and their mail is re-queued.
+- **REQ-ENG-050 [ ]** (#61/#62) Run watchdog, for every backend. Observed 2026-09-24: codex runs hung silently for
+  2h45m (builder-2) and 78 min (QA) at 0% CPU, and nobody noticed.
+  - Each run tracks the time of its last stream event (any line from the backend).
+  - **Stall:** no output for `[budget] stall_minutes` (default 15) → status `stalled`.
+  - **Hard cap:** a run exceeding `max_run_minutes` → status `timeout`. The default is 90 min for worktree roles
+    (builder, and QA reviewing in a worktree) and `max_coord_run_minutes` = 30 for everyone else. Chat runs are
+    exempt from the hard cap but not from the stall rule.
+  - **On stall or timeout:**
+    - kill the process group plus verified descendants in other groups (by pid ancestry, never by name);
+    - re-queue the run's mail and apply the normal failure backoff (REQ-ENG-015), so an agent can't loop into the
+      same hang;
+    - log a feed event and a needs-help notification (REQ-ENG-047);
+    - the Agent view shows the reason on the run.
+  - **Zombie runs:** each tick, a run marked `running` whose process no longer exists becomes `interrupted` (as
+    REQ-ENG-004 does at start).
+  - Test:
+    - a silent fake runner is killed after a small `stall_minutes`, with no orphans (descendants included);
+    - it's marked `stalled` with mail re-queued, backoff applied and a notification raised;
+    - a chatty long run survives until `max_run_minutes`, then `timeout`;
+    - chat runs are exempt from the cap;
+    - a vanished process becomes `interrupted`.
 - **REQ-ENG-016 [x]** Rate-limit awareness: when a backend reports a usage/rate limit, back off that backend
   globally until its reset time and surface it in the GUI. (#2)
   - Detection: claude `rate_limit_event` with status ≠ `allowed`, or a failed run whose error text mentions a
@@ -353,3 +374,4 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   ENG-042 crash supervision (#28). ENG-006 version warning replaced by auto reload.
 - 2026-09-24 — new ENG-047 needs-help notifications (#35), ENG-048 ★ human requests (#45), ENG-049 local-LLM mail
   triage (#46). These tasks were in flight without REQs.
+- 2026-09-24 — ENG-050 run watchdog (stall/timeout/zombie), one REQ for the overlapping #61 and #62 briefs.

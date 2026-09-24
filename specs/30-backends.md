@@ -27,6 +27,22 @@ Code: `src/troupe/runners.py`.
     fields. The Settings view will show "not supported" next to level for local agents (#5).
   - Test: argv built for each provider/level pair.
 
+- **REQ-BE-015 [ ]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
+  2026-09-24: agents inherited `~/.codex/config.toml` plugins, including computer-use, browser, app tools and a notify
+  hook into the Computer Use app. Those could drive the human's desktop and apps, and are a likely cause of the hangs.
+  - Codex runs with `CODEX_HOME=.troupe/codex-home/<agent>`. That directory has a minimal generated `config.toml`
+    (model/level from team.yaml plus the troupe MCP server, **no plugins, no notify**) and a symlink to the human's
+    `~/.codex/auth.json` for login only.
+  - Session resume (`exec resume`) keeps working, because sessions live under the new home. BE-014 usage reading
+    looks in these homes (and the app-server fallback).
+  - This is the first layer of the codex sandbox (REQ-SAFE-050, #43). `runners.py` is protected, so the human
+    approves the merge (REQ-SAFE-020).
+  - Test:
+    - the launch env sets `CODEX_HOME`;
+    - the generated config has no `plugins` or `notify`;
+    - live: during a codex run, `ps` shows no ChatGPT.app, cua_node or node_repl children;
+    - login and resume work.
+
 ## Provider usage caps and fallback (#38; human: "if we hit 50% (for example) claude usage, we can stop. Those agents
 should be able to move to codex or even local models as defined in the setup yaml file. Ordered by preference.")
 - **REQ-BE-011 [ ]** Usage tracking and caps.
@@ -105,6 +121,7 @@ should be able to move to codex or even local models as defined in the setup yam
   (researcher, #41).
 - 2026-09-23 — BE-014 Codex usage from rollout `rate_limits` (#52, human request).
 - 2026-09-24 — BE-011 shared window names (five_hour/seven_day/window_<minutes>) and stale-sample rule (#52/#38).
+- 2026-09-24 — BE-015 isolated CODEX_HOME for agents (#62).
 
 ## Open questions
 - Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52
