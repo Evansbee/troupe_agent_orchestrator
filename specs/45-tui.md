@@ -107,12 +107,23 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - **Comms:** agent→agent mail subjects, decisions and merges, newest at the bottom, sticky to the bottom
     (REQ-GUI-017 rules).
   - **Needs you:** open cards, including escalations the PM forwarded, credited "via pm_1 from …".
-    [ ] (#109) Safety approval cards (REQ-SAFE-021) are pinned above every other card, whatever their age,
-    because they gate merges. Test: 6 questions plus 1 safety card, and the safety card is first.
+    [ ] (#109) Must-deliver cards are pinned above every other card, whatever their age. Rules are in
+    design/system.md "Pinning & priority order":
+    - Pinned kinds: `concern`, then `safety` approvals, then `crash_loop` and `crash` (REQ-ENG-057, once #91
+      lands).
+    - Safety cards go oldest-first, since they gate merges. The other pinned groups go newest-first.
+    - Each pinned card has a red edge and the word "Pinned" in its title, so color doesn't carry the meaning.
+    - Everything else stays newest-first below the pinned group.
+    - #109 ships the safety part. The rest applies as those card kinds reach the panel (#97, #78, #91).
+    - Test: 6 questions plus 1 safety card, and the safety card is first; two safety cards come oldest-first.
   - **Chat with the PM:** an input line plus the last few messages, with a streaming "PM is working…" line
     while the PM runs.
-- **REQ-TUI-011 [x]** Sizes and terminals:
+- **REQ-TUI-011 [~]** (resize state preservation pending #104/#111) Sizes and terminals:
   - Usable at **80×24**: panes collapse to tabs. It scales to full screen.
+  - [ ] (#104, #111) Resizing across the collapse threshold, either way and repeatedly, loses nothing. Every
+    pane keeps its contents: chat history including the PM greeting, Needs-you cards, the feed, tasks. The
+    chat composer keeps its unsent text, and focus stays in the same pane. Test: fill every pane, type a draft,
+    resize full → 80×24 → full, and each pane's content and the draft are unchanged.
   - Works inside tmux and over SSH.
   - Honors the terminal's color scheme, with role colors from `design/system.md` mapped to the nearest terminal
     color. No meaning carried by emoji or color alone.
@@ -192,3 +203,5 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   re-approval and a kill that stays in force (human 13:31 via pm msg #887).
 - 2026-09-24 — TUI-002 (#108): responses up to the server's MAX_LINE, per-pane load errors inline, a crash exits
   non-zero. TUI-010 (#109): safety approval cards pinned first in Needs you.
+- 2026-09-24 — TUI-010 pinning aligned with design/system.md (concern > safety > crash_loop/crash; safety oldest-first;
+  "Pinned" label). TUI-011 → [~]: resizing across 80×24 preserves every pane and the chat draft (#104, #111).
