@@ -18,14 +18,32 @@ the Mac app.
 - **REQ-GUI-003 [x]** Right: "Needs you" — question/idea cards with option buttons, free-text reply,
   dismiss; empty state when clear.
 - **REQ-GUI-004 [x]** Center tabs (⌘1-7): Chat, Pulse, Board, Mail, Memory, Docs, Agent.
-- **REQ-GUI-005 [x]** Toasts + macOS notifications for new questions and chat replies when unfocused.
+- **REQ-GUI-005 [x]** Toasts + macOS notifications for new questions and chat replies when unfocused. (OS
+  notifications move into the engine service with REQ-ENG-047, #35. The GUI keeps in-window toasts.)
 - **REQ-GUI-006 [x]** Idle at 20 fps when nothing is happening; 60 fps when animating/working.
 - **REQ-GUI-007 [x]** F12 saves a screenshot to `.troupe/`; `TROUPE_SHOT=path TROUPE_TAB=Board troupe gui`
   renders one frame to a PNG and exits (for agents to verify UI work visually).
+- **REQ-GUI-008 [ ]** (#55) Minimum window 1120×720: all seven tabs render without overlap or clipping at zoom 1.0 and
+  1.15, and nothing regresses at 1560×980. Board card height grows with wrapped titles at any width (unit test on the
+  height calculation). Verified by TROUPE_SHOT at both sizes.
+- **REQ-GUI-009 [ ]** (#23; human: "a bit larger") Global UI zoom.
+  - ⌘+ / ⌘- / ⌘0 change it live. The default is 1.15, and ⌘0 resets to it. The range is 0.8 up to the largest step
+    at which all seven tabs render without overlap or clipping at the reference window of 1560×980. The builder
+    records the actual maximum here when shipping.
+  - Zoom persists across restarts, and idle stays at 20 fps.
+  - At 1120×720 with zoom 1.0, rendering is unchanged from before zoom existed. Small-window fixes are REQ-GUI-008.
+  - The Mac app gets zoom natively (REQ-MAC).
 
 ## Views
 - **REQ-GUI-010 [x]** Chat: partner list (PM, Spec, Lead first), markdown bubbles, live "is working" bubble with
   current activity, suggestions on empty threads, multi-line composer (Enter send, Shift+Enter newline).
+- **REQ-GUI-017 [ ]** (#33; human: "make sure our chat always stays scrolled to the bottom") Stick to the bottom.
+  - Chat and the Agent transcript follow new content while the view is at the bottom, even when content grows
+    by hundreds of pixels in one frame (a streaming reply, a long message). Stickiness changes only on user scroll,
+    never on content growth.
+  - Scrolling up stops following. New content then shows a "↓ New messages" pill instead of jumping.
+  - Clicking the pill, sending a message or switching partner returns to the bottom and sticks again.
+  - Test: unit tests of the stick logic (e.g. content +500 px in one frame stays at the bottom), plus a pill screenshot.
 - **REQ-GUI-011 [x]** Pulse: constellation of agents around "YOU"; messages fly as particles along curved
   edges; recent edges glow; activity feed with filters.
 - **REQ-GUI-012 [x]** Board: Backlog / Ready / In progress (+blocked) / Review (+approved) / Done; cards show
@@ -60,10 +78,18 @@ the Mac app.
 - **REQ-GUI-022 [x]** Prompt inspector in the Agent view. (#1)
   - A Transcript / Prompt toggle next to the run chips; Prompt shows the selected run's system prompt and wake
     prompt (REQ-ENG-018) as separate, collapsible, monospace sections. The choice persists when switching runs.
-- **REQ-GUI-023 [ ]** Copy text from chat, docs and transcripts. (#7)
-  - Required: a "Copy" affordance on hover for every chat bubble, transcript text block, tool result and doc code
-    block. It copies the raw markdown/text to the clipboard and shows a "Copied" toast.
-  - Stretch (separate requirement if pursued): drag-select arbitrary text in markdown blocks.
+  - (#54) Every run is reachable: a "Load older runs" control pages past the most recent 200. Paging is cached, so
+    idle fps is unchanged, and it works at the minimum and default widths. Test: with 201+ seeded runs, the oldest
+    run opens in both Prompt and Transcript mode.
+- **REQ-GUI-023 [x]** Copy text (phase 1, #7 + #53). A "Copy" affordance on hover for every chat bubble, mail item,
+  transcript text block and tool entry, memory, question and doc code block. It copies the raw markdown/text to the
+  clipboard and shows a "Copied" toast. The button stays clickable under the pointer (#53).
+- **REQ-GUI-043 [ ]** (#47) Real text selection (copy phase 2) in chat, docs and transcripts.
+  - Drag-select any part of a message, doc or transcript entry, and ⌘C copies exactly that text. ⌘A selects the
+    focused block, and double-click selects a word.
+  - The selection survives scrolling. No frame-rate regression (idle stays at 20 fps).
+  - Test: unit test of glyph hit-testing on a cached layout, plus a selection screenshot. The Mac app gets this
+    natively (REQ-MAC).
 - **REQ-GUI-024 [ ]** Search palette (⌘K). (#11)
   - ⌘K opens an overlay with a focused input; Esc or clicking outside closes it.
   - Fuzzy matches across tasks (id + title), messages, memories, doc titles/headings, and agents, grouped by type
@@ -215,3 +241,5 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   (rail hidden with one project, All inbox by default). Restored the missing Changelog heading.
 - 2026-09-23 — GUI-031/038 point to design/pulse.md's legend (#32 design done). dependency/blocked may share a
   treatment, and `providers` must be distinct from `rate_limit`.
+- 2026-09-24 — new GUI-008 minimum window (#55), GUI-009 zoom (#23), GUI-017 stick-to-bottom (#33), GUI-043 text
+  selection (#47). GUI-022 gains older-run paging (#54). GUI-023 shipped (#7/#53). GUI-005 OS notifications move to ENG-047.

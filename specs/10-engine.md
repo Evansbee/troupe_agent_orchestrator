@@ -274,6 +274,63 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     running run.
   - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
+## The human's attention and requests
+- **REQ-ENG-047 [ ]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
+  notifications, and they work with the GUI closed.
+  - Events:
+    - a new `ask_human` question or `propose_idea`, or an approval card (REQ-SAFE-020);
+    - a task going `blocked`;
+    - the merge gate (REQ-ENG-040) failing twice in a row on one task;
+    - a backend rate-limited or every provider unavailable (REQ-ENG-016, REQ-BE-012), once per limit window with
+      the reset time;
+    - an agent whose failure backoff has reached its cap;
+    - a crash loop (REQ-ENG-042);
+    - a budget throttle;
+    - safety events (REQ-SAFE-040).
+  - **Anti-noise:** at most 1 notification per 30 s per project. Pending events coalesce into "3 things need you in
+    troupe" listing the top ones, and the same item is never repeated. A ★ task going blocked (REQ-ENG-048) skips
+    the 30 s delay.
+  - **One notifier:**
+    - OS notifications are skipped while a GUI is focused (the GUI writes a `gui_focused_at` heartbeat to kv; the
+      GUI shows toasts instead);
+    - they are also skipped while an API client with `notifications: true` is connected (REQ-API-010);
+    - the GUI's own osascript path is removed.
+  - Titles use full handles plus the project, e.g. "qa_1@troupe needs you".
+  - Config: `[notify] enabled = true` and a `quiet` list of event kinds to mute.
+  - Delivery for now is osascript, with safe escaping. There's no click-through until the Mac app (REQ-MAC).
+  - Test: coalescing, dedupe, focus suppression and `quiet`, with delivery mocked. Manual: GUI closed + a question →
+    a notification within about 5 s.
+- **REQ-ENG-048 [ ]** (#45; human: "if I ask you, specifically to do something, I want you to run that to the ground")
+  Human requests are ★ tasks.
+  - Tasks the human creates, or that an agent creates with `create_task(for_human=True)`, get `human_request=1`
+    (additive) and store the human's original words (quote plus message id).
+  - ★ shows on board cards, the Pulse Work panel and the task modal. A "Your requests" filter lists each one with its
+    status in plain words.
+  - Within the same priority, ★ tasks dispatch first.
+  - **Nothing is dropped silently:** an agent cancelling a ★ task or changing its acceptance/scope gets `ERROR:`,
+    and a Needs-you card is created instead (Cancel / Keep going / Change to…). Only the human closes a ★ task
+    without completing it.
+  - **Persistence:** at `max_task_attempts`, a ★ task doesn't just block. It escalates to the lead to re-plan
+    (split, reassign, research, different provider) before the human is asked, and the needs-help notification fires
+    immediately.
+  - **Done = reported:** when a ★ task, or every task from one request, is done, the human gets "Done: <their
+    words> → what was delivered, where to look".
+  - Test: the ★ flag and quote, dispatch order, the cancel/scope guard, escalation at max attempts, and the Done
+    report. Screenshot of the badge and filter.
+- **REQ-ENG-049 [ ]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
+  wake-ups via local-LLM mail triage.
+  - Before a `messages` wake, a local model (`[triage] enabled, model`, using the `local` backend) reads the pending
+    mail, the agent's role and its active task title. It returns `{wake_now, reason, digest}`.
+  - `wake_now=false` holds the mail for the next wake, **never dropping it**. The feed shows "triage: held 2 for
+    lead_1@troupe" with the digest.
+  - **Hard rules the model can't override:** human mail, questions to the agent, review requests, mail about the
+    agent's own active task, and ≥ N pending mails always wake. If the local model is down or errors, the agent
+    wakes as today.
+  - Several pending mails become one wake.
+  - Metrics: runs record `wake_reason` and tokens, and the Usage/Pulse view shows coordination vs work tokens per hour.
+  - Test: with a mocked model, a hold, the hard rules and the fallback. A replay of an hour of mail shows ≥ 50% fewer
+    `messages` wakes.
+
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
@@ -292,3 +349,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   ENG-046 agent wait state + mail backlog as engine data (for Pulse, #32).
 - 2026-09-23 — human chose one service per project (open question closed). New ENG-009 graceful/auto reload and
   ENG-042 crash supervision (#28). ENG-006 version warning replaced by auto reload.
+- 2026-09-24 — new ENG-047 needs-help notifications (#35), ENG-048 ★ human requests (#45), ENG-049 local-LLM mail
+  triage (#46). These tasks were in flight without REQs.
