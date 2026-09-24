@@ -42,7 +42,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   - The first prompt of a rotated session includes a "Where you left off" section: summaries of the agent's
     last 5 runs, its private notes, and its open tasks. (Manual "New session" in the GUI gets the same digest.)
   - Test: rotation happens exactly at the configured count; the digest appears only in the first prompt.
-- **REQ-ENG-018 [ ]** Store each run's full wake prompt and system prompt so the human can inspect exactly what
+- **REQ-ENG-018 [x]** Store each run's full wake prompt and system prompt so the human can inspect exactly what
   an agent was told. (#1)
   - `runs` gains `prompt` and `system` TEXT columns (additive migration); both are written when the run launches,
     before the backend starts, so they exist even for runs that crash.

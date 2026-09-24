@@ -827,21 +827,26 @@ def _prompt_view(app: "App", run: dict | None, r: Rect) -> None:
         ui.text(r.x + 24, r.y + 16, "No run selected.", 13, T.TEXT_FAINT)
         ui.scroll_end(sc, 0)
         return
-    system, prompt = run.get("system") or "", run.get("prompt") or ""
-    if system:
-        ui.text(r.x + 24, y, "SYSTEM PROMPT", 11, T.TEXT_FAINT, "bold")
-        y += 22
-        h = ui.markdown(r.x + 24, y, system, w, 13)
-        y += h + 24
-    ui.text(r.x + 24, y, "WAKE PROMPT", 11, T.TEXT_FAINT, "bold")
-    y += 22
-    if prompt:
-        h = ui.markdown(r.x + 24, y, prompt, w, 13)
-        y += h
-    else:
-        ui.text(r.x + 24, y, "(not recorded for this run)", 13, T.TEXT_FAINT)
-        y += 20
-    ui.scroll_end(sc, y + sc.offset - r.y + 20)
+    for title, text in (("System prompt", run.get("system") or ""), ("Wake prompt", run.get("prompt") or "")):
+        key = f"promptclosed:{run['id']}:{title}"
+        closed = key in app.expanded
+        hr = Rect(r.x + 24, y, w, 20)
+        ui.text(hr.x, hr.y, "→" if closed else "↓", 12, T.TEXT_FAINT, "bold")
+        ui.text(hr.x + 16, hr.y, title.upper(), 11, T.TEXT_FAINT, "bold")
+        if ui.hover(hr):
+            ui.hand()
+        if ui.click(hr):
+            app.expanded.symmetric_difference_update({key})
+        y += 26
+        if closed:
+            continue
+        if text:
+            y += ui.text_block(r.x + 24, y, text, w, 12.5, T.TEXT, "mono", 1.5)
+        else:
+            ui.text(r.x + 24, y, "(not recorded)", 13, T.TEXT_FAINT)
+            y += 20
+        y += 24
+    ui.scroll_end(sc, y + sc.offset - r.y + 12)
 
 
 def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:

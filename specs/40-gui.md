@@ -45,7 +45,7 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
   - Saving keeps the file valid TOML and keeps comments on untouched lines; the engine picks it up via REQ-ENG-019.
   - Invalid input (e.g. a negative number, unknown backend) is rejected inline and nothing is written.
   - Verified by a unit test of the TOML write round-trip and a TROUPE_SHOT screenshot.
-- **REQ-GUI-022 [ ]** Prompt inspector in the Agent view. (#1)
+- **REQ-GUI-022 [x]** Prompt inspector in the Agent view. (#1)
   - A Transcript / Prompt toggle next to the run chips; Prompt shows the selected run's system prompt and wake
     prompt (REQ-ENG-018) as separate, collapsible, monospace sections. The choice persists when switching runs.
 - **REQ-GUI-023 [ ]** Copy text from chat, docs and transcripts. (#7)
