@@ -9,7 +9,7 @@ from datetime import datetime
 from .store import HandleBook, Store
 
 KINDS = {'question', 'blocked', 'check_failed', 'rate_limit', 'providers',
-         'backoff', 'crash_loop', 'throttle', 'safety', 'chat'}
+         'backoff', 'crash_loop', 'throttle', 'safety', 'chat', 'stalled', 'timeout'}
 FOCUS_TTL = 5
 BATCH_DELAY = 3
 INTERVAL = 30
@@ -78,7 +78,7 @@ class Notifier:
         # Read ascending so busy projects never skip events across bounded pages.
         for e in s.q('SELECT * FROM events WHERE id>? ORDER BY id LIMIT 1000', state['cursor']):
             state['cursor'] = e['id']
-            if e['kind'] in ('safety', 'crash_loop', 'providers'):
+            if e['kind'] in ('safety', 'crash_loop', 'providers', 'stalled', 'timeout'):
                 self.add(f"event:{e['id']}", e['kind'], e['agent'], e['text'])
             elif e['kind'] == 'message' and e['ref'].startswith('msg:'):
                 m = s.one('SELECT * FROM messages WHERE id=?', int(e['ref'][4:]))

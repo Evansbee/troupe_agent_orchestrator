@@ -57,6 +57,9 @@ class Budget:
     max_runs_per_hour: int = 40
     max_usd_per_day: float = 0.0  # 0 = unlimited (claude-reported cost)
     max_task_attempts: int = 4
+    stall_minutes: float = 15  # REQ-ENG-050: no run output for this long -> status "stalled"
+    max_run_minutes: float = 90  # REQ-ENG-050: hard cap for worktree-role runs -> status "timeout"
+    max_coord_run_minutes: float = 30  # REQ-ENG-050: hard cap for everyone else; chat is exempt
 
 
 @dataclass
@@ -146,6 +149,9 @@ max_concurrent = 3        # agent runs at once (a chat with the human always get
 max_runs_per_hour = 40    # autonomous runs per rolling hour (chat is exempt)
 max_usd_per_day = 0       # claude-reported cost cap per rolling 24h; 0 = unlimited
 max_task_attempts = 4     # builder sessions on one task before it's marked blocked
+stall_minutes = 15        # no run output for this long -> killed and marked "stalled"
+max_run_minutes = 90      # hard cap for worktree roles (builder, QA in a worktree) -> "timeout"
+max_coord_run_minutes = 30 # hard cap for everyone else; chat runs are exempt from the hard cap
 
 [backends]
 claude_command = "claude"
@@ -156,7 +162,7 @@ local_api_key = "lm-studio"
 
 [notify]
 enabled = true
-quiet = []              # question, blocked, check_failed, rate_limit, providers, backoff, crash_loop, throttle, safety, chat
+quiet = []              # question, blocked, check_failed, rate_limit, providers, backoff, crash_loop, throttle, safety, chat, stalled, timeout
 
 [git]
 autocommit = true         # commit doc/spec changes in the main tree after each non-builder run
