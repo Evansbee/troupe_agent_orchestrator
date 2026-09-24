@@ -26,14 +26,34 @@ deferred. The lead builds #66 in four slices:
 Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 
 ## Launch
-- **REQ-TUI-001 [x]** "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
+- **REQ-TUI-001 [~]** (Ctrl-C and the restart-resume guarantees below are new, 13:32; the rest shipped with #66.)
+  "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
   arguments (or `troupe tui`) in a project directory starts the project's engine **as a child of the TUI** and opens
   the TUI on its API.
+  - **The entrypoint** (human, 13:31: "start you with `troupe` and the TUI launches"): bare `troupe` in a
+    project directory is the primary way to run a team, and help/README/`troupe init` output point to it.
+    `troupe up` and `troupe gui` (the frozen raylib GUI) are secondary.
   - **Quit (`q`):** if runs are in flight, it first asks "N agents are working — stop them and quit? y/N". Quitting
     stops the engine and every agent run (process groups plus verified descendants). Interrupted runs are marked
     `interrupted` with their mail re-queued, so they **resume on the next start** (REQ-ENG-004).
   - **SIGHUP / SIGTERM** (terminal closed, `tmux kill-window`) does the same stop without asking: SIGTERM to runs,
     then SIGKILL after 5 s.
+  - **Ctrl-C** (human, 13:31: "if i have to kill you and restart, i can ctrl-c and run it again") does the same
+    stop without asking, whichever pane or input has focus, including the PM chat input. That covers both the
+    key press in the TUI's raw-mode terminal and a real SIGINT. It overrides Textual's default Ctrl-C (copy),
+    since copy is `y` plus native selection (REQ-TUI-012). The TUI shows "Stopping… N runs" and exits within
+    5 s. A second Ctrl-C while stopping SIGKILLs the remaining runs at once. The exit code is 0 for a clean
+    stop. After the stop, `.troupe/engine.lock` is released, `.troupe/engine.pid` is removed, and no backend
+    process or descendant of a run is left. In an attached TUI, Ctrl-C only closes the TUI, like `q`.
+  - **Rerun resumes:** the next `troupe` in the same directory, after `q`, Ctrl-C, SIGHUP or even `kill -9` of
+    the TUI, continues where the team left off (ENG-003 stale-lock recovery, then ENG-004):
+    - interrupted runs' mail is re-queued, and each task whose run was interrupted is still `in_progress`
+      with the same assignee and its worktree untouched, including uncommitted changes;
+    - the assignee is woken for it on the first tick (subject to pause, the kill switch, caps and pacing);
+    - the board, chat history, mailboxes, memory and pending Needs-you cards are all intact;
+    - the approved safety baseline (REQ-SAFE-021) persists, so a restart never raises a re-approval card;
+    - a kill-switch `stopped` state also persists (REQ-SAFE-010), so a restart never silently resumes a team
+      the human stopped.
   - **Unattended work:** detach tmux. The TUI, and so the team, keeps running.
   - **Already running:** if an engine already holds the project lock (REQ-ENG-003), for example a headless
     `troupe engine` or another TUI, the TUI attaches without owning it. Quitting that TUI leaves the engine running,
@@ -49,6 +69,11 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     - `q` with no runs stops the engine;
     - `q` with a run in flight asks first, then leaves the run `interrupted` with its mail re-queued;
     - SIGHUP stops everything within 5 s with no orphans;
+    - Ctrl-C, with the chat input focused and a run in flight, stops everything within 5 s with no prompt, exit
+      code 0, lock released, pid file gone and no orphans; SIGINT from `kill -INT` does the same;
+    - restart after that Ctrl-C (and again after `kill -9` of the TUI): the interrupted task is re-dispatched
+      to the same assignee in the same worktree with its uncommitted file intact. Board, chat, memory and
+      pending cards match their state before the stop, and no safety-baseline card appears;
     - a second TUI attaches, and its `q` doesn't stop the engine.
 - **REQ-TUI-002 [x]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
   subscribe (REQ-API-010/020/060).
@@ -149,3 +174,6 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   `load()` / `on_troupe_event()` interface with a local fixture client ahead of #66's `tui/client.py` landing.
 - 2026-09-24 — TUI-021: chat is PM-only (human).
 - 2026-09-24 — TUI-014 Concerns pane and red KILLED state (#78).
+- 2026-09-24 — TUI-001 → [~]: bare `troupe` is the primary entrypoint; Ctrl-C (key or SIGINT, any focus) is a no-prompt
+  clean stop that clears lock/pid with no orphans; rerun resumes interrupted tasks in place, with no baseline
+  re-approval and a kill that stays in force (human 13:31 via pm msg #887).
