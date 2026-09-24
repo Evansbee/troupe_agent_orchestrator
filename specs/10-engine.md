@@ -26,6 +26,14 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
+- **REQ-ENG-060 [ ]** (#103; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
+  never outlives its project. If its project root or `.troupe/` disappears, it stops its runs, removes its pid
+  file and exits within a few ticks. This check lives in the heartbeat loop.
+  - Test hygiene, same task: a full `uv run pytest` session, even one killed mid-run, leaves no engine whose
+    cwd is under the test temp root. A session-level guard fails the run if one survives.
+  - Test: delete a running engine's project dir, and it exits and removes its pid within a few ticks. QA's check:
+    run the full suite twice plus a forced mid-suite kill, then `pgrep -f "troupe.cli engine"` finds zero test
+    engines (the team's real engine excepted).
 - **REQ-ENG-005 [x]** Engine heartbeat (`kv.heartbeat`) every tick; GUI shows "Engine offline" when stale >5s.
 - **REQ-ENG-006 [~]** Service control from the CLI. (#24) (Superseded for the default flow: the TUI's quit and SIGHUP
   stop its engine, REQ-TUI-001. These commands remain for a headless `troupe engine`/`troupe start` service.)
@@ -44,6 +52,13 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 - **REQ-ENG-008 [x]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
+  - [ ] (#106; QA found 300 of the human's 308 entries pointing at deleted temp dirs) Entries whose path no
+    longer exists are left out of `troupe projects`, replaced by one line: "N missing — `troupe projects
+    --prune`". `--prune` first writes `projects.json.bak`, then removes only entries whose path doesn't exist.
+    Entries whose path exists but whose `.troupe/` is gone still show as missing. Nothing is removed without
+    `--prune`.
+  - [ ] Tests and harnesses never write the human's registry: a session-wide fixture points `HOME` at a temp dir.
+    Test: the real `~/.troupe/projects.json` is byte-identical before and after a full `uv run pytest`.
 - **REQ-ENG-009 [ ]** **DEFERRED** (human lifecycle change 2026-09-24; #28 on hold) (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
   - Triggered by `troupe reload`, SIGHUP to the service, or automatically when the installed troupe changes: the
     service checks about every 30 s for a new version or changed package files (e.g. after
@@ -138,8 +153,24 @@ Client reporting does not depend on the deferred service supervisor shipping.
   - Where no window can be opened (headless CI), the pytest wrapper skips and prints the reason. In the merge
     gate, a skip is reported in the check log as "launch smoke not run: <reason>", never as a pass. QA then
     runs the script by hand before approving (QA's gui/tui review rule).
+  - Hardening (QA's #92 review, 2026-09-24):
+    - **The candidate tree, not the installed copy.** The script and both client subprocesses run the task
+      tree's code, through the tree's own environment (`uv run` in the tree). They must not use the engine's
+      installed interpreter. The check log prints the exact command it runs.
+    - **Deterministic injection.** Events are inserted after a positive first-refresh signal (or re-inserted
+      until each client exits), never after a fixed delay alone. With the #90 bug re-added the check fails
+      10 of 10 runs; on a healthy tree it passes 10 of 10.
+    - **Skip is decided up front.** Only a positive "no display" detection made before the clients launch may
+      skip, for example a window-open probe or raylib/GLFW's own no-display error. A client killed by a
+      signal (negative exit code, such as a segfault) or any other non-zero exit is a failure, never a skip.
+    - **Nothing of the human's is touched.** `HOME` (and XDG dirs) point into the temp dir for `troupe init`
+      and both clients, so `~/.troupe/projects.json` and the human's live project are never modified.
+    - **Cleanup always runs.** Clients and any engine they start are stopped in a `finally`, even if setup or
+      injection raises.
   - Acceptance: inject the #90 failure (GUI calls a missing `Data.notify`) and verify the gate refuses the merge;
-    inject a TUI startup exception and verify the same. Healthy clients pass and exit cleanly. The check runs
+    inject a TUI startup exception and verify the same. Healthy clients pass and exit cleanly. Also: a tree
+    whose `gui/app.py` fails to import fails the gate when run from the engine's installed python; a fake
+    client that exits -11 fails, it doesn't skip; the real registry's hash is unchanged after a run. The check runs
     headlessly without interacting with the human's live project.
 
 ### Out of scope
@@ -194,10 +225,13 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   - Reset = the reported reset time; if none is reported, now + 15 min. Stored in kv (`limit.<backend>`) so
     it survives an engine restart.
   - While limited, **no** run of any kind (including chat) starts on that backend; agents on other backends
-    are unaffected. Pending chat stays queued and the Chat view shows "Claude limited until 14:05" on the
+    are unaffected. Pending chat stays queued and the Chat view shows "Claude limited · resets in 42m" on the
     working bubble instead of silently waiting.
   - A rate-limited run does not count toward the per-agent failure backoff (REQ-ENG-015) and its mail is re-queued.
-  - Top bar shows one pill per limited backend with its reset time (REQ-GUI-001); it disappears at reset.
+  - Top bar shows one pill per limited backend with the time until reset (REQ-GUI-001); it disappears at reset.
+  - **Countdown copy (human preference, 13:55):** every user-facing reset, backoff or pacing time is shown as
+    time *until* ("resets in 4h"), never as clock time, in the GUI, TUI, `troupe status` and notifications.
+    Format: design/system.md "Countdown copy" (#105). Stored values stay absolute timestamps (`resets_at`).
   - Test: a unit test of the backoff decision (limited backend skipped, other backend dispatched, reset expiry).
 - **REQ-ENG-017 [ ]** Session rotation: bound context size by starting a fresh backend session periodically. (#10)
   - Config `[budget] session_max_runs` (default 25; 0 = never rotate). When an agent's `session_runs` reaches it,
@@ -332,12 +366,21 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     autocommits), the result is not a failure.
     - The worker re-merges main into the branch and re-runs the check, up to 3 times with backoff. It doesn't message
       the builder, and it doesn't count toward `max_task_attempts`.
-    - After 3 consecutive "main moved" retries, the task goes back to the builder with a clear message saying so.
-    - A real check failure or merge conflict goes back immediately; exhausting the main-moved limit also
-      goes back, with the distinct explanation above.
-    - The merge into main is always of the exact tree that passed the check, and the worker stays serial.
-    - Test: main moving during a check retries and merges silently; a real failure still goes back with output; the
-      3-retry limit sends it back; the merged tree equals the checked tree.
+    - [ ] (#107) **Doc-only movement doesn't count.** If every path changed on main since the checked main
+      head matches `[git] doc_only_paths`, the checked tree merges onto current main without a re-check, and
+      the merged tree contains both. The default globs are `specs/**`, `design/**`, `docs/**`, `*.md`,
+      `README*` and `LICENSE`. A commit set with any path outside the globs takes the re-merge + re-check path.
+      `doc_only_paths` is guarded by REQ-SAFE-021, since widening it would skip re-checks.
+    - [ ] (#107) **Exhausted retries don't bounce approved work.** After 3 consecutive "main moved" retries
+      caused by real code movement, the task stays `approved` and the merge is requeued with a backoff
+      (`next_attempt_at`). It's logged to the check log only: no builder mail, no builder wake, no QA re-review.
+      (This replaces the earlier rule that sent the task back to the builder.)
+    - A real check failure or merge conflict goes back immediately.
+    - The merge into main is always of the checked tree, plus only doc-only commits, and the worker stays serial.
+    - Test: main moving during a check retries and merges silently; a real failure still goes back with output; a
+      specs/*.md commit during the check merges on the first attempt with both changes; a src/ commit re-checks;
+      a mixed doc+code commit re-checks; exhausted retries leave the task approved and requeued, and
+      `check_failed` isn't called.
   - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
     output, a timeout counts as a failure, and an empty check merges directly.
 - **REQ-ENG-043 [ ]** (#36) Architecture review for **risky changes only** (human's answer). A task needs the architect's
@@ -403,7 +446,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     - a task going `blocked`;
     - the merge gate (REQ-ENG-040) failing twice in a row on one task;
     - a backend rate-limited or every provider unavailable (REQ-ENG-016, REQ-BE-012), once per limit window with
-      the reset time;
+      the time until reset;
     - an agent whose failure backoff has reached its cap;
     - a crash loop (REQ-ENG-042);
     - a process crash report (REQ-ENG-057, notification kind `crash`, #91);
@@ -555,6 +598,12 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-040 (#107): doc-only main movement merges without a re-check (`[git] doc_only_paths`, guarded
+  by SAFE-021), and exhausted main-moved retries keep the task approved and requeued instead of bouncing it.
+- 2026-09-24 — ENG-059 hardened from QA's #92 review: runs the candidate tree's code, deterministic injection
+  (10/10), skip decided up front (signal exit = fail), isolated HOME, cleanup in `finally`. New ENG-060: engines
+  exit when their project disappears, plus test-session process hygiene (#103). ENG-008: missing-path entries
+  hidden, `--prune` with backup, tests never write the real registry (#106). ENG-016/047: countdown copy (#105).
 - 2026-09-24 — ENG-056..059 reconciled with the #91/#92 briefs: report fields transcribed (editorial dependency
   closed), entrypoint list, pre-window handler, one-tick filing to the builder role, startup triage + PM brief
   (human 12:59), ENG-059 now owned by #92 with live insertion of all three events, and a gate skip is never a pass.
