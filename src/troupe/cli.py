@@ -93,8 +93,20 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
+    cfg = config_mod.load(require_root())
+    if getattr(args, "now", False):
+        from .safety import stop_now
+        stop_now(Store(cfg.db_path))
+        print("Stopped: no runs, including chat, until you resume.")
+        return
     from .service import stop_service
-    print("Engine stopped" if stop_service(config_mod.load(require_root())) else "not running")
+    print("Engine stopped" if stop_service(cfg) else "not running")
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    from .safety import resume
+    resume(Store(config_mod.load(require_root()).db_path))
+    print("Resume requested.")
 
 
 def cmd_restart(args: argparse.Namespace) -> None:
@@ -186,8 +198,11 @@ def main() -> None:
     p = sub.add_parser("up", help="start the engine + GUI (initializes if needed)")
     p.add_argument("--name")
     sub.add_parser("engine", help="run the engine headless")
-    for command in ("start", "stop", "restart", "projects", "ps"):
+    for command in ("start", "restart", "projects", "ps"):
         sub.add_parser(command)
+    p = sub.add_parser("stop", help="stop the service, or stop all agent runs immediately with --now")
+    p.add_argument("--now", action="store_true")
+    sub.add_parser("resume", help="resume after Stop everything")
     sub.add_parser("gui", help="open the GUI against a running engine")
     sub.add_parser("status", help="print team / board / questions")
     p = sub.add_parser("say", help="chat to an agent from the terminal")
@@ -199,8 +214,8 @@ def main() -> None:
     sub.add_parser("doctor", help="check backends are available")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui, "status": cmd_status,
-                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
-                "projects": cmd_projects, "ps": cmd_projects}
+                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start, "stop": cmd_stop,
+                "resume": cmd_resume, "restart": cmd_restart, "projects": cmd_projects, "ps": cmd_projects}
     handlers.get(args.cmd or "up", cmd_up)(args)
 
 
