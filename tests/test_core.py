@@ -17,14 +17,16 @@ def test_message_fanout_by_role(project):
 
 
 def test_question_limit_and_answer_delivery(project):
+    """#65: only the PM asks the human directly (everyone else escalates), so the open-questions
+    cap only bites the PM now."""
     cfg, store = project
-    api = TeamAPI(cfg, store, "gadfly")
+    api = TeamAPI(cfg, store, "pm")
     for i in range(4):
         api.ask_human(f"q{i}?", options=["yes", "no"])
     assert api.ask_human("one too many?").startswith("ERROR")
     qid = store.questions()[0]["id"]
     store.answer(qid, "yes")
-    mail = store.unread("gadfly")
+    mail = store.unread("pm")
     assert mail and "yes" in mail[0]["body"]
 
 

@@ -78,6 +78,7 @@ engine as a child process: **run it and everything runs, quit and everything qui
 | **Header** | The project and the engine's state: live, paused, stopped. |
 | **Team** | One line per agent (e.g. `builder_1@recipe-box`): idle, working, or waiting on someone. |
 | **Tasks** | In-flight work, with the assignee. |
+| **Comms** | Agent-to-agent mail subjects, decisions and merges, newest at the bottom. |
 | **Needs you** | Questions and approval cards for you. |
 | **Chat** | Your conversation with the PM. |
 
@@ -206,14 +207,14 @@ anything genuinely risky. On top of that:
 
 Honest list, as of this README:
 
-- **Agents run with broad permissions.** The Claude and Codex CLIs are currently launched with their
-  permission prompts bypassed. troupe's guards (Claude hook, secret scanning, protected paths) are defense in depth,
-  **not an OS sandbox**, and Codex's own shell calls aren't intercepted yet. A least-privilege sandbox is in
-  progress. See [`docs/adr/004-safety-guards.md`](docs/adr/004-safety-guards.md). Run troupe only on projects and
-  machines where that's acceptable.
+- **The sandbox isn't agent-proof yet.** Codex runs in its own workspace-write sandbox. Claude runs in an explicit
+  permission mode, and both go through troupe's command-inspection hook (secrets, remotes, protected paths). But
+  Claude's shell commands aren't confined at the OS level, so a determined or misled agent can still reach files
+  outside the project. A real OS boundary is in progress. See
+  [`docs/adr/005-least-privilege-sandbox.md`](docs/adr/005-least-privilege-sandbox.md). Run troupe only on projects
+  and machines where that's acceptable.
 - **macOS is the only tested platform.**
-- **The TUI is an MVP.** The message/decision feed pane, the whistleblower board and provider fallback are specced
-  but not all shipped. Stray typing before you focus the chat box can open a confirm dialog; nothing happens without
+- **The TUI is an MVP.** The whistleblower board and provider fallback are specced but not shipped yet. Stray typing before you focus the chat box can open a confirm dialog; nothing happens without
   your `y`.
 - **Subscription usage is real.** Each agent run costs model usage. Start with the default caps and watch the
   meters.
@@ -224,7 +225,7 @@ Honest list, as of this README:
 
 - **Current milestones:** "Ready for a test project" (troupe safely builds a second, real project) and "Run from the
   TUI" (all single-project work from the terminal, with usage caps enforced).
-- **Next:** the least-privilege sandbox, provider fallback, the feed and whistleblower panes, and task difficulty
+- **Next:** a real OS boundary for agents, provider fallback, the whistleblower board, and task difficulty
   tiers that pick the model.
 - **Later:** a native macOS app as the cross-project view.
 - Report bugs and ideas in [GitHub Issues](https://github.com/Evansbee/troupe_agent_orchestrator/issues).

@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS milestones(
 CREATE TABLE IF NOT EXISTS agent_wait(
   agent TEXT PRIMARY KEY, waiting_on TEXT, mail_queued INTEGER DEFAULT 0, mail_reading INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS escalations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, sender TEXT, kind TEXT DEFAULT 'question',
+  text TEXT, options TEXT DEFAULT '[]', context TEXT DEFAULT '', task_id INTEGER,
+  urgency TEXT DEFAULT 'normal', status TEXT DEFAULT 'open', question_id INTEGER,
+  answer TEXT, rationale TEXT, answered_at REAL, auto_forwarded INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS concerns(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, reporter TEXT, reason TEXT, evidence TEXT DEFAULT '',
+  status TEXT DEFAULT 'open', action TEXT, action_note TEXT, actioned_at REAL
+);
 """
 
 OPEN_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "approved")
@@ -402,14 +412,113 @@ class Store:
             return False
         label = "Idea" if qn["kind"] == "idea" else "Question"
         verb = "dismissed" if status == "dismissed" else "answered"
-        body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
-        if notify and qn["kind"] != "safety":
-            self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
+        # #65: a card built by forward_to_human/batch_to_human/auto-forward links back to one or more
+        # escalations. Close them here too, since this is the one place every answer path (API, GUI,
+        # TUI, chat resolve_question) funnels through.
+        linked = self.q("SELECT * FROM escalations WHERE question_id=?", qid)
+        for esc in linked:
+            self.x("UPDATE escalations SET status='answered', answer=?, answered_at=? WHERE id=?",
+                   answer, now(), esc["id"])
+        if notify:
+            if linked:
+                # Deliver to every original sender, plus the PM who forwarded/batched it (the
+                # question's own asker) — one mail each, no duplicates.
+                recipients = dict.fromkeys([*(e["sender"] for e in linked), qn["asker"]])
+                for r in recipients:
+                    note = "" if r == qn["asker"] else f" (forwarded by {qn['asker']})"
+                    body = f"The human {verb} escalation #{qid}{note}.\n\n> {qn['question']}\n\nAnswer: {answer}"
+                    self.send("human", r, body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
+            elif qn["kind"] != "safety":
+                body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
+                self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
         self.event("human", "answer", f"You {verb} {qn['asker']}'s {label.lower()}: {answer[:100]}", ref=f"q:{qid}")
         if qn["kind"] == "safety":
             from .safety import audit
             audit(self, f"Human {verb} safety approval #{qid}: {answer}", notify=False)
         return True
+
+    # ── escalations: PM routing of the human (#65, REQ-COM-027..029) ──────
+    def add_escalation(self, sender: str, kind: str, text: str, options: list[str] | None, context: str,
+                       task_id: int | None, urgency: str = "normal") -> int:
+        text, context = redact(text), redact(context)
+        return self.x("""INSERT INTO escalations(ts,sender,kind,text,options,context,task_id,urgency,status)
+                         VALUES(?,?,?,?,?,?,?,?,'open')""", now(), sender, kind, text,
+                      json.dumps(options or []), context, task_id, urgency)
+
+    def escalation(self, escalation_id: int) -> dict | None:
+        e = self.one("SELECT * FROM escalations WHERE id=?", escalation_id)
+        if e:
+            e["options"] = json.loads(e["options"] or "[]")
+        return e
+
+    def escalations(self, status: str | None = "open", limit: int = 200) -> list[dict]:
+        if status:
+            rows = self.q("SELECT * FROM escalations WHERE status=? ORDER BY id DESC LIMIT ?", status, limit)
+        else:
+            rows = self.q("SELECT * FROM escalations ORDER BY id DESC LIMIT ?", limit)
+        for r in rows:
+            r["options"] = json.loads(r["options"] or "[]")
+        return rows
+
+    def forward_escalation(self, escalation_id: int, question_id: int) -> None:
+        self.x("UPDATE escalations SET status='forwarded', question_id=? WHERE id=? AND status='open'",
+              question_id, escalation_id)
+
+    def batch_escalations(self, escalation_ids: list[int], question_id: int) -> None:
+        if not escalation_ids:
+            return
+        placeholders = ",".join("?" * len(escalation_ids))
+        self.x(f"""UPDATE escalations SET status='forwarded', question_id=?
+                  WHERE id IN ({placeholders}) AND status='open'""", question_id, *escalation_ids)
+
+    def resolve_escalation(self, escalation_id: int, answer: str, rationale: str, actor: str) -> bool:
+        answer, rationale = redact(answer), redact(rationale)
+        esc = self.one("SELECT * FROM escalations WHERE id=?", escalation_id)
+        if not esc or esc["status"] != "open":
+            return False
+        self.x("UPDATE escalations SET status='answered', answer=?, rationale=?, answered_at=? WHERE id=?",
+              answer, rationale, now(), escalation_id)
+        body = f"{actor} answered your escalation.\n\n> {esc['text']}\n\nAnswer: {answer}"
+        if rationale:
+            body += f"\n\nWhy: {rationale}"
+        self.send(actor, esc["sender"], body, subject="Escalation answered", task_id=esc["task_id"])
+        self.event(actor, "escalation", f"{actor} answered escalation #{escalation_id}", ref=f"esc:{escalation_id}",
+                  significant=False)
+        return True
+
+    def auto_forward_escalation(self, escalation_id: int, pm_id: str) -> int | None:
+        """REQ-COM-029: an escalation the PM hasn't triaged in time reaches the human anyway."""
+        esc = self.one("SELECT * FROM escalations WHERE id=?", escalation_id)
+        if not esc or esc["status"] != "open":
+            return None
+        options = json.loads(esc["options"] or "[]")
+        kind = "idea" if esc["kind"] == "idea" else "question"
+        text = f"(auto-forwarded: {pm_id} didn't respond in time — from {esc['sender']}) {esc['text']}"
+        qid = self.ask(pm_id, text, esc["context"], options, kind=kind, task_id=esc["task_id"])
+        self.x("UPDATE escalations SET status='forwarded', question_id=?, auto_forwarded=1 WHERE id=?",
+              qid, escalation_id)
+        return qid
+
+    # ── concerns: the whistleblower path around the PM (#65/#78, REQ-COM-029) ──
+    def report_concern(self, reporter: str, reason: str, evidence: str = "") -> int:
+        reason, evidence = redact(reason), redact(evidence)
+        cid = self.x("INSERT INTO concerns(ts,reporter,reason,evidence,status) VALUES(?,?,?,?,?)",
+                     now(), reporter, reason, evidence, "open")
+        # significant=False: kept out of every agent's "what happened since you last looked" digest
+        # (engine.py only includes significant events there). Even a content-free "a concern was
+        # filed" line would tip off whoever's under review that one exists, which defeats a
+        # PM-independent whistleblower path. The human's own Concerns view (#78) reads this table
+        # directly, not the feed.
+        self.event(reporter, "concern", "A concern was filed.", ref=f"concern:{cid}", significant=False)
+        return cid
+
+    def concern(self, concern_id: int) -> dict | None:
+        return self.one("SELECT * FROM concerns WHERE id=?", concern_id)
+
+    def concerns(self, status: str | None = None, limit: int = 200) -> list[dict]:
+        if status:
+            return self.q("SELECT * FROM concerns WHERE status=? ORDER BY id DESC LIMIT ?", status, limit)
+        return self.q("SELECT * FROM concerns ORDER BY id DESC LIMIT ?", limit)
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",

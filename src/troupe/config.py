@@ -113,6 +113,10 @@ class NotifySettings:
             raise ValueError('troupe.toml: notify.enabled must be boolean')
         if not isinstance(self.quiet, list) or any(not isinstance(k, str) or k not in KINDS for k in self.quiet):
             raise ValueError('troupe.toml: notify.quiet must list known event kinds: ' + ', '.join(sorted(KINDS)))
+        if 'concern' in self.quiet:
+            # REQ-COM-029: the whistleblower alert must always reach the human, no matter who last
+            # edited troupe.toml — quieting it isn't a config choice, it's a bypass.
+            raise ValueError('troupe.toml: notify.quiet cannot include "concern" — it must always reach the human')
 
 
 @dataclass

@@ -51,13 +51,15 @@ def test_permission_boundaries(project):
     assert not TeamAPI(cfg, store, "human").update_task(tid, priority=0).startswith("ERROR:")
 
 
-@pytest.mark.parametrize("recipient", ["pm", "human", "builder", "team"])
+@pytest.mark.parametrize("recipient", ["pm", "builder", "team"])
 def test_mail_routing_events_and_inbox_consumption(project, recipient):
+    """"human" is covered separately (tests/test_escalations.py, #65): a non-PM sender's mail to
+    the human is routed to the PM as an escalation, not delivered as a plain message."""
     cfg, store = project
     api = TeamAPI(cfg, store, "lead")
     result = api.send_message(recipient, "Body", subject="Subject")
     assert isinstance(result, str) and not result.startswith("ERROR:")
-    expected = ({"pm"} if recipient == "pm" else {"human"} if recipient == "human" else
+    expected = ({"pm"} if recipient == "pm" else
                 {"builder-1", "builder-2"} if recipient == "builder" else
                 {a.id for a in cfg.agents if a.id != "lead"})
     assert {m["recipient"] for m in store.messages()} == expected
