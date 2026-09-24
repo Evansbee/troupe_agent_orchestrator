@@ -63,7 +63,10 @@ over `roles.py` and `team.py`).
   and proposals. The PM prompt says so.
 
 ## PM: the human's single contact and the team's communicator (human, 2026-09-24)
-- **REQ-ROLE-030 [ ]** The PM coordinates and communicates. It doesn't build or assign work.
+- **REQ-ROLE-030 [~]** The PM coordinates and communicates. It doesn't build or assign work. The
+  routing/triage duties are shipped (#65); the PM's fable → opus provider order is not — the current
+  default roster (`config.py`'s `default_team()`) puts the PM on codex → claude/opus, with no
+  "fable" model anywhere in it.
   - It is the only agent the human talks to (REQ-COM-027..029).
   - It routes each human instruction to the right teammate: the lead for work and priorities (tasks go through the
     lead's board), spec for behavior, the designer for look. It follows up until the instruction is done or
@@ -82,3 +85,4 @@ over `roles.py` and `team.py`).
 - 2026-09-23 — written: architect (#36), gadfly architecture challenges, researcher (#41), PM delegation. Human: the
   architect gates risky changes only.
 - 2026-09-24 — REQ-ROLE-030: the PM as sole human contact and communicator, on the strongest model (human, via pm).
+- 2026-09-24 — REQ-ROLE-030 marked [~] (#65): routing/triage shipped; the fable → opus provider order is not.

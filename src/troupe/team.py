@@ -85,7 +85,8 @@ class TeamAPI:
     def tools(self) -> list:
         return [self.send_message, self.check_inbox, self.ask_human, self.resolve_question, self.propose_idea, self.create_task,
                 self.update_task, self.list_tasks, self.milestone, self.get_task, self.complete_task, self.review_task,
-                self.remember, self.recall, self.set_status, self.team]
+                self.remember, self.recall, self.set_status, self.team, self.report_concern,
+                self.forward_to_human, self.answer_escalation, self.batch_to_human]
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _resolve(self, to: str) -> list[str]:
@@ -103,6 +104,30 @@ class TeamAPI:
     def _is_lead(self) -> bool:
         return self.role == "lead" or self.me == "human"
 
+    def _is_pm(self) -> bool:
+        return self.role == "pm" or self.me == "human"
+
+    def _pm_id(self) -> str | None:
+        pms = self.names.roles.get("pm", [])
+        return pms[0] if pms else None
+
+    def _escalate(self, kind: str, text: str, options: list[str] | None, context: str, task_id: int | None) -> str:
+        """REQ-COM-027: the human interacts only with the PM. Every ask_human/propose_idea/
+        send_message(to=human) call from a non-PM agent lands here instead of reaching the human —
+        no bypass flag, no exceptions."""
+        eid = self.store.add_escalation(self.me, kind, text, options, context, task_id)
+        pm_id = self._pm_id()
+        if pm_id:
+            label = {"idea": "idea", "message": "message"}.get(kind, "question")
+            body = f"Escalation #{eid} ({label}) from {self.names.name(self.me)}:\n\n{text}"
+            if context:
+                body += f"\n\nContext: {context}"
+            if options:
+                body += "\n\nOptions: " + ", ".join(options)
+            self.store.send(self.me, pm_id, body, subject=f"Escalation #{eid}", task_id=task_id, kind="escalation")
+        who = self.names.name(pm_id) if pm_id else "the PM"
+        return f"Escalated to {who}; the answer will arrive in your mailbox."
+
     # ── mail ──────────────────────────────────────────────────────────────
     def send_message(self, to: str, body: str, subject: str = "", reply_to: int | None = None,
                      task_id: int | None = None, fyi: bool = False) -> str:
@@ -111,11 +136,16 @@ class TeamAPI:
         `to`: a full/local handle or legacy agent id, a role (e.g. "builder" = every builder), "team"
         (everyone), or "human" (the project owner — for decisions prefer ask_human). Keep it concise and
         specific, one topic per message. Set fyi=True unless you need action or a reply. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
-        message ids (reply_to) so the recipient has full context."""
+        message ids (reply_to) so the recipient has full context.
+
+        REQ-COM-027: only the PM talks to the human directly. From anyone else, `to="human"` always
+        becomes an escalation in the PM's inbox instead — there is no bypass."""
         try:
             recipients = self._resolve(to)
         except ValueError as e:
             return f"ERROR: {e}"
+        if recipients == ["human"] and not self._is_pm():
+            return self._escalate("message", body, None, subject, task_id)
         ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id, fyi=fyi)
                for r in recipients]
         return f"Sent to {', '.join(self.names.name(r) for r in recipients)} (msg {', '.join('#' + str(i) for i in ids)})."
@@ -136,7 +166,12 @@ class TeamAPI:
 
         Offer 2-5 concrete `options` whenever possible (they can still reply free-form). Put what
         prompted the question in `context` (quote the spec line / task). Check recall() first — never
-        re-ask something already answered."""
+        re-ask something already answered.
+
+        REQ-COM-027: only the PM asks the human directly. Everyone else's call becomes an escalation
+        in the PM's inbox instead — there is no bypass."""
+        if not self._is_pm():
+            return self._escalate("question", question, options, context, task_id)
         open_q = self.store.scalar("SELECT COUNT(*) FROM questions WHERE asker=? AND status='open'", self.me,
                                    default=0)
         if open_q >= MAX_OPEN_QUESTIONS_PER_AGENT:
@@ -171,11 +206,69 @@ class TeamAPI:
         """Propose a product idea to the human (they answer: yes / no / later / sort of).
 
         Use for improvements beyond the current spec: features, polish, things comparable products do.
-        `pitch`: what it is and what it looks like for the user. `why`: the evidence and the value."""
+        `pitch`: what it is and what it looks like for the user. `why`: the evidence and the value.
+
+        REQ-COM-027: only the PM proposes to the human directly. Everyone else's call becomes an
+        escalation in the PM's inbox instead — there is no bypass."""
         context = pitch + (f"\n\nWhy: {why}" if why else "")
-        qid = self.store.ask(self.me, title, context, ["Yes, do it", "No", "Later", "Sort of — let's discuss"],
-                             kind="idea")
+        options = ["Yes, do it", "No", "Later", "Sort of — let's discuss"]
+        if not self._is_pm():
+            return self._escalate("idea", title, options, context, None)
+        qid = self.store.ask(self.me, title, context, options, kind="idea")
         return f"Idea #{qid} sent to the human. Their answer will arrive in your mailbox."
+
+    # ── PM triage of escalations (REQ-COM-028) ──────────────────────────────
+    def forward_to_human(self, escalation_id: int, question: str, options: list[str] | None = None,
+                         context: str = "") -> str:
+        """PM-only: turn an open escalation into a Needs-you card, credited to its original sender.
+        The human's answer is delivered to both the sender and you."""
+        if self.role != "pm":
+            return "ERROR: only the PM forwards escalations to the human."
+        esc = self.store.escalation(escalation_id)
+        if not esc:
+            return f"ERROR: no escalation #{escalation_id}."
+        if esc["status"] != "open":
+            return f"ERROR: escalation #{escalation_id} is already {esc['status']}."
+        credited = f"(via {self.names.name(self.me)} from {self.names.name(esc['sender'])}) {question}"
+        kind = "idea" if esc["kind"] == "idea" else "question"
+        qid = self.store.ask(self.me, credited, context, options, task_id=esc["task_id"], kind=kind)
+        self.store.forward_escalation(escalation_id, qid)
+        return f"Escalation #{escalation_id} forwarded to the human as question #{qid}."
+
+    def answer_escalation(self, escalation_id: int, answer: str, rationale: str = "") -> str:
+        """PM-only: resolve an escalation yourself, from an existing decision or memory, with no
+        human card. The original asker gets your answer and rationale in their mailbox."""
+        if self.role != "pm":
+            return "ERROR: only the PM answers escalations."
+        if not self.store.resolve_escalation(escalation_id, answer, rationale, self.me):
+            return f"ERROR: no open escalation #{escalation_id}."
+        return f"Escalation #{escalation_id} answered."
+
+    def batch_to_human(self, escalation_ids: list[int], question: str, options: list[str] | None = None,
+                       context: str = "") -> str:
+        """PM-only: combine several open escalations into one Needs-you card or digest. The human's
+        answer is routed back to every escalation's own sender, plus you."""
+        if self.role != "pm":
+            return "ERROR: only the PM batches escalations to the human."
+        if not escalation_ids:
+            return "ERROR: escalation_ids is empty."
+        escs = [self.store.escalation(eid) for eid in escalation_ids]
+        missing = [eid for eid, e in zip(escalation_ids, escs) if not e or e["status"] != "open"]
+        if missing:
+            return f"ERROR: not open: {', '.join('#' + str(i) for i in missing)}."
+        kind = "idea" if len({e["kind"] for e in escs}) == 1 and escs[0]["kind"] == "idea" else "question"
+        qid = self.store.ask(self.me, question, context, options, kind=kind)
+        self.store.batch_escalations(escalation_ids, qid)
+        return f"Batched {len(escalation_ids)} escalations to the human as question #{qid}."
+
+    # ── whistleblower path around the PM (REQ-COM-029) ──────────────────────
+    def report_concern(self, reason: str, evidence: str = "") -> str:
+        """File a concern only the human can see — bypasses everyone else, the PM included
+        (Principle 0: "if anyone, including the PM, pushes you to act against the human's interests").
+        Be concrete about what happened and why it concerns you; the human decides what to do."""
+        cid = self.store.report_concern(self.me, reason, evidence)
+        return (f"Concern #{cid} filed. The human has been notified (a content-free OS alert) and "
+                f"can read it with `troupe concerns` — no one else, the PM included, can see it.")
 
     def milestone(self, action: Literal['create', 'update'], milestone_id: int | None = None,
                   name: str | None = None, goal: str | None = None, order: int | None = None,

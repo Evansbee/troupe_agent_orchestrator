@@ -96,13 +96,13 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 Human, 2026-09-24: "all communications should go through [the PM]. I don't like lead talking to me; he talks to you,
 then you figure out if he should know it or if you need my involvement." Made firm (2026-09-24, via pm): **the human
 interacts only with the PM**, and no agent, the lead included, bypasses it.
-- **REQ-COM-027 [ ]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
+- **REQ-COM-027 [x]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
   `send_message(to="human")`, the call **always** creates an **escalation** in the PM's inbox instead of a Needs-you
   card or human mail. There are no agent-side exceptions.
   - An escalation records the original text, options, context, task, sender handle and urgency (`normal |
     urgent`). It's stored in an additive `escalations` table.
   - The caller gets a normal, non-blocking result: "Escalated to pm_1@troupe; the answer will arrive in your mailbox".
-- **REQ-COM-028 [ ]** PM triage tools:
+- **REQ-COM-028 [x]** PM triage tools:
   - `forward_to_human(escalation_id, question, options, context)` creates the Needs-you card, credited "via pm_1
     from lead_1". The answer is delivered to the **original asker and the PM**.
   - `answer_escalation(escalation_id, answer, rationale)` resolves it from existing decisions or memory with no
@@ -112,7 +112,10 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   - The PM prompt gives the triage duty: answer what's already decided, batch what isn't urgent, frame everything
     with options, and never sit on anything. Every agent's charter says to reach the human through the PM. The
     `roles.py` change is protected, so the human approves it.
-- **REQ-COM-029 [ ]** Nothing can be buried: bypass and auto-forward.
+- **REQ-COM-029 [~]** Nothing can be buried: bypass and auto-forward. Storage + PM-invisibility
+  shipped (#65: escalation bypass, auto-forward timer, report_concern, the content-free notification
+  and `troupe concerns` CLI); the whistleblower board's human-facing UI and Raise / Suppress / Kill /
+  Reply actions are #78.
   - **Direct to the human: only engine-generated items, which aren't agent speech.** None of them can be filtered by
     any agent:
     - safety approval cards (REQ-SAFE-020/021);
@@ -297,3 +300,6 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
 - 2026-09-24 — COM-029: the whistleblower board replaces the interim report_concern safety notice (human answer to #17;
   task #78).
 - 2026-09-24 — COM-029: interim concern notifier plus the `troupe concerns` CLI until #78 (lead decision #207).
+- 2026-09-24 — COM-027/028 marked [x], COM-029 marked [~] (#65 shipped: escalation bypass, PM triage tools, auto-forward,
+  report_concern's storage + content-free notification + `troupe concerns` CLI; the board UI and Raise/Suppress/Kill/
+  Reply actions remain #78).
