@@ -10,30 +10,50 @@ Code: `src/troupe/tui/` (Textual app), `src/troupe/cli.py` (default command). Ta
 The interface model (pm decision "Interface model…"):
 - **TUI:** one project, in a terminal, next to the work. The human's everyday seat.
 - **PM:** the human's single point of contact (REQ-COM-027..029).
-- **Mac app:** the cross-project portfolio view (specs/60-mac-app.md).
+- **Mac app:** the cross-project portfolio view (specs/60-mac-app.md, deferred until after the TUI and the Links
+  benchmark, along with the portfolio coordinator in `docs/architecture/portfolio.md`).
 All three are clients of the same engine API (specs/50-api.md).
 
 **Priority (human, 2026-09-24): the TUI is the primary interface.** The raylib GUI is frozen, and the Mac app is
 deferred. The lead builds #66 in four slices:
 | slice | REQs |
 |---|---|
-| 1. Shell + status | TUI-001, 002, 003, 010 (header, Team, Tasks), 011, 012, 013, 030, 031 (its parts) |
-| 2. Needs you | TUI-010 (Needs you pane), 020 (`a` answering) |
-| 3. PM chat | TUI-021 |
-| 4. Feed + kill switch | TUI-010 (Comms), 020 (`s`) |
+| A (#66). Shell + status + engine lifecycle | TUI-001, 002, 003, 010 (header, Team, Tasks), 011, 012, 013, 030, 031 (its parts) |
+| B (#67). Needs you (questions + safety approval cards) | TUI-010 (Needs you pane), 020 (`a` answering) |
+| C (#68). PM chat | TUI-021, 012 (in chat) |
+| D (#69). Feed + kill switch | TUI-010 (Comms), 020 (`s`) |
 Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 
 ## Launch
-- **REQ-TUI-001 [ ]** `troupe` with no arguments (or `troupe tui`) in a project directory:
-  - starts the service if it isn't running (`troupe start` semantics, REQ-ENG-006), then opens the TUI;
-  - `troupe --project <path>` targets another project;
-  - outside any project, it prints how to `troupe init` and exits 1.
-  - **`q` quits the TUI and never stops the team.**
-  - Test: the service starts when absent; `q` leaves it running.
-- **REQ-TUI-002 [ ]** Data only through the API: hello, snapshot, then subscribe (REQ-API-010/020/060).
+- **REQ-TUI-001 [ ]** "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
+  arguments (or `troupe tui`) in a project directory starts the project's engine **as a child of the TUI** and opens
+  the TUI on its API.
+  - **Quit (`q`):** if runs are in flight, it first asks "N agents are working — stop them and quit? y/N". Quitting
+    stops the engine and every agent run (process groups plus verified descendants). Interrupted runs are marked
+    `interrupted` with their mail re-queued, so they **resume on the next start** (REQ-ENG-004).
+  - **SIGHUP / SIGTERM** (terminal closed, `tmux kill-window`) does the same stop without asking: SIGTERM to runs,
+    then SIGKILL after 5 s.
+  - **Unattended work:** detach tmux. The TUI, and so the team, keeps running.
+  - **Already running:** if an engine already holds the project lock (REQ-ENG-003), for example a headless
+    `troupe engine` or another TUI, the TUI attaches without owning it. Quitting that TUI leaves the engine running,
+    and the header says "attached".
+  - **Engine died:** the header shows "Engine offline" and `r` restarts it. There's no automatic supervision
+    (REQ-ENG-042 is deferred).
+  - `s` (kill switch, REQ-SAFE-010) is different from quit: it stops all runs and puts the engine in `stopped`
+    while the TUI stays open, and Resume brings it back.
+  - `troupe --project <path>` targets another project. Outside any project, it prints how to `troupe init` and
+    exits 1.
+  - Test:
+    - starting spawns the child engine and its socket;
+    - `q` with no runs stops the engine;
+    - `q` with a run in flight asks first, then leaves the run `interrupted` with its mail re-queued;
+    - SIGHUP stops everything within 5 s with no orphans;
+    - a second TUI attaches, and its `q` doesn't stop the engine.
+- **REQ-TUI-002 [ ]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
+  subscribe (REQ-API-010/020/060).
   - No direct DB reads and no polling.
   - Live updates appear within 1 s of a new message or task change.
-  - A service reload or restart reconnects without clearing the screen (as REQ-MAC-012).
+  - An engine restart (`r`) reconnects without clearing the screen (as REQ-MAC-012).
   - Methods the API reports as `unavailable` (REQ-API-006) are hidden or disabled, never errors.
   - Test: against a fixture API server, a pushed event updates the pane within 1 s.
 - **REQ-TUI-003 [ ]** One new dependency, `textual`: the standard for rich, tmux-safe Python TUIs, and the human asked
@@ -81,7 +101,8 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   | Enter | send |
   | `a`, then 1–9 or free text + Enter | answer the focused Needs-you card (REQ-COM-025 rules: never while typing in chat) |
   | `s` | Stop everything (REQ-SAFE-010), after a y/N confirmation |
-  | `q` | quit the TUI only |
+  | `q` | quit: stops this project's engine and runs if the TUI owns it, after confirmation when runs are in flight (TUI-001) |
+  | `r` | restart the engine when it's offline |
 - **REQ-TUI-021 [ ]** Chat with the PM works end to end: send, the streaming working state, and the reply shown
   (REQ-COM-020). Chatting with another agent is possible (`:chat <handle>`), but the default is always the PM
   (REQ-COM-029).
@@ -107,3 +128,5 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 - 2026-09-24 — written (human request via pm msg #418; task #66).
 - 2026-09-24 — TUI made the primary interface; slice plan; new TUI-012 copy (OSC 52 plus native selection) and
   TUI-013 details and catch-up.
+- 2026-09-24 — TUI-001 rewritten: the TUI owns its engine (quit and SIGHUP stop everything, confirm if runs are in flight,
+  resume on next start, attach without owning if already running). Slices mapped to #66–#69.

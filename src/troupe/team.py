@@ -105,18 +105,18 @@ class TeamAPI:
 
     # ── mail ──────────────────────────────────────────────────────────────
     def send_message(self, to: str, body: str, subject: str = "", reply_to: int | None = None,
-                     task_id: int | None = None) -> str:
+                     task_id: int | None = None, fyi: bool = False) -> str:
         """Send a message to a teammate's mailbox; it wakes them up.
 
         `to`: a full/local handle or legacy agent id, a role (e.g. "builder" = every builder), "team"
         (everyone), or "human" (the project owner — for decisions prefer ask_human). Keep it concise and
-        specific, one topic per message. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
+        specific, one topic per message. Set fyi=True unless you need action or a reply. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
         message ids (reply_to) so the recipient has full context."""
         try:
             recipients = self._resolve(to)
         except ValueError as e:
             return f"ERROR: {e}"
-        ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id)
+        ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id, fyi=fyi)
                for r in recipients]
         return f"Sent to {', '.join(self.names.name(r) for r in recipients)} (msg {', '.join('#' + str(i) for i in ids)})."
 
@@ -157,6 +157,8 @@ class TeamAPI:
         question = self.store.one("SELECT * FROM questions WHERE id=?", question_id)
         if not question:
             return "ERROR: question not found. Check its id in your open questions."
+        if question["kind"] == "safety":
+            return "ERROR: safety approvals require the human in Needs you; agents cannot resolve them."
         if question["asker"] != self.me and self.role not in ("lead", "pm"):
             return "ERROR: this is another agent's question. Ask its owner, the lead or PM to resolve it."
         if question["status"] != "open":
@@ -362,6 +364,9 @@ class TeamAPI:
             return "ERROR: only QA or the lead can review tasks."
         self.store.task_note(task_id, self.me, f"REVIEW {verdict.upper()}: {notes}")
         if verdict == "approve":
+            from .gates import task_gate
+            if not task_gate(self.cfg, self.store, t):
+                return f"QA approved #{task_id}; awaiting human approval of protected changes."
             self.store.update_task(task_id, actor=self.me, status="approved", review_notes=notes,
                                    event_text=f"{self.me} approved #{task_id} {t['title']}")
             return f"Approved #{task_id}. The orchestrator will merge it into main."

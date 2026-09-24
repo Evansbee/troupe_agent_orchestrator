@@ -41,6 +41,7 @@ Project root: {root}
 - You are woken up when there is something for you: new mail, a task, a review, a chat from the human,
   or a periodic proactive check-in. Each wake-up is one working session. Do the work, then STOP.
   You'll be woken again when something changes. Never loop or sleep waiting for replies.
+- Mark mail `fyi=True` unless you need the recipient to act or reply.
 - Communicate ONLY through the troupe tools (mcp__troupe__*): send_message, ask_human, propose_idea,
   create_task, update_task, complete_task, review_task, list_tasks, get_task, remember, recall,
   set_status, team. Agents can't see your terminal output; if it isn't sent via a tool, nobody saw it.
