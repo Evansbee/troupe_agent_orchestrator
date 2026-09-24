@@ -253,3 +253,127 @@ def test_empty_tasks_pane_shows_one_line_not_squashed_into_the_glyph_column(proj
             await server.stop()
 
     asyncio.run(scenario())
+
+
+def test_startup_focuses_the_chat_composer_and_typing_system_opens_no_modal(project):
+    """#83: the TUI used to start with nothing focused, so plain typing fell through to
+    app-level bindings — typing "system" opened the kill-switch confirm live in tmux."""
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+
+                await pilot.press(*"system")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(app.screen_stack) == 1  # no confirm modal pushed
+                await _wait_until(
+                    lambda: ("chat", dict(agent="pm", text="system")) in server.commands)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_slash_focuses_the_chat_composer_from_another_pane(project):
+    from textual.widgets import ListView
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                app.query_one("#ny-cards", ListView).focus()
+                await pilot.pause()
+                assert not isinstance(app.focused, Composer)
+
+                await pilot.press("/")
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_slash_switches_to_the_chat_tab_in_compact_mode(project):
+    from textual.widgets import TabbedContent
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tabs = app.query_one(TabbedContent)
+                tabs.active = "tab-TeamPane"
+                app.set_focus(None)
+                await pilot.pause()
+                assert not isinstance(app.focused, Composer)
+
+                await pilot.press("/")
+                await pilot.pause()
+                assert tabs.active == "tab-ChatPane"
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_resize_round_trip_restores_focus_to_the_composer(project):
+    from textual.widgets import TabbedContent
+
+    from troupe.tui.panes.chat import Composer
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                assert isinstance(app.focused, Composer)
+
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                assert app.query(TabbedContent)
+                assert isinstance(app.focused, Composer)
+
+                await pilot.resize_terminal(140, 42)
+                await pilot.pause()
+                assert not app.query(TabbedContent)
+                assert isinstance(app.focused, Composer)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())

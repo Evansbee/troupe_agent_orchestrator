@@ -68,6 +68,7 @@ def test_quit_with_no_runs_in_flight_stops_the_owned_engine(project, monkeypatch
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: stop_calls == [cfg])
         await server.stop()
@@ -88,6 +89,7 @@ def test_quit_with_runs_in_flight_asks_first_and_a_no_answer_cancels(project, mo
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: len(app.screen_stack) > 1)  # the confirmation modal is up
             await pilot.press("n")
@@ -111,6 +113,7 @@ def test_quit_with_runs_in_flight_stops_on_yes(project, monkeypatch):
         app = TroupeApp(cfg, owns_engine=True)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: len(app.screen_stack) > 1)
             await pilot.press("y")
@@ -133,6 +136,7 @@ def test_non_owner_quit_leaves_the_engine_running(project, monkeypatch):
         app = TroupeApp(cfg, owns_engine=False)
         async with app.run_test(size=(120, 40)) as pilot:
             await _wait_until(lambda: app.client.connected)
+            await pilot.press("tab")  # #83: startup now focuses the chat composer, which eats "q"
             await pilot.press("q")
             await _wait_until(lambda: app._exit)
         await server.stop()
