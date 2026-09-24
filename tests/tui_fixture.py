@@ -9,13 +9,17 @@ from pathlib import Path
 
 
 class FixtureServer:
-    def __init__(self, root: Path, *, agents=None, tasks=None, usage=None, engine=None, milestones=None):
+    def __init__(self, root: Path, *, agents=None, tasks=None, usage=None, engine=None, milestones=None,
+                 messages=None, memories=None, errors=None):
         self.root = root
         self.agents = agents if agents is not None else []
         self.tasks = tasks if tasks is not None else []
         self.usage = usage if usage is not None else {"providers": []}
         self.engine = engine if engine is not None else {"state": "live", "running_runs": 0}
         self.milestones = milestones if milestones is not None else []
+        self.messages = messages if messages is not None else []
+        self.memories = memories if memories is not None else []
+        self.errors: dict[str, tuple[str, str]] = errors if errors is not None else {}
         self.seq = 0
         self._server: asyncio.base_events.Server | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -55,8 +59,14 @@ class FixtureServer:
                     break
                 req = json.loads(line)
                 method, params = req["method"], req.get("params", {})
-                if method in ("chat", "answer_question", "stop_run", "stop_now", "stop_team", "wake",
-                              "dismiss_question", "mark_chat_read"):
+                if method in self.errors:
+                    code, message = self.errors[method]
+                    writer.write((json.dumps(dict(id=req["id"], ok=False,
+                                                  error=dict(code=code, message=message))) + "\n").encode())
+                    await writer.drain()
+                    continue
+                if method in ("chat", "answer_question", "stop_run", "stop_now", "resume", "stop_team",
+                              "wake", "dismiss_question", "mark_chat_read"):
                     self.commands.append((method, params))
                     result = {}
                 else:
@@ -84,6 +94,16 @@ class FixtureServer:
             return self.engine
         if method == "milestones":
             return dict(items=self.milestones)
+        if method == "messages":
+            items = self.messages
+            if params.get("kind"):
+                items = [m for m in items if m["kind"] == params["kind"]]
+            return dict(items=items)
+        if method == "memories":
+            items = self.memories
+            if params.get("kind"):
+                items = [m for m in items if m["kind"] == params["kind"]]
+            return dict(items=items)
         if method == "subscribe":
             return dict(epoch=1, seq=self.seq)
         return {}

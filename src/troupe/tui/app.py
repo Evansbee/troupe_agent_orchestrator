@@ -10,18 +10,23 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Label, TabbedContent, TabPane
+from textual.widgets import Footer, Label, Static, TabbedContent, TabPane
 
 from .. import config as config_mod
+from ..api import APIError
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
+from .panes.feed import FeedPane
 from .panes.header import HeaderPane
 from .panes.tasks import TasksPane
 from .panes.team import TeamPane
 
-# Pane registry for the left/status column. #67 (Needs-you) and #68 (PM chat) each add one line
-# here (or to a `RIGHT_PANES` list, once one exists) — see panes/__init__.py for the Pane API.
+# Pane registry for the left/status column. #67 (Needs-you) adds one more line here — see
+# panes/__init__.py for the Pane API.
 PANES: list[type] = [TeamPane, TasksPane]
+# The right column. #68 (PM chat) adds its own line here, mounted after Comms per design/tui.md's
+# "Comms feed above, Chat pinned to the bottom".
+RIGHT_PANES: list[type] = [FeedPane]
 
 # REQ-TUI-011: below this width or height, panes collapse from side-by-side to tabs.
 COMPACT_WIDTH = 80
@@ -47,6 +52,26 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(event.key == "y")
 
 
+class StoppedBanner(Static):
+    """REQ-SAFE-010: obvious while the kill switch is engaged — no runs start, chat included, until
+    the human resumes. Collapses to nothing the rest of the time, so it never costs a permanent
+    line of screen space. No design/tui.md guidance for this state existed yet at the time of #69;
+    flagged for design review, kept in the existing color vocabulary rather than inventing one."""
+
+    DEFAULT_CSS = """
+    StoppedBanner { height: 0; padding: 0 1; color: $error; text-style: bold; }
+    StoppedBanner.-visible { height: 1; }
+    """
+
+    def show(self) -> None:
+        self.update("■ STOPPED — no runs start, chat included. Shift+R to resume.")
+        self.add_class("-visible")
+
+    def hide(self) -> None:
+        self.remove_class("-visible")
+        self.update("")
+
+
 class TroupeApp(App):
     CSS = """
     #body { height: 1fr; }
@@ -57,6 +82,7 @@ class TroupeApp(App):
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
         Binding("s", "stop_everything", "Stop"),
+        Binding("shift+r", "resume_action", "Resume", show=False),
         Binding("r", "restart_engine_action", "Restart"),
         Binding("tab", "focus_next", "Next pane", show=False),
         Binding("shift+tab", "focus_previous", "Prev pane", show=False),
@@ -70,15 +96,26 @@ class TroupeApp(App):
         self.title = cfg.project
         self._events_task: asyncio.Task | None = None
         self._panes: list = []
+        self._right_panes: list = []
         self._header: HeaderPane | None = None
+        self._stopped_banner: StoppedBanner | None = None
+        self._engine_stopped = False
         self._compact: bool | None = None  # unknown until first layout, forcing an initial build
 
     def compose(self) -> ComposeResult:
         self._header = HeaderPane(self.client, self.cfg.project)
         yield self._header
+        self._stopped_banner = StoppedBanner()
+        yield self._stopped_banner
         self._panes = [cls(self.client) for cls in PANES]
+        self._right_panes = [cls(self.client) for cls in RIGHT_PANES]
         yield Container(id="body")
         yield Footer()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "resume_action":
+            return self._engine_stopped
+        return True
 
     def _is_compact(self) -> bool:
         return self.size.width <= COMPACT_WIDTH or self.size.height <= COMPACT_HEIGHT
@@ -95,11 +132,11 @@ class TroupeApp(App):
         if compact:
             tabs = TabbedContent()
             await body.mount(tabs)
-            for pane in self._panes:
+            for pane in self._panes + self._right_panes:
                 await tabs.add_pane(TabPane(pane.PANE_TITLE or pane.__class__.__name__, pane))
         else:
             left = Vertical(*self._panes, id="left")
-            right = Vertical(id="right")  # #68/#69 mount their panes here
+            right = Vertical(*self._right_panes, id="right")  # #68 mounts Chat here, after Comms
             await body.mount(Horizontal(left, right, id="body-row"))
 
     async def on_resize(self, event) -> None:
@@ -130,7 +167,12 @@ class TroupeApp(App):
             if self._header:
                 self._header.set_offline()
             return
-        await asyncio.gather(self._header.load(), *(p.load() for p in self._panes))
+        await asyncio.gather(self._header.load(), *(p.load() for p in self._panes + self._right_panes))
+        try:
+            engine = await self.client.call("engine", timeout=3.0)
+            self._set_stopped(engine.get("stopped", False))
+        except Exception:
+            pass
 
     def _refresh_connection_state(self) -> None:
         if self._header and not self.client.connected:
@@ -140,8 +182,20 @@ class TroupeApp(App):
         async for event in self.client.events():
             if self._header:
                 self._header.on_troupe_event(event)
-            for pane in self._panes:
+            for pane in self._panes + self._right_panes:
                 pane.on_troupe_event(event)
+            if event["event"] == "engine.state":
+                self._set_stopped(event["data"]["engine"].get("stopped", False))
+
+    def _set_stopped(self, stopped: bool) -> None:
+        self._engine_stopped = stopped
+        if self._stopped_banner is None:
+            return
+        if stopped:
+            self._stopped_banner.show()
+        else:
+            self._stopped_banner.hide()
+        self.refresh_bindings()  # Resume's availability (check_action) just changed
 
     @work(exclusive=True)
     async def _snapshot_and_exit(self, path: str) -> None:
@@ -186,11 +240,40 @@ class TroupeApp(App):
         ok = await self.push_screen_wait(ConfirmScreen("Stop everything (kill switch)? y/N"))
         if not ok:
             return
-        if self.client.connected:
-            try:
-                await self.client.call("stop_now", timeout=5.0)
-            except Exception:
-                pass
+        if not self.client.connected:
+            self.notify("Not connected to the engine.", severity="error")
+            return
+        try:
+            await self.client.call("stop_now", timeout=5.0)
+            # No local state flip here: the STOPPED banner reacts to the pushed engine.state event,
+            # the same source of truth every other client (GUI, another TUI) would see it from.
+        except APIError as exc:
+            if exc.code == "unavailable":
+                self.notify("Kill switch isn't wired up yet (task #57).", severity="warning")
+            else:
+                self.notify(f"Stop failed: {exc}", severity="error")
+        except Exception as exc:
+            self.notify(f"Stop failed: {exc}", severity="error")
+
+    @work
+    async def action_resume_action(self) -> None:
+        if not self._engine_stopped:
+            return
+        ok = await self.push_screen_wait(ConfirmScreen("Resume the team? y/N"))
+        if not ok:
+            return
+        if not self.client.connected:
+            self.notify("Not connected to the engine.", severity="error")
+            return
+        try:
+            await self.client.call("resume", timeout=5.0)
+        except APIError as exc:
+            if exc.code == "unavailable":
+                self.notify("Resume isn't wired up yet (task #57).", severity="warning")
+            else:
+                self.notify(f"Resume failed: {exc}", severity="error")
+        except Exception as exc:
+            self.notify(f"Resume failed: {exc}", severity="error")
 
     async def action_restart_engine_action(self) -> None:
         if self.client.connected:
