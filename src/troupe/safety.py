@@ -48,6 +48,7 @@ def audit(store, text: str, *, notify: bool = True) -> None:
 
 def parse_settings(raw: dict, root: Path) -> dict:
     from .gitops import git
+    from .sandbox import parse_role_profiles
     settings = dict(raw)
     settings.setdefault('protected', list(PROTECTED))
     if 'remotes' not in settings:
@@ -58,6 +59,7 @@ def parse_settings(raw: dict, root: Path) -> dict:
     for key in ('protected', 'remotes', 'secret_allow'):
         if not isinstance(settings[key], list) or not all(isinstance(x, str) for x in settings[key]):
             raise ValueError(f'safety.{key} must be a list of strings')
+    settings['roles'] = parse_role_profiles(settings.get('roles', {}))
     return settings
 
 
@@ -94,6 +96,12 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         return 'Expanding secret environment variables into tool output or requests'
     if re.search(r'\bsecurity\s+find-\S*password\b|\bprintenv\b|\benv(?:\s+-[0u]+)*\s*(?:$|[|;>])', command):
         return 'Dumping credentials or environment secrets'
+    if re.search(r'\btroupe\.db\b|\bapi\.sock\b', command):
+        # Direct DB/socket access would bypass the MCP tool layer entirely (an agent could write
+        # kv or questions, or reach the human-only API, without going through any of the guards or
+        # review gates those tools enforce). Legitimate access is always through the MCP server's
+        # own process, never a Bash command the agent runs itself.
+        return "Direct access to troupe's database or local API socket; use the provided tools"
     if any(secret_path(w, cwd) for w in words if '/' in w):
         # Authentication consumes keys without putting them in the model context.
         if not (words and Path(words[0]).name == 'ssh' and all(i > 0 and words[i-1] == '-i' for i, w in enumerate(words) if '/' in w and secret_path(w, cwd)) and not re.search(r'[;|&><`]|\$\(', command)):

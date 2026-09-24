@@ -34,6 +34,12 @@ def policy():
     ('cat ~/.ssh/id_ed25519', True), ('cat ~/.ssh/id_ed25519.pub', False),
     ('cat ~/.aws/credentials', True), ('security find-generic-password -w', True),
     ('env', True), ('ssh -i ~/.ssh/id_ed25519 git@example.test', False),
+    ('sqlite3 .troupe/troupe.db "select * from kv"', True),
+    ('python3 -c "import sqlite3; sqlite3.connect(\'.troupe/troupe.db\').execute(\'DELETE FROM kv\')"', True),
+    ('cat .troupe/troupe.db-wal', True),
+    ('nc -U .troupe/api.sock', True),
+    ('curl --unix-socket .troupe/api.sock http://x/snapshot', True),
+    ('ls .troupe/runs', False),
 ])
 def test_shell_guard(command, blocked, tmp_path):
     assert bool(guard('Bash', {'command': command}, tmp_path, policy())) == blocked

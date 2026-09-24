@@ -46,7 +46,7 @@ def guard_config(cfg) -> None:
             audit(s, 'Human approved safety configuration', notify=False)
     if approved is None:
         from .safety import PROTECTED
-        approved = {'safety': {'protected': list(PROTECTED), 'remotes': [], 'secret_allow': []},
+        approved = {'safety': {'protected': list(PROTECTED), 'remotes': [], 'secret_allow': [], 'roles': {}},
                     'check': '', 'check_timeout': 600}
     cfg.safety = approved['safety']
     cfg.git.check, cfg.git.check_timeout = approved['check'], approved['check_timeout']
