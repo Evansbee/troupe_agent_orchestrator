@@ -56,6 +56,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-COM-021 | C `question_limit_and_answer_delivery`; manual Needs you: options and free-text answer each remove card and deliver mail to asker; fifth open question rejected. |
 | REQ-COM-022 | T `idea_options_and_dismissal_notification`: idea kind and four standard choices. |
 | REQ-COM-023 | T `idea_options_and_dismissal_notification`: GUI data action removes open question and sends judgment instruction. |
+| REQ-COM-026 | `tests/test_resolve_question.py`: chat resolution, permissions, closed/unknown/invalid inputs, additive migration, inbox compatibility, concurrent answer protection, recall, cached card removal/toast signal, MCP registration, and open-question chat hints. Visual check: isolated GUI run confirmed card removal and "Answered in chat ✓" toast (`/tmp/troupe-t37-answer.png`). Optional "also asked in chat" badge not implemented. |
 | REQ-COM-030 | T `memory_visibility_rationale_and_answer_search`; E `prompts_include_role_and_context`: rationale retained, private memory isolated and recent decisions injected. |
 | REQ-COM-031 | T `memory_visibility_rationale_and_answer_search`; C `recall_finds_decisions`: memory and answered-question keyword search. |
 

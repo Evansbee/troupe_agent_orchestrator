@@ -55,7 +55,7 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - Keys 1–9 pick that option on the hovered question card, or the top card if none is hovered.
   - Ignored whenever a text input has focus (typing "3" in a reply never answers a question).
   - The answered card gets the same feedback as a click (toast + card leaves).
-- **REQ-COM-026 [ ]** (#37) Decision questions asked in live chat also live in "Needs you", and answering them in chat
+- **REQ-COM-026 [x]** (#37) Decision questions asked in live chat also live in "Needs you", and answering them in chat
   closes the card. (Human: "that should be in a needs you box, if I answer in chat, you should close the needs you
   box with the decision.")
   - Charter rule, human-approved verbatim (question #7): "If you ask the human a decision question in live chat, ALSO
