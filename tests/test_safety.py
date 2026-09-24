@@ -122,6 +122,66 @@ def test_approval_does_not_cover_changed_diff(project):
     assert len(store.questions()) == 1
 
 
+def test_remerging_main_with_no_protected_change_does_not_reask(project):
+    """#107 scope addition (lead decision, from #96): the merge gate's own retry loop
+    (gates._check_and_merge_with_retry) re-merges main into the task branch on every check
+    attempt via gitops.prepare_check, advancing task_gate's `merge-base(HEAD, branch)` each time.
+    Fingerprinting the whole base..head patch picked up whatever unrelated content (e.g. docs)
+    happened to differ between the old and new base, so a clean re-merge with zero actual
+    protected-path change could still re-ask the human for nothing. Restricting the fingerprinted
+    diff to the guarded paths themselves is immune to that, since it only depends on those files'
+    content in base and head, not on what else changed on main in between."""
+    cfg, store = project
+    tid, tree = protected_task(project)
+    assert not task_gate(cfg, store, store.task(tid))
+    store.answer(store.questions()[0]['id'], 'Approve')
+    assert task_gate(cfg, store, store.task(tid))
+
+    before = len(store.questions(status=None))  # includes the project fixture's own baseline card
+
+    # Exactly what gitops.prepare_check does on a merge-gate retry: main moves (nothing
+    # protected), and that's merged into the task branch, advancing task_gate's merge-base.
+    (cfg.root / 'unrelated.txt').write_text('main moved\n')
+    gitops.commit_all(cfg.root, 'Main advanced, nothing protected')
+    gitops.git(tree, 'merge', '--no-edit', gitops.git(cfg.root, 'rev-parse', 'HEAD'))
+
+    assert task_gate(cfg, store, store.task(tid))  # still approved, no new card
+    assert len(store.questions(status=None)) == before  # no question was added
+
+
+def test_conflict_resolution_edit_to_a_protected_file_during_a_remerge_reasks(project):
+    """#107 scope addition: the safety condition on the fix above — any *actual* change to what
+    the branch does to a protected path must still re-ask, however it got there, including a
+    conflict-resolution edit made while merging main in (not just the task's own original
+    commits)."""
+    cfg, store = project
+    tid, tree = protected_task(project)
+    assert not task_gate(cfg, store, store.task(tid))
+    store.answer(store.questions()[0]['id'], 'Approve')
+    assert task_gate(cfg, store, store.task(tid))
+
+    before = len(store.questions(status=None))  # includes the project fixture's own baseline card
+
+    # Main independently touches the same protected file, so re-merging it into the branch
+    # conflicts and needs a manual resolution — exactly the case the lead called out by name.
+    # Commits directly (not gitops.commit_all), which would route a protected-path change through
+    # hold_main instead of landing it on main — a different mechanism than what's under test here.
+    protected_on_main = cfg.root / 'src/troupe/roles.py'
+    protected_on_main.parent.mkdir(parents=True, exist_ok=True)
+    protected_on_main.write_text('charter = "changed on main"\n')
+    gitops.git(cfg.root, 'add', 'src/troupe/roles.py')
+    gitops.git(cfg.root, 'commit', '-m', 'Main also touched roles.py')
+    merged = gitops.git(tree, 'merge', '--no-edit', gitops.git(cfg.root, 'rev-parse', 'HEAD'),
+                        check=False)
+    assert 'CONFLICT' in merged or gitops.git(tree, 'status', '--porcelain')
+    (tree / 'src/troupe/roles.py').write_text('charter = "resolved"\n')
+    gitops.git(tree, 'add', 'src/troupe/roles.py')
+    gitops.git(tree, 'commit', '--no-edit')
+
+    assert not task_gate(cfg, store, store.task(tid))  # a new card is raised
+    assert len(store.questions(status=None)) == before + 1
+
+
 def test_main_protected_edits_held_and_approved(project):
     cfg, store = project
     path = cfg.root / 'specs/05-safety.md'
