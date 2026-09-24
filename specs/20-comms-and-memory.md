@@ -31,7 +31,8 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 
 ## Mailboxes
 - **REQ-COM-010 [x]** `send_message(to=…)` accepts an agent id (or handle, REQ-COM-005), a role (fan-out to all of that role),
-  `team`, or `human`. Every message is an event in the activity feed and wakes the recipient.
+  `team`, or `human`. Ordinary mail is an event in the activity feed; wake eligibility follows COM-013 and
+  ENG-049. Non-PM mail addressed to `human` is an escalation under COM-027.
 - **REQ-COM-011 [x]** Messages are marked read when delivered in a wake prompt (or via `check_inbox`).
 - **REQ-COM-012 [ ]** Threads: group messages by `reply_to` chains in the Mail view.
 - **REQ-COM-013 [x]** (#46) FYI mail: `send_message(..., fyi=True)` (additive column).
@@ -52,12 +53,18 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
       digest.
 
 ## The human
-- **REQ-COM-020 [x]** Live chat: the human can talk to any agent; replies arrive as the agent's final text.
-- **REQ-COM-021 [x]** `ask_human` puts a question card in "Needs you" with options + free-text reply; the
-  answer is delivered to the asker as mail. Max 4 open questions per agent.
-- **REQ-COM-022 [x]** `propose_idea` = question with options Yes / No / Later / Sort of.
+- **REQ-COM-020 [x]** Live chat is with the PM; replies arrive as the PM's final text. COM-029 supersedes the
+  earlier any-agent chat model, including the frozen GUI's legacy partner list.
+- **REQ-COM-021 [x]** A PM `ask_human` call puts a question card in "Needs you" with options + free-text reply;
+  the answer is delivered to the asker as mail. Max 4 open questions per agent. Other agents' calls create
+  escalations (COM-027); forwarded cards route answers under COM-028.
+- **REQ-COM-022 [x]** `propose_idea` = question with options Yes / No / Later / Sort of, subject to the same
+  PM routing (COM-027/028).
 - **REQ-COM-023 [x]** Dismissing a question tells the asker to use their judgment.
-- **REQ-COM-024 [ ]** A "Team" chat room: one conversation between the human and the whole team. (#4)
+- **REQ-COM-024 [ ]** **Superseded by COM-029's PM-only human contact decision.** The former team-room design
+  below is historical context for #4, not authorized implementation scope. The lead must reconcile #4's backlog
+  brief with that decision before dispatch.
+  Former design: a "Team" chat room, one conversation between the human and the whole team.
   - "Team" is the first entry in the Chat partner list. Room messages are stored with a room marker so they
     appear only in the room thread, not in 1:1 chats.
   - Routing: `@<agent-id>` or `@<role>` mentions wake exactly those agents; `@all` wakes everyone enabled;
@@ -277,6 +284,8 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   non-architect gets `ERROR:`.
 
 ## Changelog
+- 2026-09-24 — COM-010/020..024 reconciled with shipped #65 and the human's PM-only contact decision;
+  identified the remaining FYI precedence question for PM/lead resolution.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for COM-024/025/032/033 (from backlog #4,#8,#12). Team room with no @mention
   wakes lead + pm only; other agents see it next time they wake.

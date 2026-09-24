@@ -256,7 +256,8 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     - The worker re-merges main into the branch and re-runs the check, up to 3 times with backoff. It doesn't message
       the builder, and it doesn't count toward `max_task_attempts`.
     - After 3 consecutive "main moved" retries, the task goes back to the builder with a clear message saying so.
-    - Only a real check failure or a merge conflict goes back to the builder.
+    - A real check failure or merge conflict goes back immediately; exhausting the main-moved limit also
+      goes back, with the distinct explanation above.
     - The merge into main is always of the exact tree that passed the check, and the worker stays serial.
     - Test: main moving during a check retries and merges silently; a real failure still goes back with output; the
       3-retry limit sends it back; the merged tree equals the checked tree.
@@ -471,10 +472,16 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
     - an unmapped tier uses the default.
 
 ## Open questions
+- The human requested "a crash watcher" after reporting a traceback (2026-09-24, 12:55 wake). PM/lead must
+  establish whether this means detecting/reporting a client crash, an engine crash, or both, and whether
+  automatic restart is wanted. ENG-050 covers agent-run stalls only; the older ENG-042 supervisor remains
+  deferred until its scope is reconciled with TUI ownership (TUI-001). This request is outstanding.
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-040 retry exhaustion clarified; recorded the new crash-watcher request without assuming
+  that the deferred background-service supervisor is its intended implementation.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for ENG-016/017/018/019/037/038 (from backlog #1,#2,#3,#5,#9,#10); new ENG-039
   (drag to Done must merge, not skip it).
