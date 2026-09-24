@@ -217,6 +217,7 @@ def chat_view(app: "App", r: Rect) -> None:
     if waiting:
         y = _typing(app, a, convo, y, maxw) + 14
     ui.scroll_end(sc, y + sc.offset - convo.y + 8)
+    ui.new_content_pill(sc, convo)
     # composer
     cr = Rect(compose.x + 24, compose.y + 8, in_w, ih)
     sub_text = ui.text_input(iid, cr, f"Message {app.data.name_of(a['id'])}…   Enter to send · Shift+Enter for a new line", 14)
@@ -1055,6 +1056,7 @@ def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
     if not lines:
         ui.text(r.x + 24, r.y + 16, "Waiting for output…", 13, T.TEXT_FAINT)
     ui.scroll_end(sc, y + sc.offset - r.y + 12)
+    ui.new_content_pill(sc, r)
 
 
 def _agent_side(app: "App", a: dict, r: Rect) -> None:
