@@ -288,3 +288,37 @@ def test_renaming_protected_file_still_needs_approval(project):
 def test_agent_roster_cannot_claim_human_identity():
     with pytest.raises(ValueError, match='reserved identity'):
         config.parse_agents({'agents': [{'id': 'human', 'role': 'lead', 'provider': 'codex'}]})
+
+
+@pytest.mark.parametrize('attack', ['repository_override', 'wildcard_force'])
+def test_hook_blocks_git_syntax_bypasses_with_local_remotes(project, attack):
+    import subprocess
+    cfg, store = project
+    origin = cfg.root.parent / 'allowed.git'
+    foreign = cfg.root.parent / 'foreign.git'
+    for path in (origin, foreign):
+        subprocess.run(['git', 'init', '--bare', str(path)], check=True, capture_output=True)
+    gitops.git(cfg.root, 'remote', 'add', 'origin', str(origin))
+    before = gitops.git(cfg.root, 'rev-parse', 'HEAD')
+    gitops.git(cfg.root, 'commit', '--allow-empty', '-m', 'ahead')
+    tip = gitops.git(cfg.root, 'rev-parse', 'HEAD')
+    gitops.git(cfg.root, 'push', 'origin', 'main')
+    gitops.git(cfg.root, 'reset', '--hard', before)
+    path = cfg.state_dir / 'troupe.toml'
+    path.write_text(path.read_text() + '\n[safety]\nremotes = ["origin"]\n')
+    config.load(cfg.root)
+    store.answer(store.kv_get('safety.config')['qid'], 'Approve')
+    cfg = config.load(cfg.root)
+    command = (f'git push --repo={foreign} --all' if attack == 'repository_override'
+               else 'git push origin +refs/heads/*:refs/heads/*')
+    assert guard('Bash', {'command': command}, cfg.root, cfg.safety)
+    env = dict(os.environ, TROUPE_ROOT=str(cfg.root), TROUPE_AGENT='builder-1')
+    result = subprocess.run([sys.executable, '-m', 'troupe.safety'], input=json.dumps({
+        'tool_name': 'Bash', 'tool_input': {'command': command}, 'cwd': str(cfg.root)}),
+        text=True, capture_output=True, env=env, check=True)
+    assert json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert gitops.git(origin, 'rev-parse', 'refs/heads/main') == tip
+    assert not gitops.git(foreign, 'show-ref', check=False)
+    assert guard('Bash', {'command': 'git push origin HEAD:feature'}, cfg.root, cfg.safety) is None
+    gitops.git(cfg.root, 'push', 'origin', 'HEAD:feature')
+    assert gitops.git(origin, 'rev-parse', 'refs/heads/feature') == before

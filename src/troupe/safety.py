@@ -111,7 +111,7 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         if any(x in ('-C', '-c') or x.startswith(('--git-dir', '--work-tree', '--config-env')) for x in tail):
             return 'Push repository/config overrides require human review'
         tail = tail[tail.index('push') + 1:]
-        if any(x in tail for x in ('--repo', '-C', '-c')):
+        if any(x == '--repo' or x.startswith('--repo=') for x in tail):
             return 'Push overrides require human review'
         positional = [x for x in tail if not x.startswith('-') and x not in (';', '&&', '||')]
         remote = positional[0] if positional else 'origin'
@@ -126,7 +126,7 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         if any(x == '--mirror' or x.startswith('--force') or re.match(r'^-[^-]*f', x) or x.startswith('+') for x in tail):
             # Without an explicit safe destination, force can affect the default branch.
             refs = positional[1:]
-            if not refs or any(x.lstrip('+').split(':')[-1].removeprefix('refs/heads/') in ('main', 'master', 'HEAD', default) for x in refs):
+            if not refs or any('*' in x or '?' in x or '[' in x or x.lstrip('+').split(':')[-1].removeprefix('refs/heads/') in ('main', 'master', 'HEAD', default) for x in refs):
                 return 'Force push to the default branch'
     return None
 
