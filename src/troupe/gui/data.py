@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 import threading
 from pathlib import Path
@@ -25,6 +24,9 @@ class Data:
         self.catchup_cost = 0.0
         self.catchup_detail = None
         self._focused = False
+        self._focus_at = 0.0
+        self.new_help = []
+        self._help_event = None
         self._seen_at = 0.0
         self.service_action = None
         self.service_error = ""
@@ -67,6 +69,11 @@ class Data:
 
     def focus_changed(self, focused: bool) -> None:
         stamp = time.time()
+        if focused and stamp - self._focus_at >= 1:
+            self.store.kv_set('gui_focused_at', stamp)
+            self._focus_at = stamp
+        elif not focused and self._focused:
+            self.store.kv_set('gui_focused_at', 0)
         if focused and not self._focused:
             since = self.store.kv_get("human_last_seen")
             if since and stamp - since >= 600:
@@ -144,6 +151,10 @@ class Data:
         for event in self.events:
             event["text"] = self.names.event_text(event["text"])
         answer_event = s.max_event_id()
+        if self._help_event is not None:
+            self.new_help += s.q("SELECT * FROM events WHERE id>? AND id<=? AND kind='needs_help' ORDER BY id",
+                                self._help_event, answer_event)
+        self._help_event = answer_event
         if self._answer_event is not None:
             self.new_chat_answers += s.q(
                 "SELECT q.* FROM events e JOIN questions q ON e.ref='q:' || q.id "
@@ -316,15 +327,6 @@ class Data:
         self.refresh(force=True)
         return tid
 
-    def notify(self, title: str, body: str) -> None:
-        """macOS notification (best effort)."""
-        safe_t = title.replace('"', "'")[:80]
-        safe_b = body.replace('"', "'").replace("\n", " ")[:180]
-        try:
-            subprocess.Popen(["osascript", "-e", f'display notification "{safe_b}" with title "{safe_t}"'],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
-            pass
 
 
 def catchup_items(events: list[dict], questions: list[dict], runs: list[dict], memories: list[dict], since: float) -> dict:

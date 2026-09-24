@@ -95,6 +95,7 @@ class App:
             if auto_shot and frames == int(os.environ.get("TROUPE_SHOT_FRAME", "90")):
                 screenshot(auto_shot)
                 break
+        self.data.focus_changed(False)
         self.data.human_seen()
         rl.close_window()
 
@@ -105,13 +106,16 @@ class App:
             d.service_error = ""
         from .views import on_new_messages
 
+        if d.new_help:
+            if rl.is_window_focused():
+                for event in d.new_help:
+                    self.toast(f"{d.name_of(event['agent'])}: {d.names.event_text(event['text'])[:100]}", T.ORANGE)
+            d.new_help = []
         if d.new_messages:
             on_new_messages(self, d.new_messages)
             for m in d.new_messages:
                 if m["recipient"] == "human" and m["kind"] == "chat" and m["sender"] != self.chat_with_visible():
                     self.toast(f"{d.name_of(m['sender'])}: {m['body'][:90]}", d.color_of(m["sender"]))
-                    if not rl.is_window_focused():
-                        d.notify(f"troupe · {d.name_of(m['sender'])}", m["body"])
             d.new_messages = []
         if d.new_chat_answers:
             for q in d.new_chat_answers:
@@ -120,8 +124,6 @@ class App:
         if d.new_questions:
             for q in d.new_questions:
                 self.toast(f"{d.name_of(q['asker'])} needs you: {q['question'][:90]}", d.color_of(q["asker"]))
-                if not rl.is_window_focused():
-                    d.notify(f"troupe · {d.name_of(q['asker'])} asks", q["question"])
             d.new_questions = []
 
     def chat_with_visible(self) -> str | None:
