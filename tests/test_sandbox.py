@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from troupe import gitops
 from troupe.config import AgentCfg
-from troupe.runners import ClaudeRunner, CodexRunner, FileTools, RunSpec, child_env
+from troupe.runners import ClaudeRunner, CodexRunner, FileTools, RunSpec, child_env, codex_config_toml
 from troupe.sandbox import DEFAULT_ROLE_PROFILES, OTHERS_PROFILE, parse_role_profiles, role_profile, writable_roots
 from troupe.sandbox import macos as sandbox_macos
 from troupe.sandbox.claude import permission_args
@@ -199,6 +200,134 @@ def test_codex_runner_argv_uses_sandbox_not_dangerous_flag(project, monkeypatch,
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert "workspace-write" in args
     assert "approval_policy=never" in args
+
+
+# ── #96: MCP approval + git-worktree writable roots ─────────────────────────
+def test_codex_config_toml_approves_troupes_own_mcp_server():
+    from troupe.config import Config
+    cfg = Config(root=Path("/proj"), project="p", agents=[])
+    toml = codex_config_toml(cfg, AgentCfg("builder-1", "builder", "Builder", "codex"))
+    assert 'default_tools_approval_mode = "approve"' in toml
+    assert toml.index("[mcp_servers.troupe]") < toml.index('default_tools_approval_mode = "approve"') < \
+           toml.index("[mcp_servers.troupe.env]")
+
+
+@pytest.mark.parametrize("role", ["builder", "qa"])
+def test_codex_runner_argv_pre_approves_only_troupes_mcp_server(project, monkeypatch, tmp_path, role):
+    """#96: found live (task summary transcript) that codex's `AppToolApproval` values (auto/prompt/
+    writes) all still hit "MCP tool call requires approval, but approval policy is never" under
+    approval_policy=never — only the literal "approve" actually lets a troupe tool call through.
+    REQ-BE-015 configures no other MCP server, so this can't reach anything else."""
+    cfg, _ = project
+    a = AgentCfg(f"{role}-1", role, role.title(), "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["args"] = args
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "mcp_servers.troupe.default_tools_approval_mode=approve" in seen["args"]
+
+
+def test_extra_add_dirs_never_grants_anything_under_git(tmp_path):
+    """#96 rework: QA reproduced three real sandbox escapes (commondir rewrite → arbitrary code
+    execution on the next trusted git call; HEAD indirection → main moves via a trusted commit;
+    loose-object replacement → silent history tampering) from an earlier version of this task that
+    granted a worktree's private gitdir + objects/ so codex could `git commit`. Nothing under
+    `.git` may ever become writable from the sandbox again, regardless of what a caller passes in —
+    this is a defense-in-depth check inside `extra_add_dirs` itself, not just "no caller does it
+    today". Codex agents don't self-commit; `complete_task` commits the worktree from troupe's own
+    trusted MCP server process instead."""
+    cwd = tmp_path / "wt"
+    roots = [
+        tmp_path / ".troupe",
+        cwd,
+        tmp_path / ".git" / "worktrees" / "wt",
+        tmp_path / ".git" / "objects",
+        cwd / ".git",  # a worktree's own .git is a file, but guard the dir case too
+    ]
+    args = extra_add_dirs(roots, primary_cwd=cwd)
+    assert args == ["--add-dir", str(tmp_path / ".troupe")]
+
+
+@pytest.mark.parametrize("role", ["builder", "qa"])
+def test_codex_runner_argv_never_contains_a_git_path(project, monkeypatch, tmp_path, role):
+    """#96 rework: the regression QA asked for — no `--add-dir` (or any other argv token) under
+    `.git`, for either role that works in a task worktree."""
+    cfg, _ = project
+    branch, wt = gitops.create_worktree(cfg.root, cfg.root / ".troupe" / "worktrees", 2, "another task")
+    a = AgentCfg(f"{role}-1", role, role.title(), "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["args"] = args
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", wt, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    args = seen["args"]
+    add_dir_values = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+    assert add_dir_values  # sanity: this role does get *some* --add-dir (.troupe/), just never .git
+    assert not any(".git" in Path(v).parts for v in add_dir_values)
+    assert "mcp_servers.troupe.default_tools_approval_mode=approve" in args
+
+
+def test_codex_prompt_tells_worktree_roles_not_to_self_commit(project, monkeypatch, tmp_path):
+    """#96 rework: QA/lead's requirement that codex builders (and qa, also works_in_task_tree) are
+    told not to run `git commit` themselves, since their sandbox denies it — otherwise they burn
+    turns retrying a write that can never succeed. Injected into the prompt (not roles.py, which is
+    protected and backend-agnostic) since this is codex-specific."""
+    cfg, _ = project
+    a = AgentCfg("builder-1", "builder", "Builder", "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["prompt"] = prompt
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "git commit" in seen["prompt"] and "complete_task" in seen["prompt"]
+
+
+def test_codex_prompt_omits_the_git_note_for_roles_outside_a_task_tree(project, monkeypatch, tmp_path):
+    cfg, _ = project
+    a = AgentCfg("lead", "lead", "Lead", "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["prompt"] = prompt
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "codex_note" not in seen["prompt"]
 
 
 # ── claude sandbox args ───────────────────────────────────────────────────
