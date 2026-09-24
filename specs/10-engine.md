@@ -4,7 +4,12 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 
 ## Process model
-- **REQ-ENG-001 [x]** The engine runs as a background **service** per project, and the GUI is a window that
+> **Lifecycle change (human, 2026-09-24): "run and everything runs, quit and everything quits."** In the default flow,
+> the TUI owns its project's engine (REQ-TUI-001), and tmux detach keeps a team working unattended. The detached
+> background service below (ENG-001/006, GUI-028) is **superseded for the default flow**. It stays available for
+> headless use (`troupe engine`, and `troupe start` for scripts). Reload and supervision (ENG-009/042, #28) are
+> **deferred**.
+- **REQ-ENG-001 [x]** (superseded for the default flow by REQ-TUI-001; kept for headless/scripted use) The engine runs as a background **service** per project, and the GUI is a window that
   attaches to it. (#24) (Human: "run you as a service then have the UI be able to break in and see what's going on".)
   Today `troupe up` runs the engine in the GUI process and stops it on close; the new behavior is:
   - `troupe up` starts a detached service (`troupe engine` in its own session, surviving the terminal) if none is
@@ -22,7 +27,8 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
 - **REQ-ENG-005 [x]** Engine heartbeat (`kv.heartbeat`) every tick; GUI shows "Engine offline" when stale >5s.
-- **REQ-ENG-006 [~]** Service control from the CLI. (#24)
+- **REQ-ENG-006 [~]** Service control from the CLI. (#24) (Superseded for the default flow: the TUI's quit and SIGHUP
+  stop its engine, REQ-TUI-001. These commands remain for a headless `troupe engine`/`troupe start` service.)
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
@@ -38,7 +44,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 - **REQ-ENG-008 [x]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
-- **REQ-ENG-009 [ ]** (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
+- **REQ-ENG-009 [ ]** **DEFERRED** (human lifecycle change 2026-09-24; #28 on hold) (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
   - Triggered by `troupe reload`, SIGHUP to the service, or automatically when the installed troupe changes: the
     service checks about every 30 s for a new version or changed package files (e.g. after
     `uv tool install --reinstall`).
@@ -51,7 +57,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     unchanged). A reload request during a reload is ignored.
   - Test: while draining nothing launches, in-flight runs complete, the timeout interrupts, and the version-change
     detector fires once per change.
-- **REQ-ENG-042 [ ]** (#28) Crash supervision.
+- **REQ-ENG-042 [ ]** **DEFERRED** (with #28; the TUI shows an offline engine and offers a restart, REQ-TUI-001) (#28) Crash supervision.
   - The service is a small supervisor process that holds the lock and runs the engine as a child. If the engine
     exits unexpectedly (non-zero, or killed, including `kill -9`), the supervisor restarts it with backoff
     (1 s, 2 s, 4 s … max 60 s), and recovery (ENG-004) marks its runs interrupted.
@@ -341,7 +347,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     words> → what was delivered, where to look".
   - Test: the ★ flag and quote, dispatch order, the cancel/scope guard, escalation at max attempts, and the Done
     report. Screenshot of the badge and filter.
-- **REQ-ENG-049 [ ]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
+- **REQ-ENG-049 [x]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
   wake-ups via local-LLM mail triage.
   - Before a `messages` wake, a local model (`[triage] enabled, model`, using the `local` backend) reads the pending
     mail, the agent's role and its active task title. It returns `{wake_now, reason, digest}`.
@@ -350,7 +356,13 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - **Hard rules the model can't override:** human mail, questions to the agent, review requests, mail about the
     agent's own active task, and ≥ N pending mails always wake. If the local model is down or errors, the agent
     wakes as today.
-  - Several pending mails become one wake.
+  - Several pending mails become one wake. `[triage]` defaults: `enabled=false`, `model=""` (use the local
+    agent model), `max_pending=5`, `timeout=5.0` seconds (maximum 30). The count guard includes FYIs.
+  - Classification is asynchronous and cached per pending batch/config; pending classification never blocks
+    heartbeat/chat. New mail invalidates the batch. Holds do not mark mail read and do not themselves
+    trigger cadence wakes. Questions/review words and explicit own-task links bypass conservatively.
+  - Hourly metrics exclude chat; runs with a task link or task/review reason count as work, others as coordination.
+    Synthetic regression replay: 28 arrivals → 8 message wakes; this is not a measured deployment saving.
   - Metrics: runs record `wake_reason` and tokens, and the Usage/Pulse view shows coordination vs work tokens per hour.
   - Test: with a mocked model, a hold, the hard rules and the fallback. A replay of an hour of mail shows ≥ 50% fewer
     `messages` wakes.
@@ -376,3 +388,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-24 — new ENG-047 needs-help notifications (#35), ENG-048 ★ human requests (#45), ENG-049 local-LLM mail
   triage (#46). These tasks were in flight without REQs.
 - 2026-09-24 — ENG-050 run watchdog (stall/timeout/zombie), one REQ for the overlapping #61 and #62 briefs.
+- 2026-09-24 — lifecycle change: the TUI owns the engine ("quit and everything quits"). ENG-001/006 superseded for the default
+  flow, ENG-009/042 deferred (human via pm msg #431).

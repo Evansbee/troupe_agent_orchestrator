@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 
 # Serializes operations on the main checkout across engine threads.
-MAIN_LOCK = threading.Lock()
+MAIN_LOCK = threading.RLock()
 
 GITIGNORE_LINES = [".troupe/", ".DS_Store", "__pycache__/", ".venv/", "node_modules/"]
 
@@ -45,6 +45,8 @@ def ensure_repo(root: Path) -> None:
         gi.write_text("\n".join(existing + missing).strip() + "\n")
     if not has_commits(root):
         git(root, "add", "-A")
+        from .safety import scan_staged
+        scan_staged(root)
         git(root, "commit", "--allow-empty", "-m", "troupe: initial commit")
 
 
@@ -75,10 +77,18 @@ def create_worktree(root: Path, worktrees_dir: Path, task_id: int, title: str) -
 
 def commit_all(cwd: Path, message: str) -> bool:
     """Stage and commit everything; returns True if a commit was made."""
+    if (cwd / ".git").is_dir() and (cwd / ".troupe" / "troupe.toml").exists():
+        from .config import load_runtime
+        from .store import Store
+        from .gates import hold_main
+        cfg = load_runtime(cwd)
+        hold_main(cfg, Store(cfg.db_path), "system", time.time_ns())
     git(cwd, "add", "-A")
     if not git(cwd, "status", "--porcelain"):
         return False
-    git(cwd, "commit", "-m", message, "--no-verify")
+    from .safety import scan_staged
+    scan_staged(cwd)
+    git(cwd, "commit", "-m", message)
     return True
 
 
@@ -97,8 +107,8 @@ def merge_branch(root: Path, branch: str, message: str) -> tuple[bool, str]:
     with MAIN_LOCK:
         try:
             commit_all(root, "troupe: snapshot before merge")
-        except GitError:
-            pass
+        except GitError as e:
+            return False, str(e)
         p = subprocess.run(["git", "merge", "--no-ff", "-m", message, branch], cwd=root,
                            capture_output=True, text=True)
         if p.returncode == 0:

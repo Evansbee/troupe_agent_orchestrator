@@ -116,6 +116,9 @@ class App:
         if d.new_messages:
             on_new_messages(self, d.new_messages)
             for m in d.new_messages:
+                if m["recipient"] == "human" and m["kind"] == "needs_help":
+                    self.toast(m["body"][:100], T.RED)
+                    d.notify("troupe · Safety needs attention", m["body"])
                 if m["recipient"] == "human" and m["kind"] == "chat" and m["sender"] != self.chat_with_visible():
                     self.toast(f"{d.name_of(m['sender'])}: {m['body'][:90]}", d.color_of(m["sender"]))
             d.new_messages = []
@@ -165,6 +168,8 @@ class App:
     def shortcuts(self) -> None:
         ui = self.ui
         K = rl.KeyboardKey
+        if ui.cmd and (rl.is_key_down(K.KEY_LEFT_SHIFT) or rl.is_key_down(K.KEY_RIGHT_SHIFT)) and rl.is_key_pressed(K.KEY_PERIOD):
+            self.data.stop_now()
         if ui.cmd and ui.focus is None:
             for i, name in enumerate(TABS):
                 if rl.is_key_pressed(K.KEY_ONE + i):
@@ -205,12 +210,14 @@ class App:
         x += ui.text(x, r.cy - 11, "troupe", 19, T.TEXT, "bold") + 12
         x += ui.text(x, r.cy - 8, self.cfg.project, 14, T.TEXT_DIM, "med") + 22
         control_label = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
-        controls_width = ui.button_w(control_label) + 16 + ui.button_w("+ Task")
+        controls_width = ui.button_w(control_label) + 16 + ui.button_w("+ Task") + ui.button_w("Stop everything") + 8
         if d.engine_alive:
             controls_width += ui.button_w("Stop team") + 8
         metrics_right = r.r - T.GAP - controls_width - 16
         # engine state pill
-        if not d.engine_alive:
+        if d.kv.get("stopped"):
+            label, col = "Stopped", T.RED
+        elif not d.engine_alive:
             label, col = "Engine offline", T.RED
         elif d.paused:
             label, col = "Paused", T.YELLOW
@@ -281,6 +288,10 @@ class App:
             bx -= bw + 8
             if ui.button("stopteam", Rect(bx, r.cy - 16, bw, 32), "Stop team"):
                 self.confirm_stop = True
+        bw = ui.button_w("Stop everything")
+        bx -= bw + 8
+        if ui.button("stop_now", Rect(bx, r.cy - 16, bw, 32), "Stop everything", tip="Stop all agents, including chat  ⌘⇧."):
+            d.stop_now()
         bw = ui.button_w("+ Task")
         bx -= bw + 8
         if ui.button("newtask", Rect(bx, r.cy - 16, bw, 32), "+ Task", tip="Add a task to the board"):
