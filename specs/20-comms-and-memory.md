@@ -136,6 +136,14 @@ then you figure out if he should know it or if you need my involvement."
   - Superseded memories are excluded from wake prompts and `recall` results by default (`recall(...,
     include_superseded=True)` shows them); they are never deleted.
   - Superseding a nonexistent id, or one already superseded, returns `ERROR:` with the current successor's id.
+  - **The human's memories are theirs (Principle 0; found by QA in #8 review).** An agent superseding a memory that is
+    **pinned**, **authored by the human**, or of kind **`preference`** gets
+    `ERROR: that's the human's — ask the human (ask_human) instead`. Superseding is a de-facto delete, and
+    REQ-COM-033 lets only the human delete.
+    - The human's own supersede, edit and delete stay allowed.
+    - Agent-to-agent supersedes of ordinary decisions are unaffected.
+    - Test: an agent superseding a human-pinned preference fails and the preference stays in prompts; the human's
+      supersede works.
   - The Memory view shows superseded items struck through with a link to their successor.
 - **REQ-COM-033 [ ]** Human memory controls in the Memory view. (#8)
   - Pin: pinned memories appear in every wake prompt regardless of age, before recent decisions. Pinning does not
@@ -242,3 +250,4 @@ then you figure out if he should know it or if you need my involvement."
 - 2026-09-24 — COM-013 charter line recorded as human-approved (question #12).
 - 2026-09-24 — COM-027..029 the PM as the human's single point of contact: escalations, PM triage tools, safety bypass
   and auto-forward (#65, human request).
+- 2026-09-24 — COM-032: agents can't supersede pinned, human-authored or `preference` memories (QA finding on #8).
