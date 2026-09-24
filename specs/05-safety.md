@@ -102,6 +102,14 @@ normal project work, including pushing to the project's own remote with the huma
   - Test: a task touching `roles.py` stays unmerged after QA approval until the card is approved; reject sends it back;
     a spec-role edit to `specs/05-safety.md` in main is held as a patch.
 - **REQ-SAFE-021 [x]** The `[safety]` section itself is guarded, and so is `[git] check` / `check_timeout` (REQ-ENG-040).
+  - [ ] (#107) `[git] doc_only_paths` is guarded the same way. An agent widening it (e.g. to `**`) would let code
+    changes on main skip the merge gate's re-check. Test: a hand edit of `doc_only_paths` keeps the approved
+    globs enforced and raises the approval card.
+  - [ ] (#109) The approval card shows **every** difference. After the diff of known fields (protected, remotes,
+    secret_allow, roles, check, check_timeout, doc_only_paths), any other difference between approved and
+    proposed, including unknown keys, is listed under "other changes:" with the raw approved/proposed values. It
+    is never dropped because a known field also changed. Test: a new remote plus an unknown `[safety]` key, and a
+    changed `check` plus an unknown top-level key, each show the known diff and the "other changes" section.
   Otherwise an agent could weaken the merge gate, e.g. set `check = "true"`. (This answers pm's question about
   whether the architect should review the merge-gate config: the human guards it instead.)
   - The engine keeps the hash of the last human-approved `[safety]` and `[git] check` / `check_timeout` values in kv. If the file's section changes by any
@@ -258,3 +266,5 @@ Wake-prompt footer: `Principle 0 applies: the human comes first.`
 - 2026-09-24 — Appendix synced to #65's charter line (report_concern).
 - 2026-09-24 — SAFE-050 codex MCP and git (#96): troupe's MCP server alone is pre-approved; nothing under `.git` is ever
   writable from a sandbox (QA reproduced three escapes); `complete_task` commits.
+- 2026-09-24 — SAFE-021: `[git] doc_only_paths` guarded (#107); approval cards list every difference, including
+  unknown keys (#109).

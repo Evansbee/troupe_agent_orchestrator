@@ -248,7 +248,7 @@ reuse "needs you" for a card whose only button is "OK".
 | `check_failed` | "*&lt;assignee&gt;*'s task failed its check" | task title | **Open task** (primary) | `1` Open task | `ORANGE` |
 | `backoff` / `stalled` / `timeout` | "*&lt;agent&gt;* needs a nudge" | the notifier's own text (already agent-facing, e.g. "Repeated runs failed; retry backoff reached its cap") | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `ORANGE` |
 | `crash_loop` | "*&lt;agent&gt;* keeps crashing" | same notifier text | **Open transcript** (primary) · **Wake now** · **Stop** (danger) | `1` Open transcript · `2` Wake now · `3` Stop | `RED` (worse than a plain backoff) |
-| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited, back in 4h" | **OK** | `1` OK | `ORANGE` |
+| `rate_limit` | *(heads-up title, no verb line)* | "Claude limited · resets in 4h" | **OK** | `1` OK | `ORANGE` |
 | `throttle` | *(heads-up title)* | the throttle reason (existing text) | **OK** | `1` OK | `ORANGE` |
 | `providers` | *(heads-up title)* | "All of &lt;agent&gt;'s providers are unavailable" (existing text) | **OK** | `1` OK | `RED` (strictly worse than one rate-limited provider, matches `pulse.md`'s severity ordering) |
 | `concern` | "troupe needs you" (no reporter, no agent name — see below) | "An agent raised a concern. Run `troupe concerns` to read it." (existing text, unchanged) | **Got it** | `1` Got it | `RED` (matches the Concerns badge color already decided for #78) |
@@ -288,6 +288,38 @@ Buttons follow the existing kind convention: the primary navigation action is `p
 - Dismissing an awareness-only card (`rate_limit`/`throttle`/`providers`) removes it for that key and it
   doesn't reappear until the state changes again (new reset time / new throttle episode) — same "dismiss
   = seen" rule the notifier already applies, not a new one.
+
+### Pinning & priority order (#109)
+
+Confirmed: pin, and it's a general Needs-you rule, not a safety-only special case. Today the panel only
+renders `questions` (newest-first, open-first), so #109's immediate scope is just `kind='safety'`; once
+#97 lands the merged list (questions + notifier-pending cards), the same rule applies across all of it —
+one ordering rule, not two that'll drift apart later.
+
+- **What pins:** exactly REQ-COM-029's existing must-deliver set that can appear as a *card* —
+  `safety` approval cards, `crash_loop`, and `concern`. (The must-deliver set's fourth member, the kill
+  switch/stop event, isn't a card at all — it's the full-screen red KILLED takeover, #78/SAFE-011 — so
+  it's out of scope here by construction.) Ordinary `blocked`/`check_failed`/`backoff`/`stalled`/
+  `timeout`/`rate_limit`/`throttle`/`providers`/`chat`/`question`/`idea` cards are unaffected: newest-first,
+  below the pinned group, exactly as today.
+- **Order within the pinned group:** `concern` first, then `safety`, then `crash_loop` — Principle 0
+  (something acting against the human's interest, possibly including the PM) outranks a protected-merge
+  approval, which outranks the team's own stability. In practice these rarely co-occur; the case that
+  actually matters day-to-day is one or more `safety` cards sitting above ordinary questions.
+- **Order *within* the safety group** (#109's literal question — 2+ pending safety approvals): **oldest
+  first**, not newest-first like the rest of the panel. These gate a merge; a builder may already be
+  blocked on the oldest one, and newest-first would let it rot at the bottom of even the pinned tier.
+  `crash_loop` cards (when #97 adds them) stay newest-first within their own group — an older crash card
+  is superseded by the dedup in #91's crash watcher, so the most recent is the one that matters.
+- **Accent:** a `T.RED` left edge bar (5px, thicker than a normal card's 3px) instead of the asker's role
+  color, plus the word "Pinned" in the title line (REQ-TUI-011: color never carries meaning alone). Not
+  `T.YELLOW`/gold — that's already the Needs-you panel's own border color, so a gold card accent would
+  read as "part of the panel chrome," not "more urgent than its siblings." `RED` matches every other
+  "can't-ignore" state already in the app (blocked task status, crash-loop engine pill, `providers`
+  severity) and reads as distinct against the gold panel border. In the TUI's 80×24 collapsed layout,
+  pinned cards still sort first within the Needs-you tab — same rule, just fewer cards visible at once.
+- **Raylib GUI:** same accent + ordering if it's a small change to the existing sort key (lead's "if
+  trivial") — not worth a special-cased layout in a client that's otherwise frozen (REQ-COM-029).
 
 ## Upcoming interactions (visual treatment)
 
@@ -392,11 +424,11 @@ controls that don't get used in time.
   pill) verbatim — same shape, same `alpha(color, 0.14)` fill + colored dot + label — one instance per
   currently-limited backend, laid out in a row immediately after the engine-state pill. Color: `ORANGE`
   (matches "Throttled" convention already established for capacity pressure; reserve `RED` for
-  failure/blocked states, not rate limiting). Label: `"<backend> limited · back in 4h"` (countdown format,
-  #105). A pill disappears the frame its backend's limit clears — no exit animation needed, these are
-  low-frequency.
+  failure/blocked states, not rate limiting). Label: `"<backend> limited · resets in 4h"` (countdown
+  format, #105 — matches specs/10-engine.md REQ-ENG-016's canonical wording). A pill disappears the frame
+  its backend's limit clears — no exit animation needed, these are low-frequency.
 - In Chat, a working bubble for an agent on a limited backend shows the same limited-until copy inline
-  (`_typing`'s existing bubble, swap the activity line for `"Claude limited, back in 4h"` in place of
+  (`_typing`'s existing bubble, swap the activity line for `"Claude limited · resets in 4h"` in place of
   `"thinking…"`) rather than a separate banner — one state, shown where the user is already looking.
 
 ## Header rows: space allocation rule
