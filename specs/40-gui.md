@@ -117,7 +117,7 @@ the Mac app.
   and the dock badge comes with the Mac app, REQ-MAC.)
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered.
-- **REQ-GUI-028 [x]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+- **REQ-GUI-028 [x]** (raylib behavior; in the TUI flow the catch-up is REQ-TUI-013) (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
     rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions

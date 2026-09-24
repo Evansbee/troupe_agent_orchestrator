@@ -4,7 +4,12 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 
 ## Process model
-- **REQ-ENG-001 [x]** The engine runs as a background **service** per project, and the GUI is a window that
+> **Lifecycle change (human, 2026-09-24): "run and everything runs, quit and everything quits."** In the default flow,
+> the TUI owns its project's engine (REQ-TUI-001), and tmux detach keeps a team working unattended. The detached
+> background service below (ENG-001/006, GUI-028) is **superseded for the default flow**. It stays available for
+> headless use (`troupe engine`, and `troupe start` for scripts). Reload and supervision (ENG-009/042, #28) are
+> **deferred**.
+- **REQ-ENG-001 [x]** (superseded for the default flow by REQ-TUI-001; kept for headless/scripted use) The engine runs as a background **service** per project, and the GUI is a window that
   attaches to it. (#24) (Human: "run you as a service then have the UI be able to break in and see what's going on".)
   Today `troupe up` runs the engine in the GUI process and stops it on close; the new behavior is:
   - `troupe up` starts a detached service (`troupe engine` in its own session, surviving the terminal) if none is
@@ -22,7 +27,8 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
 - **REQ-ENG-005 [x]** Engine heartbeat (`kv.heartbeat`) every tick; GUI shows "Engine offline" when stale >5s.
-- **REQ-ENG-006 [~]** Service control from the CLI. (#24)
+- **REQ-ENG-006 [~]** Service control from the CLI. (#24) (Superseded for the default flow: the TUI's quit and SIGHUP
+  stop its engine, REQ-TUI-001. These commands remain for a headless `troupe engine`/`troupe start` service.)
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
@@ -38,7 +44,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 - **REQ-ENG-008 [x]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
-- **REQ-ENG-009 [ ]** (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
+- **REQ-ENG-009 [ ]** **DEFERRED** (human lifecycle change 2026-09-24; #28 on hold) (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
   - Triggered by `troupe reload`, SIGHUP to the service, or automatically when the installed troupe changes: the
     service checks about every 30 s for a new version or changed package files (e.g. after
     `uv tool install --reinstall`).
@@ -51,7 +57,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     unchanged). A reload request during a reload is ignored.
   - Test: while draining nothing launches, in-flight runs complete, the timeout interrupts, and the version-change
     detector fires once per change.
-- **REQ-ENG-042 [ ]** (#28) Crash supervision.
+- **REQ-ENG-042 [ ]** **DEFERRED** (with #28; the TUI shows an offline engine and offers a restart, REQ-TUI-001) (#28) Crash supervision.
   - The service is a small supervisor process that holds the lock and runs the engine as a child. If the engine
     exits unexpectedly (non-zero, or killed, including `kill -9`), the supervisor restarts it with backoff
     (1 s, 2 s, 4 s … max 60 s), and recovery (ENG-004) marks its runs interrupted.
@@ -376,3 +382,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-24 — new ENG-047 needs-help notifications (#35), ENG-048 ★ human requests (#45), ENG-049 local-LLM mail
   triage (#46). These tasks were in flight without REQs.
 - 2026-09-24 — ENG-050 run watchdog (stall/timeout/zombie), one REQ for the overlapping #61 and #62 briefs.
+- 2026-09-24 — lifecycle change: the TUI owns the engine ("quit and everything quits"). ENG-001/006 superseded for the default
+  flow, ENG-009/042 deferred (human via pm msg #431).
