@@ -70,7 +70,7 @@ should be able to move to codex or even local models as defined in the setup yam
   - A provider that reports nothing is treated as uncapped, with a one-time event saying so. Local is never capped.
   - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
   - Test: parsing each backend's usage events into per-window %, and cap comparison.
-- **REQ-BE-016 [ ]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
+- **REQ-BE-016 [x]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
   - `[budget] claude_cap_percent` (default 50; 0 = off) in `troupe.toml`. If the latest Claude usage in the 5h or 7d
     window is ≥ the cap, no new **autonomous** runs start for claude-backed agents. Codex and local agents are
     unaffected, and in-flight runs finish.

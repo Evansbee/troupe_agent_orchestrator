@@ -57,6 +57,8 @@ class Budget:
     max_runs_per_hour: int = 40
     max_usd_per_day: float = 0.0  # 0 = unlimited (claude-reported cost)
     max_task_attempts: int = 4
+    claude_cap_percent: float = 50  # REQ-BE-016: pause new autonomous claude runs at/above this
+    # 5h/7d utilization; 0 = off
 
 
 @dataclass
@@ -146,6 +148,7 @@ max_concurrent = 3        # agent runs at once (a chat with the human always get
 max_runs_per_hour = 40    # autonomous runs per rolling hour (chat is exempt)
 max_usd_per_day = 0       # claude-reported cost cap per rolling 24h; 0 = unlimited
 max_task_attempts = 4     # builder sessions on one task before it's marked blocked
+claude_cap_percent = 50   # pause new autonomous claude runs at/above this 5h/7d utilization; 0 = off
 
 [backends]
 claude_command = "claude"

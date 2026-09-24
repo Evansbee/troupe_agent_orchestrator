@@ -408,6 +408,10 @@ class Data:
         providers = []
         for provider in ("claude", "codex", "local"):
             until = s.kv_get("limit." + provider) or 0
+            reason = (s.kv_get(f"limit_meta.{provider}") or {}).get("reason", "provider")
+            # REQ-BE-016 MVP cap: applies to every claude window alike; #38's provider_limits
+            # (per-window caps) takes precedence once configured.
+            mvp_cap = self.cfg.budget.claude_cap_percent if provider == "claude" else 0
             windows = []
             raw = (
                 (s.kv_get("claude_ratelimit") or {}).get("unifiedWindows", {})
@@ -431,14 +435,17 @@ class Data:
                     dict(
                         name={"five_hour": "5h", "seven_day": "7d"}.get(key, key),
                         used_pct=float(window.get("utilization") or 0) * 100,
-                        cap_pct=self.cfg.provider_limits.get(provider, {}).get(key),
+                        cap_pct=self.cfg.provider_limits.get(provider, {}).get(key) or (mvp_cap or None),
                         resets_at=reset,
                     )
                 )
+            capped = bool(until > time.time() and reason == "cap")
             providers.append(
                 dict(
                     provider=provider,
                     limited_until=until if until > time.time() else None,
+                    capped=capped,
+                    cap_percent=mvp_cap or None,
                     windows=windows,
                 )
             )

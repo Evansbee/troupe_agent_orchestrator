@@ -11,6 +11,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 from . import gitops, config as config_mod
@@ -228,6 +229,7 @@ class Engine(MergeGateMixin):
                 if runner.proc is None:
                     running_task.cancel()
             return
+        self.check_claude_cap()
         if self._merge_task is not None and self._merge_task.done():
             try:
                 self._merge_task.result()
@@ -435,7 +437,10 @@ class Engine(MergeGateMixin):
     def backend_limited(self, backend: str) -> bool:
         return (self.store.kv_get(f"limit.{backend}", 0) or 0) > now()
 
-    def record_limit(self, backend: str, until: float, reported: bool = True) -> None:
+    def limit_reason(self, backend: str) -> str:
+        return (self.store.kv_get(f"limit_meta.{backend}", {}) or {}).get("reason", "provider")
+
+    def record_limit(self, backend: str, until: float, reported: bool = True, reason: str = "provider") -> None:
         key = f"limit.{backend}"
         previous = self.store.kv_get(key, 0) or 0
         meta = self.store.kv_get(f"limit_meta.{backend}", {})
@@ -447,7 +452,47 @@ class Engine(MergeGateMixin):
             if was_reported == reported:
                 until = max(previous, until)
         self.store.kv_set(key, until)
-        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported})
+        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported, "reason": reason})
+
+    def check_claude_cap(self) -> None:
+        """REQ-BE-016 (#72): an MVP usage cap. If claude's latest known 5h/7d utilization (the same
+        claude_ratelimit data the usage meters read) is at or above `[budget] claude_cap_percent`,
+        block new autonomous claude runs via the existing per-backend limit mechanism (reason
+        "cap") until that window's reset. Chat is exempt (see launch()) — the human is present and
+        can decide — but the header shows it as over the cap.
+
+        Once triggered, this doesn't re-check until the limit clears, and even then won't re-cap
+        off the *same* stale snapshot: nothing refreshes claude_ratelimit while claude is capped
+        (no runs happen to report fresh usage), so re-triggering on stale data would cap forever.
+        Letting one tick through on stale data gives a real run a chance to report a fresh reading.
+        """
+        cap = self.cfg.budget.claude_cap_percent
+        if not cap or self.backend_limited("claude"):
+            return
+        snapshot = self.store.kv_get("claude_ratelimit") or {}
+        snapshot_at = snapshot.get("at")
+        if snapshot_at is not None and snapshot_at == self.store.kv_get("claude_cap_snapshot_at"):
+            return
+        worst_pct, worst_until = 0.0, None
+        for window in (snapshot.get("unifiedWindows") or {}).values():
+            pct = float(window.get("utilization") or 0) * 100
+            if pct < cap or pct < worst_pct:
+                continue
+            reset = window.get("resetsAt") or window.get("resets_at") or window.get("reset")
+            if isinstance(reset, str):
+                try:
+                    reset = datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    reset = None
+            worst_pct, worst_until = pct, reset
+        if worst_pct < cap:
+            return
+        until = worst_until if worst_until and worst_until > now() else now() + 900
+        self.record_limit("claude", until, reported=True, reason="cap")
+        self.store.kv_set("claude_cap_snapshot_at", snapshot_at)
+        self.store.event("system", "providers",
+                         f"Claude usage cap engaged: {worst_pct:.0f}% >= {cap}% — new autonomous claude runs "
+                         f"paused until {time.strftime('%H:%M', time.localtime(until))} (chat still works)")
 
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:
@@ -460,7 +505,12 @@ class Engine(MergeGateMixin):
         review_queue = [t for t in s.tasks(("review",))]
         for a in self.cfg.agents:
             row = db_agents.get(a.id)
-            if a.id in self.running or not row or not row["enabled"] or self.backend_limited(a.backend):
+            if a.id in self.running or not row or not row["enabled"]:
+                continue
+            # A "cap" limit (REQ-BE-016) blocks autonomous wakes but not chat — the human is
+            # present and can decide. A real provider limit blocks everything, chat included.
+            limited = self.backend_limited(a.backend)
+            if limited and self.limit_reason(a.backend) != "cap":
                 continue
             fails, retry_after = self.failures.get(a.id, (0, 0))
             if t_now < retry_after:
@@ -471,6 +521,8 @@ class Engine(MergeGateMixin):
                 if t_now - chat[-1]["ts"] >= CHAT_DEBOUNCE:
                     out.append(Wake(0, a, "chat", self.current_task(a)))
                 continue  # the human is typing to this agent: nothing else preempts that
+            if limited:
+                continue  # capped, and nothing for chat to preempt — no autonomous wake
             if paused:
                 continue
             if a.id in self.pokes:
@@ -499,7 +551,9 @@ class Engine(MergeGateMixin):
     # ── running an agent ──────────────────────────────────────────────────
     async def launch(self, w: Wake) -> None:
         a, s = w.agent, self.store
-        if s.kv_get("stopped") or self.backend_limited(a.backend):
+        if s.kv_get("stopped"):
+            return
+        if self.backend_limited(a.backend) and not (w.chat and self.limit_reason(a.backend) == "cap"):
             return
         self.pokes.discard(a.id)
         task = w.task
