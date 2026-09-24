@@ -32,6 +32,9 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    verifies by effect before anything merges.
 6. **Everything is visible.** A beautiful, crazy-useful desktop app shows who's doing what, how they're
    talking, the backlog, the mailboxes, the decisions, and what needs the human — live.
+   The team runs as a background service; the app is a window you open and close without stopping it,
+   and every agent has a clear handle (`role_N@project`, e.g. `builder_2@troupe`) so it's obvious who is
+   talking to whom.
 7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The team (provider, model and level per agent) is a
    live-editable `team.yaml`; budget and plumbing live in `troupe.toml`.
 
@@ -68,3 +71,5 @@ territories for parallel builders, reviewers on a different runtime than writers
   always visible). Merge gate approved (idea #1 → REQ-ENG-040).
 - 2026-09-23 — team config moves to `team.yaml` (provider/model/level, hot-reloaded); codex and claude are
   treated as peers (human feedback).
+- 2026-09-23 — engine runs as a service (GUI attaches/detaches, "while you were away" catch-up); agent
+  handles `role_N@project_name` (human).
