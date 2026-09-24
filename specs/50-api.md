@@ -279,7 +279,8 @@ Approval decisions and `stop_now` await #42 integration; service reload and supe
 `engine.api.notifications_suppressed` exposes connected-client notification ownership for #35.
 
 The stream uses an additive SQLite change journal populated by triggers, collected on the API thread every
-50 ms. Client queues have independent backpressure; a new API instance has a new epoch. Python tests cover
+50 ms. Provider/model metadata is captured when a run is inserted, so later roster edits do not rewrite
+history; runs predating this metadata return empty provider/model strings. Client queues have independent backpressure; a new API instance has a new epoch. Python tests cover
 external-process delivery latency, snapshot/paging performance, replay and backpressure, malformed/oversize
 requests, commands and idempotency, socket ownership/permissions, and lifecycle. No Swift client integration
 is claimed here.

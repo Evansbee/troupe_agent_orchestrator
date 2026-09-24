@@ -358,9 +358,9 @@ class Data:
 
     def run(self, row):
         r = {k: v for k, v in row.items() if k not in ("prompt", "system", "cwd")}
-        a = self.s.agent(r["agent"]) or {}
+        a = self.s.one("SELECT * FROM api_run_context WHERE run_id=?", r["id"]) or {}
         r.update(
-            provider=a.get("backend", ""),
+            provider=a.get("provider", ""),
             model=a.get("model", ""),
             chat=bool(r["chat"]),
             lines=self.s.scalar(
@@ -1000,6 +1000,13 @@ class APIServer:
         s.x(
             "CREATE TABLE IF NOT EXISTS api_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, name TEXT, op TEXT, row TEXT)"
         )
+        s.x(
+            "CREATE TABLE IF NOT EXISTS api_run_context(run_id INTEGER PRIMARY KEY, provider TEXT, model TEXT)"
+        )
+        s.x("""CREATE TRIGGER IF NOT EXISTS api_run_context_insert AFTER INSERT ON runs BEGIN
+            INSERT INTO api_run_context(run_id,provider,model)
+            SELECT NEW.id,backend,model FROM agents WHERE id=NEW.agent;
+            END""")
         # Triggers cover writers in other processes too. Payloads preserve rapid intermediate writes.
         for table in (
             "messages",

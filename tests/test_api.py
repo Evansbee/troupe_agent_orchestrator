@@ -517,3 +517,14 @@ def test_internal_error_logs_traceback(api, monkeypatch):
         assert c.call("ping")["pong"]
     log = (server.cfg.state_dir / "engine.log").read_text()
     assert "Traceback" in log and "test failure" in log
+
+
+def test_run_provider_is_not_rewritten_by_roster_changes(api):
+    _, s = api
+    s.set_agent("builder-1", model="original")
+    rid = s.start_run("builder-1", "task", None, "/tmp", False)
+    s.set_agent("builder-1", backend="claude", model="new")
+    with client(api) as c:
+        run = c.call("runs")["items"][0]
+        assert run["id"] == rid
+        assert (run["provider"], run["model"]) == ("local", "original")
