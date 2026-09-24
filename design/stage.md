@@ -114,6 +114,11 @@ comet head, holding the subject (or first ~40 chars of the body), horizontal (ne
 path — rotated text is unreadable in motion). The pill fades in over the first 150ms and out over the
 last 200ms of flight; for the rest of the flight it's fully legible.
 
+`design/pulse.md`'s Layer 1 adds two refinements that apply equally here: the comet head reads
+visibly larger/brighter than its tail (obvious direction), and every edge a comet crosses leaves a
+warm residual spoke-glow (brightest on arrival, fading over 3 minutes, thickness scaling with recent
+volume) — Stage inherits this exactly as Pulse does, it's the same scene.
+
 - **Flight time: 2.0s** (comfortably over the ≥1.5s floor, and slower than Pulse's 1.4s particles
   because these have text to read, not just motion to notice).
 - **Fan-out** (`to=team` or `to=role`): siblings depart the sender within a single spray, staggered
@@ -163,6 +168,11 @@ comets, and marquees are hard to read from a distance mid-scroll), the ticker sh
 it. A new entry pushes in from the right with a 300ms slide+fade; older entries shift down and dim in
 the same motion. Icon/color per event matches the existing activity-feed dot convention in `pulse_view`
 (role color for agent actions, `T.RED` for rejections/errors, `T.PINK` for new questions).
+
+**This is also where the Work panel lives on Stage.** Stage has no docked panel (chrome-free), so per
+`design/pulse.md`'s Layer 5, this same ticker's five slots draw from two pools: event entries (above,
+unchanged) and, roughly every 4th slot, a work entry — the milestone progress line or one task's
+compact stage-track. One ticker, one visual treatment, not a second competing strip.
 
 ## Quiet mode (REQ-GUI-036)
 
@@ -236,10 +246,11 @@ requirements specify (flagged to spec/lead, not blocking):
 
 ## New tokens
 
-No new RGB values. Two new *semantic* uses of existing `design/system.md` colors, both noted above:
-`T.CYAN` for the throttled/rate-limited agent-node state (elsewhere only a task-status color), and
-`T.PINK`→`T.YELLOW` gold blend for the YOU question glow (`T.PINK` already means "needs you" on the
-inbox badge; the gold shift on Stage is new but built from existing hues, not a new constant).
+No new RGB values. The `T.PINK`→`T.YELLOW` gold blend for the YOU question glow (`T.PINK` already means
+"needs you" on the inbox badge; the gold shift on Stage is new but built from existing hues, not a new
+constant) — this is still current. The earlier `T.CYAN` throttled-node treatment noted here is
+superseded by `design/pulse.md`'s provider-badge + orange tether treatment for rate-limiting; see that
+doc's own "New components" section for the current token/component list for agent states.
 
 Stage introduces its own **type scale** (the sizing table above), which is deliberately not part of
 `design/system.md`'s scale — see "Sizing is relative, not fixed."

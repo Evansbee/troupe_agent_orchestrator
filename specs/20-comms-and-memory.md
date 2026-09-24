@@ -55,6 +55,26 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - Keys 1–9 pick that option on the hovered question card, or the top card if none is hovered.
   - Ignored whenever a text input has focus (typing "3" in a reply never answers a question).
   - The answered card gets the same feedback as a click (toast + card leaves).
+- **REQ-COM-026 [ ]** (#37) Decision questions asked in live chat also live in "Needs you", and answering them in chat
+  closes the card. (Human: "that should be in a needs you box, if I answer in chat, you should close the needs you
+  box with the decision.")
+  - Charter rule, human-approved verbatim (question #7): "If you ask the human a decision question in live chat, ALSO
+    file it with ask_human (with options), so it sits in Needs you. If the human answers in chat, call
+    resolve_question with their answer, then remember() the decision."
+  - `resolve_question(question_id, answer, via="chat")`:
+    - The asker, or the lead or pm, marks an **open** question answered.
+    - The answer is stored exactly like an inbox answer and `recall()` finds it. A new additive column
+      `answered_via` = `chat | inbox` records how it was answered.
+    - No duplicate answer mail goes to the asker.
+    - The card leaves Needs you with an "Answered in chat ✓" toast.
+    - Resolving another agent's question (unless you're the lead or pm), an answered, dismissed or unknown question
+      returns `ERROR:` with guidance.
+  - When human chat arrives and the agent has open questions, the chat wake prompt lists them under "Your open
+    questions (did the human just answer one? if so, resolve_question)".
+  - Nice-to-have: a card filed during a live-chat run shows "also asked in chat".
+  - The API exposes `answered_via` on questions (specs/50-api.md), so the Mac app inherits this.
+  - Test: ask → resolve via chat (card closed, `answered_via=chat`, recall finds it, no duplicate mail); the error
+    cases; open questions in the chat wake prompt; the charter line present verbatim.
 
 ## Memory
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
@@ -165,3 +185,4 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - 2026-09-23 — COM-040..044 skills (#39), COM-045..047 memory sharing and human-approved global scope (#40); human
   request via pm.
 - 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
+- 2026-09-23 — COM-026 resolve questions answered in chat (#37; human request; charter line human-approved).
