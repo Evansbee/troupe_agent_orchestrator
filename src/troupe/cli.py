@@ -32,11 +32,22 @@ def engine_alive(cfg: config_mod.Config) -> int | None:
     return service_status(cfg.root).get("pid")
 
 
-def require_root() -> Path:
-    root = config_mod.find_root()
+def require_root(project: str | None = None) -> Path:
+    root = config_mod.find_root(Path(project).resolve() if project else None)
     if not root:
-        sys.exit("Not inside a troupe project. Run `troupe init` (or `troupe up`) in your project directory.")
+        sys.exit("Not inside a troupe project. Run `troupe init` in your project directory.")
     return root
+
+
+def cmd_tui(args: argparse.Namespace) -> None:
+    import asyncio
+
+    from .tui import run_tui
+    from .tui.lifecycle import ensure_engine
+    root = require_root(getattr(args, "project", None))
+    cfg = config_mod.load(root)
+    owns_engine = asyncio.run(ensure_engine(cfg))
+    run_tui(cfg, owns_engine=owns_engine)
 
 
 def cmd_init(args: argparse.Namespace) -> Path:
@@ -191,11 +202,13 @@ def cmd_api(args: argparse.Namespace) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="troupe", description="A team of AI agents that builds software with you.")
+    ap.add_argument("--project", help="target another project's directory instead of the current one")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("init", help="set up a troupe in this directory")
     p.add_argument("--name")
     p.add_argument("dir", nargs="?")
-    p = sub.add_parser("up", help="start the engine + GUI (initializes if needed)")
+    sub.add_parser("tui", help="open the terminal dashboard (default; starts the engine if needed)")
+    p = sub.add_parser("up", help="start the engine + raylib GUI (initializes if needed)")
     p.add_argument("--name")
     sub.add_parser("engine", help="run the engine headless")
     for command in ("start", "restart", "projects", "ps"):
@@ -203,7 +216,7 @@ def main() -> None:
     p = sub.add_parser("stop", help="stop the service, or stop all agent runs immediately with --now")
     p.add_argument("--now", action="store_true")
     sub.add_parser("resume", help="resume after Stop everything")
-    sub.add_parser("gui", help="open the GUI against a running engine")
+    sub.add_parser("gui", help="open the raylib GUI against a running engine")
     sub.add_parser("status", help="print team / board / questions")
     p = sub.add_parser("say", help="chat to an agent from the terminal")
     p.add_argument("agent")
@@ -213,10 +226,11 @@ def main() -> None:
     p.add_argument("params", nargs="?", default="{}")
     sub.add_parser("doctor", help="check backends are available")
     args = ap.parse_args()
-    handlers = {"init": cmd_init, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui, "status": cmd_status,
-                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start, "stop": cmd_stop,
-                "resume": cmd_resume, "restart": cmd_restart, "projects": cmd_projects, "ps": cmd_projects}
-    handlers.get(args.cmd or "up", cmd_up)(args)
+    handlers = {"init": cmd_init, "tui": cmd_tui, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui,
+                "status": cmd_status, "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start,
+                "stop": cmd_stop, "resume": cmd_resume, "restart": cmd_restart, "projects": cmd_projects,
+                "ps": cmd_projects}
+    handlers.get(args.cmd or "tui", cmd_tui)(args)
 
 
 if __name__ == "__main__":
