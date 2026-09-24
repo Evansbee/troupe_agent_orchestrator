@@ -42,51 +42,24 @@ def hooks_toml() -> str:
 
 def extra_add_dirs(writable_roots: list[Path], primary_cwd: Path) -> list[str]:
     """--add-dir args for writable roots other than the primary -C workspace (which codex already
-    treats as writable)."""
+    treats as writable).
+
+    #96: never add anything under `.git`, from here or from a caller's `writable_roots` list.
+    QA reproduced three real sandbox escapes from an earlier version of this task that granted a
+    worktree's private gitdir + `objects/` so codex could `git commit`: rewriting `commondir` to
+    point at an attacker-controlled config (with a `core.fsmonitor` hook) runs the agent's own code
+    the next time *anyone* — the engine, `complete_task`'s `commit_all`, or the human — touches that
+    worktree with git; rewriting `HEAD` to `ref: refs/heads/main` makes the next trusted commit in
+    that worktree move `main` itself, unreviewed; and `objects/` being writable lets a loose object
+    already referenced by a merged commit be silently replaced (git doesn't re-hash on read).
+    `complete_task` already commits a builder's worktree from troupe's own trusted MCP server
+    process, which codex's sandbox never wraps — that's the intended path; codex agents don't need
+    to (and per REQ-SAFE-050 must not) run `git commit` themselves."""
     args = []
     for root in writable_roots:
-        if root != primary_cwd:
-            args += ["--add-dir", str(root)]
+        if root == primary_cwd:
+            continue
+        if root.name == ".git" or ".git" in root.parts:
+            continue
+        args += ["--add-dir", str(root)]
     return args
-
-
-def git_writable_roots(cwd: Path) -> list[Path]:
-    """#96: `--add-dir` roots so `git commit` works from inside a git worktree. A worktree's git
-    metadata lives outside the worktree directory itself: `git rev-parse --git-dir` from inside one
-    resolves to `<root>/.git/worktrees/<name>/` (its private index/HEAD/COMMIT_EDITMSG/logs/HEAD —
-    the codex sandbox's existing `-C <cwd>` grant doesn't reach it), and a commit also writes new
-    objects and the branch's own ref/reflog into the *shared* `<root>/.git` (`--git-common-dir`).
-
-    Narrowed to exactly what a commit needs, verified empirically (live codex run, #96 task
-    summary): the private gitdir in full; `objects/` (shared, content-addressed, so a stray write
-    can't overwrite another branch's history); and `refs/heads/troupe/` + `logs/refs/heads/troupe/`
-    — every task branch lives under that one prefix (`troupe/<slug>`), so this reaches this task's
-    own ref/reflog without ever including `refs/heads/main` (a sibling directory entry, not a
-    descendant of `refs/heads/troupe/`) — confirmed live: `git update-ref refs/heads/main HEAD`
-    inside this same sandbox fails with `Operation not permitted`, main untouched. Top-level
-    `<root>/.git` itself is deliberately NOT granted: an opportunistic `packed-refs.lock` write
-    during commit was denied in testing, but harmlessly (loose refs are git's fallback, and the
-    commit's own exit code was still 0) — granting it would trade that cosmetic stderr line for
-    write access to every branch's top-level state, not worth it for a warning git already
-    tolerates.
-
-    Returns `[]` when `cwd` isn't a worktree checkout (`--git-dir` == `--git-common-dir`, the main
-    checkout) — that case's git metadata already lives inside the role's existing writable cwd, and
-    granting the *entire* common `.git` there would be far broader than this task's narrow intent.
-    Also `[]` if `cwd` isn't a git repo at all (`git rev-parse` fails) — must never raise and break
-    argv building over something this optional."""
-    from .. import gitops
-    git_dir = gitops.git(cwd, "rev-parse", "--git-dir", check=False)
-    common_dir = gitops.git(cwd, "rev-parse", "--git-common-dir", check=False)
-    if not git_dir or not common_dir:
-        return []
-    git_dir = (cwd / git_dir).resolve()
-    common_dir = (cwd / common_dir).resolve()
-    if git_dir == common_dir:
-        return []
-    return [
-        git_dir,
-        common_dir / "objects",
-        common_dir / "refs" / "heads" / "troupe",
-        common_dir / "logs" / "refs" / "heads" / "troupe",
-    ]

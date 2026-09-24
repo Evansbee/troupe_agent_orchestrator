@@ -25,6 +25,7 @@ import logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from .config import AgentCfg, Config
+from .roles import get_role
 
 Emit = Callable[[str, str], None]  # (kind, text) kinds: text | tool | result | error | info
 
@@ -424,7 +425,7 @@ class CodexRunner(Runner):
     async def _run_once(self, spec: RunSpec, emit: Emit, session_id: str | None) -> RunResult:
         cfg, a = spec.cfg, spec.agent
         from .sandbox import role_profile, writable_roots
-        from .sandbox.codex import sandbox_args, extra_add_dirs, git_writable_roots
+        from .sandbox.codex import sandbox_args, extra_add_dirs
         home = ensure_codex_home(cfg, a, codex_home_dir(cfg, a.id))
         env = child_env(cfg, a.id)
         env["CODEX_HOME"] = str(home)
@@ -442,7 +443,7 @@ class CodexRunner(Runner):
         for name in CODEX_DISABLED_FEATURES:
             overrides += ["-c", f"features.{name}=false"]
         profile = role_profile(cfg, a.role)
-        roots = writable_roots(profile, spec.cwd, cfg.root, cfg.state_dir) + git_writable_roots(spec.cwd)
+        roots = writable_roots(profile, spec.cwd, cfg.root, cfg.state_dir)
         # REQ-SAFE-050: codex's own native workspace-write sandbox (verified: writes outside the
         # workspace/--add-dir roots are denied and reported straight back to the model, never a
         # hang) replaces the old bypass-approvals-and-sandbox flag. --dangerously-bypass-hook-trust
@@ -462,7 +463,17 @@ class CodexRunner(Runner):
             prompt = spec.prompt
         else:
             args = [cfg.backends.codex_command, "exec", *common, "-C", str(spec.cwd), "-"]
-            prompt = f"<role_instructions>\n{spec.system}\n</role_instructions>\n\n{spec.prompt}"
+            # #96: overrides the charter's backend-agnostic "commit as you go" for codex
+            # specifically — nothing under .git is writable from codex's sandbox (QA found three
+            # real escapes in an earlier version of this fix that made it writable), so a codex
+            # agent's own `git commit` always fails. complete_task already commits the worktree
+            # from troupe's trusted MCP server process, outside the sandbox. Injected into the
+            # prompt rather than roles.py (protected, and this is codex-only) — role_instructions
+            # only carries the shared, backend-agnostic charter/role text.
+            note = ("\n\n<codex_note>\nYour sandbox denies writes under .git — don't run `git "
+                    "commit` yourself, it will fail. complete_task commits your worktree once "
+                    "you're done.\n</codex_note>") if get_role(a.role).works_in_task_tree else ""
+            prompt = f"<role_instructions>\n{spec.system}\n</role_instructions>{note}\n\n{spec.prompt}"
         state: dict[str, Any] = {"sid": session_id, "final": "", "tokens": 0, "had_output": False, "failed": False}
 
         def on_json(o: dict) -> None:

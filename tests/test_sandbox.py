@@ -17,7 +17,7 @@ from troupe.runners import ClaudeRunner, CodexRunner, FileTools, RunSpec, child_
 from troupe.sandbox import DEFAULT_ROLE_PROFILES, OTHERS_PROFILE, parse_role_profiles, role_profile, writable_roots
 from troupe.sandbox import macos as sandbox_macos
 from troupe.sandbox.claude import permission_args
-from troupe.sandbox.codex import extra_add_dirs, git_writable_roots, hooks_toml, sandbox_args
+from troupe.sandbox.codex import extra_add_dirs, hooks_toml, sandbox_args
 
 
 # ── grep test (REQ-SAFE-050 AC1) ─────────────────────────────────────────────
@@ -237,39 +237,31 @@ def test_codex_runner_argv_pre_approves_only_troupes_mcp_server(project, monkeyp
     assert "mcp_servers.troupe.default_tools_approval_mode=approve" in seen["args"]
 
 
-def test_git_writable_roots_for_a_real_task_worktree(project):
-    """#96: verified live against a real codex sandbox (task summary) — a commit in the worktree
-    succeeds with exactly these roots, and `git update-ref refs/heads/main` still fails inside the
-    same sandbox (main isn't a descendant of refs/heads/troupe/)."""
-    cfg, _ = project
-    branch, path = gitops.create_worktree(cfg.root, cfg.root / ".troupe" / "worktrees", 1, "a task")
-    roots = git_writable_roots(path)
-    git_dir = Path(gitops.git(path, "rev-parse", "--git-dir"))
-    common_dir = Path(gitops.git(path, "rev-parse", "--git-common-dir"))
-    assert roots == [
-        git_dir,
-        common_dir / "objects",
-        common_dir / "refs" / "heads" / "troupe",
-        common_dir / "logs" / "refs" / "heads" / "troupe",
+def test_extra_add_dirs_never_grants_anything_under_git(tmp_path):
+    """#96 rework: QA reproduced three real sandbox escapes (commondir rewrite → arbitrary code
+    execution on the next trusted git call; HEAD indirection → main moves via a trusted commit;
+    loose-object replacement → silent history tampering) from an earlier version of this task that
+    granted a worktree's private gitdir + objects/ so codex could `git commit`. Nothing under
+    `.git` may ever become writable from the sandbox again, regardless of what a caller passes in —
+    this is a defense-in-depth check inside `extra_add_dirs` itself, not just "no caller does it
+    today". Codex agents don't self-commit; `complete_task` commits the worktree from troupe's own
+    trusted MCP server process instead."""
+    cwd = tmp_path / "wt"
+    roots = [
+        tmp_path / ".troupe",
+        cwd,
+        tmp_path / ".git" / "worktrees" / "wt",
+        tmp_path / ".git" / "objects",
+        cwd / ".git",  # a worktree's own .git is a file, but guard the dir case too
     ]
-    assert (common_dir / "refs" / "heads" / "main") not in roots
-    assert not str(common_dir / "refs" / "heads" / "main").startswith(str(common_dir / "refs" / "heads" / "troupe"))
-
-
-def test_git_writable_roots_empty_for_the_main_checkout(project):
-    """The main checkout's own git-dir already sits inside its writable cwd (REQ-SAFE-051's
-    non-worktree roles) — adding the *entire* common .git on top would be far broader than #96's
-    narrow intent, so this is a deliberate no-op, not an oversight."""
-    cfg, _ = project
-    assert git_writable_roots(cfg.root) == []
-
-
-def test_git_writable_roots_empty_when_not_a_git_repo(tmp_path):
-    assert git_writable_roots(tmp_path) == []
+    args = extra_add_dirs(roots, primary_cwd=cwd)
+    assert args == ["--add-dir", str(tmp_path / ".troupe")]
 
 
 @pytest.mark.parametrize("role", ["builder", "qa"])
-def test_codex_runner_argv_includes_git_writable_roots_for_a_worktree_cwd(project, monkeypatch, tmp_path, role):
+def test_codex_runner_argv_never_contains_a_git_path(project, monkeypatch, tmp_path, role):
+    """#96 rework: the regression QA asked for — no `--add-dir` (or any other argv token) under
+    `.git`, for either role that works in a task worktree."""
     cfg, _ = project
     branch, wt = gitops.create_worktree(cfg.root, cfg.root / ".troupe" / "worktrees", 2, "another task")
     a = AgentCfg(f"{role}-1", role, role.title(), "codex")
@@ -288,10 +280,54 @@ def test_codex_runner_argv_includes_git_writable_roots_for_a_worktree_cwd(projec
     spec = RunSpec(cfg, a, "system", "prompt", wt, None, Path("unused"))
     asyncio.run(runner.run(spec, lambda kind, text: None))
     args = seen["args"]
-    common_dir = Path(gitops.git(wt, "rev-parse", "--git-common-dir"))
-    assert "--add-dir" in args and str(common_dir / "objects") in args
-    assert str(common_dir / "refs" / "heads" / "troupe") in args
-    assert str(common_dir / "refs" / "heads" / "main") not in args
+    add_dir_values = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+    assert add_dir_values  # sanity: this role does get *some* --add-dir (.troupe/), just never .git
+    assert not any(".git" in Path(v).parts for v in add_dir_values)
+    assert "mcp_servers.troupe.default_tools_approval_mode=approve" in args
+
+
+def test_codex_prompt_tells_worktree_roles_not_to_self_commit(project, monkeypatch, tmp_path):
+    """#96 rework: QA/lead's requirement that codex builders (and qa, also works_in_task_tree) are
+    told not to run `git commit` themselves, since their sandbox denies it — otherwise they burn
+    turns retrying a write that can never succeed. Injected into the prompt (not roles.py, which is
+    protected and backend-agnostic) since this is codex-specific."""
+    cfg, _ = project
+    a = AgentCfg("builder-1", "builder", "Builder", "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["prompt"] = prompt
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "git commit" in seen["prompt"] and "complete_task" in seen["prompt"]
+
+
+def test_codex_prompt_omits_the_git_note_for_roles_outside_a_task_tree(project, monkeypatch, tmp_path):
+    cfg, _ = project
+    a = AgentCfg("lead", "lead", "Lead", "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["prompt"] = prompt
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "codex_note" not in seen["prompt"]
 
 
 # ── claude sandbox args ───────────────────────────────────────────────────
