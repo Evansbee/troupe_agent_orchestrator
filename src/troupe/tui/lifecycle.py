@@ -1,29 +1,33 @@
 """"Run and everything runs, quit and everything quits" (REQ-TUI-001): the TUI starts its
 project's engine as a child (reusing #24's service.py lock/identity machinery) unless one is
-already running, in which case it either attaches without owning it (someone else is plausibly
-still responsible for it) or re-adopts it (its previous owner is dead — #100 F3). service.py's
-start/stop are synchronous and poll with time.sleep, so every call here goes through
-asyncio.to_thread to avoid blocking the Textual event loop."""
+already running, in which case it either attaches without owning it (a `troupe up`/`start`/
+`engine` -started engine, or another live TUI's) or re-adopts it (its previous TUI owner has died
+-- #100 F3). service.py's start/stop are synchronous and poll with time.sleep, so every call here
+goes through asyncio.to_thread to avoid blocking the Textual event loop."""
 from __future__ import annotations
 
 import asyncio
 import os
 
 from .. import config as config_mod
-from ..service import kill_service_now, owner_alive, service_status, set_owner, start_service, stop_service
+from ..service import kill_service_now, service_status, set_owner, start_service, stop_service, tui_owner_is_dead
 
 
 async def ensure_engine(cfg: config_mod.Config) -> bool:
-    """Start this project's engine if none is running; if one is already running, adopt it when
-    its recorded owner is no longer alive (e.g. a previous TUI was `kill -9`'d — F3's orphan
-    re-adopt), else attach without owning it. Returns True if we now own it (and so should stop it
-    on quit/Ctrl-C/SIGHUP), False if we merely attached to someone else's live engine."""
+    """Start this project's engine if none is running (recording ourselves as its "tui" owner); if
+    one is already running, adopt it only when its recorded owner is itself a dead TUI (F3's orphan
+    re-adopt) -- QA's #100 regression: an engine `troupe up`/`start`/`engine` started, or one with
+    no owner recorded at all (pre-#100), is NEVER adopted just because nothing claims it; that's the
+    normal, intended way those keep running independent of any TUI. Returns True if we now own it
+    (and so should stop it on quit/Ctrl-C/SIGHUP), False if we merely attached."""
     running = await asyncio.to_thread(lambda: service_status(cfg.root)["state"] == "running")
-    adopt = running and not await asyncio.to_thread(owner_alive, cfg.root)
-    await asyncio.to_thread(start_service, cfg)
+    adopt = running and await asyncio.to_thread(tui_owner_is_dead, cfg.root)
+    await asyncio.to_thread(start_service, cfg, owner="tui")
     owns = adopt or not running
-    if owns:
-        await asyncio.to_thread(set_owner, cfg.state_dir, os.getpid())
+    if adopt:
+        # start_service only records ownership for a spawn it performs itself (the `not running`
+        # branch above); adopting a still-running orphan needs its own explicit claim.
+        await asyncio.to_thread(set_owner, cfg.state_dir, os.getpid(), "tui")
     return owns
 
 
@@ -41,6 +45,5 @@ async def restart_engine(cfg: config_mod.Config) -> bool:
     status = await asyncio.to_thread(lambda: service_status(cfg.root))
     if status["state"] == "running":
         return False
-    await asyncio.to_thread(start_service, cfg)
-    await asyncio.to_thread(set_owner, cfg.state_dir, os.getpid())
+    await asyncio.to_thread(start_service, cfg, owner="tui")  # always a fresh spawn here (offline)
     return True

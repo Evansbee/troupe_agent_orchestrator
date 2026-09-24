@@ -26,21 +26,21 @@ def test_ensure_engine_starts_a_child_when_none_is_running(project, monkeypatch)
     cfg, _store = project
     calls = []
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "stopped"})
-    monkeypatch.setattr(lifecycle, "start_service", lambda c: calls.append(c))
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: calls.append((c, owner)))
 
     owns = asyncio.run(lifecycle.ensure_engine(cfg))
 
     assert owns is True
-    assert calls == [cfg]
+    assert calls == [(cfg, "tui")]
 
 
 def test_ensure_engine_attaches_without_owning_when_already_running(project, monkeypatch):
     cfg, _store = project
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "running"})
-    monkeypatch.setattr(lifecycle, "start_service", lambda c: None)
-    monkeypatch.setattr(lifecycle, "owner_alive", lambda root: True)
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: None)
+    monkeypatch.setattr(lifecycle, "tui_owner_is_dead", lambda root: False)
     set_owner_calls = []
-    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid: set_owner_calls.append((d, pid)))
+    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid, kind: set_owner_calls.append((d, pid, kind)))
 
     owns = asyncio.run(lifecycle.ensure_engine(cfg))
 
@@ -48,47 +48,71 @@ def test_ensure_engine_attaches_without_owning_when_already_running(project, mon
     assert set_owner_calls == []
 
 
-def test_ensure_engine_starts_a_child_records_ownership(project, monkeypatch):
+def test_ensure_engine_starting_a_child_lets_start_service_record_ownership(project, monkeypatch):
+    """start_service itself records "tui" ownership when it's the one doing the spawning (QA's
+    #100 regression fix: only an ACTUAL spawn should claim ownership, never a mere attach) -- so
+    ensure_engine must not also call set_owner directly in this branch."""
     cfg, _store = project
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "stopped"})
-    monkeypatch.setattr(lifecycle, "start_service", lambda c: None)
+    start_calls = []
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: start_calls.append((c, owner)))
     set_owner_calls = []
-    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid: set_owner_calls.append((d, pid)))
+    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid, kind: set_owner_calls.append((d, pid, kind)))
 
     owns = asyncio.run(lifecycle.ensure_engine(cfg))
 
     assert owns is True
-    assert set_owner_calls == [(cfg.state_dir, os.getpid())]
+    assert start_calls == [(cfg, "tui")]
+    assert set_owner_calls == []  # start_service's job in this branch, not ensure_engine's
 
 
-def test_ensure_engine_readopts_an_orphan_whose_owner_is_dead(project, monkeypatch):
+def test_ensure_engine_readopts_an_orphan_whose_tui_owner_is_dead(project, monkeypatch):
     """#100 F3: after a previous TUI died without stopping its engine (a `kill -9`, which can't be
     caught), a later `troupe` must adopt the still-running engine rather than attach and leave it
     forever un-stoppable via `q`."""
     cfg, _store = project
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "running"})
-    monkeypatch.setattr(lifecycle, "start_service", lambda c: None)
-    monkeypatch.setattr(lifecycle, "owner_alive", lambda root: False)
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: None)
+    monkeypatch.setattr(lifecycle, "tui_owner_is_dead", lambda root: True)
     set_owner_calls = []
-    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid: set_owner_calls.append((d, pid)))
+    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid, kind: set_owner_calls.append((d, pid, kind)))
 
     owns = asyncio.run(lifecycle.ensure_engine(cfg))
 
     assert owns is True
-    assert set_owner_calls == [(cfg.state_dir, os.getpid())]
+    assert set_owner_calls == [(cfg.state_dir, os.getpid(), "tui")]
+
+
+def test_ensure_engine_never_adopts_a_non_tui_owner_even_if_ownerless(project, monkeypatch):
+    """QA's #100 regression, root cause 1: an engine `troupe up`/`start`/`engine` started (or a
+    pre-#100 engine with no owner recorded at all) must never be adopted just because nothing
+    currently claims it -- only a *dead TUI* owner is a re-adopt candidate. tui_owner_is_dead
+    itself encodes this (kind != "tui" -> False), so this pins ensure_engine actually calling it
+    rather than some looser "is anyone alive" check."""
+    cfg, _store = project
+    monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "running"})
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: None)
+    monkeypatch.setattr(lifecycle, "tui_owner_is_dead", lambda root: False)
+    set_owner_calls = []
+    monkeypatch.setattr(lifecycle, "set_owner", lambda d, pid, kind: set_owner_calls.append((d, pid, kind)))
+
+    owns = asyncio.run(lifecycle.ensure_engine(cfg))
+
+    assert owns is False
+    assert set_owner_calls == []
 
 
 def test_restart_engine_only_acts_when_offline(project, monkeypatch):
     cfg, _store = project
     calls = []
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "running"})
-    monkeypatch.setattr(lifecycle, "start_service", lambda c: calls.append(c))
+    monkeypatch.setattr(lifecycle, "start_service", lambda c, owner=None: calls.append((c, owner)))
     assert asyncio.run(lifecycle.restart_engine(cfg)) is False
     assert calls == []
 
     monkeypatch.setattr(lifecycle, "service_status", lambda root: {"state": "stopped"})
     assert asyncio.run(lifecycle.restart_engine(cfg)) is True
-    assert calls == [cfg]
+    assert calls == [(cfg, "tui")]
 
 
 def test_quit_with_no_runs_in_flight_stops_the_owned_engine(project, monkeypatch):

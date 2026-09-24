@@ -2,6 +2,7 @@
 for anything, whether the previous session ended via Ctrl-C's clean stop (which interrupts
 in-flight runs, REQ-ENG-004) or via a `kill -9` of the TUI itself (which can't be caught, so the
 engine it started is left running -- #100 F3's re-adopt handles that case instead)."""
+import asyncio
 import os
 import pty
 import select
@@ -100,15 +101,44 @@ def test_relaunch_after_owner_killed_readopts_without_interrupting_runs(project)
     store.add_task("Do the thing", status="ready", assignee="builder-1")
     pid = start_service(cfg)["pid"]
     _wait_running(store)
-    set_owner(cfg.state_dir, _dead_pid())  # simulate: the TUI that started this engine is gone
+    set_owner(cfg.state_dir, _dead_pid(), "tui")  # simulate: the TUI that started this engine is gone
 
-    import asyncio
     owns = asyncio.run(lifecycle.ensure_engine(cfg))
 
     assert owns is True
     assert service_status(cfg.root)["pid"] == pid  # same engine process, never restarted
     assert store.runs()[0]["status"] == "running"  # never interrupted
     assert store.questions("open") == []
+
+
+def test_headless_start_is_never_adopted_by_a_later_tui(project):
+    """QA's #100 regression repro: `troupe start` (headless), then opening `troupe` (the TUI) must
+    only attach, never adopt -- so a Ctrl-C in that TUI never touches an engine it didn't start."""
+    cfg = project
+    pid = start_service(cfg)["pid"]  # simulates `troupe start`; default owner="service"
+
+    owns = asyncio.run(lifecycle.ensure_engine(cfg))  # simulates opening `troupe` next
+
+    assert owns is False  # attach only -- Ctrl-C's _kill_now() checks self.owns_engine before
+    # calling stop_owned_engine, so owns=False here is exactly what keeps this engine untouched
+    assert service_status(cfg.root)["pid"] == pid
+    assert service_status(cfg.root)["state"] == "running"
+
+
+def test_stale_tui_owner_does_not_survive_a_stop_and_leak_into_a_new_start(project):
+    """QA's #100 regression, root cause 2: a stopped engine's owner record must not outlive it, or
+    a brand new, unrelated `troupe start` looks like it's still owned by a long-dead TUI."""
+    cfg = project
+    start_service(cfg, owner="tui")
+    assert stop_service(cfg, timeout=5)
+
+    pid2 = start_service(cfg)["pid"]  # a fresh, unrelated headless start
+    status = service_status(cfg.root)
+    assert status["pid"] == pid2
+    assert status["owner_kind"] == "service"  # not a leftover "tui" from the earlier run
+
+    owns = asyncio.run(lifecycle.ensure_engine(cfg))
+    assert owns is False  # correctly attaches; doesn't misread this as an orphaned tui
 
 
 def _spawn_tui_on_pty(root: Path) -> tuple[subprocess.Popen, int, threading.Event]:
