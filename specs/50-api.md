@@ -127,7 +127,8 @@ RunLine    seq: int (run_lines.id), ts, kind: str ("text"|"tool"|"result"|"error
 Activity   id, ts, agent, kind, text, ref: str ("task:12", "msg:40", …), significant: bool
 Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: bool, stopped: bool (kill switch,
            REQ-SAFE-010; only the human resumes), throttled: str?, heartbeat: ts,
-           version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
+           version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}],
+           fyi_wakes_avoided_1h: int, fyi_model_calls_avoided_1h: int (REQ-COM-013, #74)
            (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
            throttled: str?, providers: [{provider, limited_until: ts?, capped: bool, plan_type: str?,

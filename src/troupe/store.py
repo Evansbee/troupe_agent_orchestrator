@@ -229,6 +229,9 @@ class Store:
         return bool(self.scalar(
             "SELECT 1 FROM events WHERE id>? AND significant=1 AND agent!=? LIMIT 1", since, agent_id))
 
+    def count_events_since(self, kind: str, since: float) -> int:
+        return self.scalar("SELECT COUNT(*) FROM events WHERE kind=? AND ts>?", kind, since, default=0)
+
     # ── messages ──────────────────────────────────────────────────────────
     def send(self, sender: str, recipient: str, body: str, subject: str = "", kind: str = "msg",
              reply_to: int | None = None, task_id: int | None = None, fyi: bool = False) -> int:
