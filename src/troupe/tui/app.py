@@ -15,16 +15,17 @@ from textual.widgets import Footer, Label, TabbedContent, TabPane
 from .. import config as config_mod
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
+from .panes.chat import ChatPane
 from .panes.header import HeaderPane
 from .panes.needs_you import NeedsYouPane
 from .panes.tasks import TasksPane
 from .panes.team import TeamPane
 
 # Pane registries — see panes/__init__.py for the Pane API. LEFT_PANES sit under the header on
-# the left (Team/Tasks); RIGHT_PANES sit on the right (Needs-you, then Comms/Chat once #68/#69
-# land — one line each to add here, per design/tui.md's pane-priority order).
+# the left (Team/Tasks); RIGHT_PANES sit on the right (Needs-you, then Chat, then Comms once #69
+# lands — one line each to add here, per design/tui.md's pane-priority order).
 LEFT_PANES: list[type] = [TeamPane, TasksPane]
-RIGHT_PANES: list[type] = [NeedsYouPane]
+RIGHT_PANES: list[type] = [NeedsYouPane, ChatPane]
 
 # REQ-TUI-011: below this width or height, panes collapse from side-by-side to tabs.
 COMPACT_WIDTH = 80
@@ -79,7 +80,13 @@ class TroupeApp(App):
 
     @property
     def _all_panes(self) -> list:
-        return self._right_panes + self._panes  # Needs-you first, matching design/tui.md's order
+        """design/tui.md's pane priority for the collapsed 80x24 tab order: Needs-you first (when
+        present), then the left column (Team, Tasks), then the rest of the right column in its own
+        stacking order (Chat now; Comms would slot in before Chat once #69 lands, since the right
+        column's own order is Needs-you, Comms, Chat top-to-bottom)."""
+        if not self._right_panes:
+            return list(self._panes)
+        return [self._right_panes[0], *self._panes, *self._right_panes[1:]]
 
     def compose(self) -> ComposeResult:
         self._header = HeaderPane(self.client, self.cfg.project)

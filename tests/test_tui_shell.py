@@ -13,6 +13,9 @@ AGENTS = [
     dict(id="builder-1", handle="builder_1@t", name="Builder 1", role="builder", state="running",
          status="", current_run=1, runs=5, tokens=0, cost=0.0, last_run_at=0.0,
          activity="editing app.py", waiting_on=None, mail_queued=2, mail_reading=1),
+    dict(id="pm", handle="pm_1@t", name="PM", role="pm", state="idle", status="",
+         current_run=None, runs=2, tokens=0, cost=0.0, last_run_at=0.0, activity="",
+         waiting_on=None, mail_queued=0, mail_reading=0),
 ]
 TASKS = [
     dict(id=66, status="in_progress", title="TUI slice A", assignee="builder-1", priority=0,
@@ -136,6 +139,53 @@ def test_full_size_uses_side_by_side_panes_not_tabs(project):
                 await pilot.pause()
                 assert not app.query(TabbedContent)
                 assert app.query_one("#left")
+        finally:
+            await server.stop()
+
+
+def test_chatpane_is_mounted_alongside_needs_you_in_the_right_column(project):
+    """#77: ChatPane (#68) mounted into RIGHT_PANES, after Needs-you per design/tui.md."""
+    from troupe.tui.panes.chat import ChatPane
+    from troupe.tui.panes.needs_you import NeedsYouPane
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await pilot.pause()
+                right = app.query_one("#right")
+                mounted = list(right.children)
+                assert [type(w) for w in mounted] == [NeedsYouPane, ChatPane]
+                await _wait_until(lambda: app.query_one(ChatPane).pm_id == "pm")
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_80x24_tab_order_matches_the_design_priority(project):
+    """design/tui.md: "Needs you first when non-empty, then Team, Tasks, Comms, Chat" — so the
+    collapsed 80x24 tab bar and the expanded layout agree on what matters most."""
+    from textual.widgets import TabPane
+
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                titles = [tp._title.plain if hasattr(tp._title, "plain") else str(tp._title)
+                         for tp in app.query(TabPane)]
+                assert titles == ["Needs you", "Team", "Tasks", "Chat"]
         finally:
             await server.stop()
 
