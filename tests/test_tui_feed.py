@@ -69,7 +69,7 @@ def test_feed_shows_messages_and_decisions_oldest_to_newest_and_ignores_chat(pro
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
-                feed = app._right_panes[0]
+                feed = next(p for p in app._right_panes if isinstance(p, FeedPane))
                 assert isinstance(feed, FeedPane)
                 text = lines_of(feed)
                 assert any("Do the thing" in line for line in text)
@@ -100,7 +100,7 @@ def test_feed_fyi_filter_cycles_all_action_fyi(project):
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
-                feed = app._right_panes[0]
+                feed = next(p for p in app._right_panes if isinstance(p, FeedPane))
                 feed.focus()
                 assert any("Action item" in l for l in lines_of(feed))
                 assert any("FYI note" in l for l in lines_of(feed))
@@ -141,7 +141,7 @@ def test_feed_decisions_only_toggle(project):
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
-                feed = app._right_panes[0]
+                feed = next(p for p in app._right_panes if isinstance(p, FeedPane))
                 feed.focus()
                 await pilot.press("d")
                 await pilot.pause()
@@ -171,7 +171,7 @@ def test_feed_agent_filter_cycles_through_participants(project):
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
-                feed = app._right_panes[0]
+                feed = next(p for p in app._right_panes if isinstance(p, FeedPane))
                 feed.focus()
                 await pilot.press("]")  # first agent alphabetically: builder-1
                 await pilot.pause()
@@ -212,7 +212,7 @@ def test_feed_live_events_append_message_and_upsert_decision(project):
             async with app.run_test(size=(140, 42)) as pilot:
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
-                feed = app._right_panes[0]
+                feed = next(p for p in app._right_panes if isinstance(p, FeedPane))
 
                 await server.push_event("message.new", {"message": message(9, "lead", "builder-1", subject="Live mail")})
                 await _wait_until(lambda: any("Live mail" in l for l in lines_of(feed)))
@@ -284,7 +284,7 @@ def test_kill_switch_success_shows_stopped_banner_and_resume_recovers(project):
                 assert "STOPPED" in app._stopped_banner.content
                 assert app.check_action("resume_action", ()) is True
 
-                await pilot.press("shift+r")
+                await pilot.press("R")
                 await pilot.pause()
                 await pilot.press("y")
                 await pilot.pause(0.1)
@@ -314,7 +314,7 @@ def test_resume_key_is_inert_while_not_stopped(project):
                 await _wait_until(lambda: app.client.connected)
                 await pilot.pause()
                 assert app.check_action("resume_action", ()) is False
-                await pilot.press("shift+r")
+                await pilot.press("R")
                 await pilot.pause()
                 assert len(app.screen_stack) == 1  # no confirm screen was pushed
         finally:

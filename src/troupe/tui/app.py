@@ -83,7 +83,11 @@ class TroupeApp(App):
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
         Binding("s", "stop_everything", "Stop"),
-        Binding("shift+r", "resume_action", "Resume", show=False),
+        # A real terminal reports Shift+R as the plain character "R" (there's no separate shift
+        # modifier byte for a printable ASCII letter) — the same caveat panes/chat.py notes for
+        # shift+enter. Binding "shift+r" here worked in Pilot's tests (which match by name, not by
+        # simulating an actual keystroke) but silently never fired from a live terminal.
+        Binding("R", "resume_action", "Resume", show=False),
         Binding("r", "restart_engine_action", "Restart"),
         Binding("tab", "focus_next", "Next pane", show=False),
         Binding("shift+tab", "focus_previous", "Prev pane", show=False),
