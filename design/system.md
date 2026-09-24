@@ -80,7 +80,11 @@ Faces (`core.py FACES`, loaded via `ui.font(face, size)`):
 
 Sizes in use today are ad hoc (anywhere from 10 to 21px, in ~0.5px steps, chosen per call site).
 There is no `theme.py` type-scale constant yet — see polish task below. Until that lands, match the
-nearest existing usage rather than picking a new number:
+nearest existing usage rather than picking a new number.
+
+Since #23, every size below is the **logical, un-zoomed baseline** — a global zoom factor (default
+115%, ⌘=/⌘-/⌘0) scales everything from these numbers at draw time. Design against this table as-is;
+don't hand-adjust a size to compensate for zoom, that's exactly what the global factor is for.
 
 | Role | ~Size | Face | Example |
 |---|---|---|---|
@@ -247,6 +251,24 @@ components/primitives — no new visual language.
 - `@mentions` inside room message text render as `ACCENT`-colored inline text (treat as an implicit
   markdown span, styled like the `link` inline style in `ui._spans`) — including unknown mentions,
   which still render colored even though they're inert.
+
+### REQ-GUI-029 — engine pill service states
+Extends the existing top-bar engine-state pill (today: Live / Paused / Throttled / Engine offline)
+with the states the service model adds. Same shape throughout — `alpha(color, 0.14)` fill, colored dot,
+label — only the color/label/action change:
+
+| State | Color | Label | Action |
+|---|---|---|---|
+| Engine offline | `RED` | "Engine offline" | **Start team** button inline in the pill |
+| Reloading | `YELLOW` | "Reloading… 2 runs draining" (live count) | — |
+| Restarting (after a crash) | `YELLOW` | "Restarting…" | — |
+| Crashed (crash loop) | `RED` | "Crashed — see engine.log" | **Start team** button inline in the pill |
+
+Reloading/Restarting are transient and non-actionable (the engine is already handling it) — no button,
+just a status label, same as today's "Throttled" pill. Offline and Crashed both need a way back in, so
+both carry the same inline **Start team** primary-button treatment already used in the pill (matches
+`design/projects.md`'s rail "Start" action for the same state, applied here to the *current* project's
+own pill rather than a background one).
 
 ### REQ-ENG-016 — rate-limited backend pill
 - Reuses the existing top-bar engine-state pill component (`app.draw_top`'s Live/Paused/Throttled
