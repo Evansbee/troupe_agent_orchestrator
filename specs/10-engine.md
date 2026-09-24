@@ -170,7 +170,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   | id | providers (provider · model · level) |
   |---|---|
   | lead_1 | claude · opus · high → codex · default · high |
-  | pm_1 | codex · default · high → claude · opus · high |
+  | pm_1 | claude · fable · high → claude · opus · high (REQ-ROLE-030: strongest model) |
   | spec_1 | codex · default · high → claude · opus · high |
   | designer_1 | claude · sonnet · medium → codex · default · medium |
   | builder_1, builder_2 | codex · default · high → claude · sonnet · high → local · detected |

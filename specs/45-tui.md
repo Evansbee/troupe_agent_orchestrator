@@ -106,8 +106,8 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   | `q` | quit: stops this project's engine and runs if the TUI owns it, after confirmation when runs are in flight (TUI-001) |
   | `r` | restart the engine when it's offline |
 - **REQ-TUI-021 [ ]** Chat with the PM works end to end: send, the streaming working state, and the reply shown
-  (REQ-COM-020). Chatting with another agent is possible (`:chat <handle>`), but the default is always the PM
-  (REQ-COM-029).
+  (REQ-COM-020). The chat is **PM-only**: the human interacts only with the PM (REQ-COM-029), and there's no way to
+  chat with other agents.
 
 ## Verification
 - **REQ-TUI-030 [x]** Snapshot mode: `TROUPE_SHOT=/path.svg troupe tui` renders once data has loaded (via Textual's
@@ -132,3 +132,4 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   TUI-013 details and catch-up.
 - 2026-09-24 — TUI-001 rewritten: the TUI owns its engine (quit and SIGHUP stop everything, confirm if runs are in flight,
   resume on next start, attach without owning if already running). Slices mapped to #66–#69.
+- 2026-09-24 — TUI-021: chat is PM-only (human).

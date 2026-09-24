@@ -62,9 +62,23 @@ over `roles.py` and `team.py`).
 - **REQ-ROLE-024 [ ]** The PM delegates legwork research to the researcher (a research task or mail) and keeps vision
   and proposals. The PM prompt says so.
 
+## PM: the human's single contact and the team's communicator (human, 2026-09-24)
+- **REQ-ROLE-030 [ ]** The PM coordinates and communicates. It doesn't build or assign work.
+  - It is the only agent the human talks to (REQ-COM-027..029).
+  - It routes each human instruction to the right teammate: the lead for work and priorities (tasks go through the
+    lead's board), spec for behavior, the designer for look. It follows up until the instruction is done or
+    reported blocked, per Principle 0's "relentless" rule (REQ-ENG-048).
+  - It triages escalations (REQ-COM-028): answer what's already decided, batch what isn't urgent, frame everything
+    with options, never sit on anything.
+  - It keeps the vision and proposals (REQ-ROLE-024 delegates legwork research).
+  - It runs on the **strongest available model**: default `claude · fable`, with fallback `claude · opus`
+    (REQ-ENG-041 / team.yaml `providers` order, REQ-BE-012).
+  - Test: the PM prompt contains these duties, and the generated roster puts the PM on fable → opus.
+
 ## Docs visibility
 - `research/` shows as a "Research" group and skills as a "Skills" group in the Docs tab (REQ-GUI-015).
 
 ## Changelog
 - 2026-09-23 — written: architect (#36), gadfly architecture challenges, researcher (#41), PM delegation. Human: the
   architect gates risky changes only.
+- 2026-09-24 — REQ-ROLE-030: the PM as sole human contact and communicator, on the strongest model (human, via pm).
