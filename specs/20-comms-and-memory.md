@@ -148,9 +148,11 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - **REQ-COM-047 [ ]** Seed: once #40 ships, the PM proposes the human's existing preferences (trust codex, the
   Needs-you rule, visual taste) as the first global items. They go through the same Yes/No cards.
 
-## Open questions
-- Should the lead or architect be able to retire a stale project skill without the human? (pm asked. Default until
-  answered: yes, through a normal task reviewed by QA. Global skills always need the human.)
+- **REQ-COM-048 [ ]** Retiring skills: the lead or architect may retire a **project** skill by moving it to
+  `.agents/skills/_retired/<name>/` with a `retired_reason` (and who and when) in its frontmatter, which logs a feed
+  event. Retired skills aren't loaded by any backend. Only the human can retire or delete **global** items
+  (REQ-COM-046). Test: retire moves the dir and removes the skill from `list_skills` and the synced sets; a non-lead or
+  non-architect gets `ERROR:`.
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
@@ -162,3 +164,4 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   #8). New tool `update_decision`.
 - 2026-09-23 — COM-040..044 skills (#39), COM-045..047 memory sharing and human-approved global scope (#40); human
   request via pm.
+- 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
