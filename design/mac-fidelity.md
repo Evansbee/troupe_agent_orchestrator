@@ -53,53 +53,56 @@ living scene. *SwiftUI note:* this is exactly the job pm's own plan assigned to 
 `Canvas` — worth confirming directly whether that's wired up at all yet, since a total absence
 (not just under-tuned glow) suggests it may not be started rather than merely wrong.
 
+**6. Waiting states / tethers are absent.** (`design/pulse.md` Layer 2 — human explicitly asked
+Pulse to show "who's waiting.") The sidebar text says "qa_1@demo — parked, owes work," but the QA
+node itself just shows a slightly heavier double ring — no `!` badge, no age timer, none of the
+ten-state legend's distinct treatments. The fixture doesn't exercise the other seven `waiting_on`
+kinds, so they're unverified rather than confirmed missing — extend the demo fixture to seed one of
+each (mirrors `design/stage.md`'s `TROUPE_STAGE_DEMO=1` pattern) so this can actually be checked;
+the engine data already exists (#50 wait snapshots), so this is a rendering gap, not a data gap.
+
+**7. No mail-backlog pips.** (`design/pulse.md` Layer 3 — human explicitly asked for "mail
+backlog.") Not visible on any node in either shot.
+
+**8. No native materials or SF Symbols anywhere — the whole app is flat fills and custom shapes.**
+"Native feel + performance" is why the human chose Swift at all (pm, msg #353); a spike that looks
+like a reskinned raylib window hasn't delivered on that yet. Concretely: vibrancy on the sidebar and
+Work-panel dock (`.background(.regularMaterial)` or a custom vibrant dark material, instead of flat
+fills — also a direct implementation of `design/pulse.md`'s own Linear citation about elevation
+reading as one coherent material) and SF Symbols for the provider glyphs (Layer 4) and waiting-state
+glyphs (Layer 2) instead of hand-drawn shapes — sharper at every scale, free accessibility labels,
+and likely faster to build than custom Canvas glyphs.
+
 ## P1 — needed for full fidelity
 
-**6. Waiting states / tethers are absent.** (`design/pulse.md` Layer 2.) The sidebar text says
-"qa_1@demo — parked, owes work," but the QA node itself just shows a slightly heavier double ring
-— no `!` badge, no age timer, none of the ten-state legend's distinct treatments. The fixture
-doesn't exercise the other seven `waiting_on` kinds, so they're unverified rather than confirmed
-missing — recommend extending the demo fixture to seed one of each (mirrors `design/stage.md`'s
-`TROUPE_STAGE_DEMO=1` pattern) so the *next* review can actually check them.
-
-**7. No mail-backlog pips.** (`design/pulse.md` Layer 3.) Not visible on any node in either shot.
-
-**8. Model chip has the right data, zero visual language.** (`design/pulse.md` Layer 4.) *Expected:*
+**9. Model chip has the right data, zero visual language.** (`design/pulse.md` Layer 4.) *Expected:*
 provider glyph + color (◆ indigo claude / ▲ cyan codex / ● neutral local) + 4-pip effort meter.
 *Current:* plain gray text, "claude · opus" / "codex · gpt-5.1-codex," no glyph, no color, no
-pips. *SwiftUI note:* SF Symbols (`diamond.fill`/`triangle.fill`/`circle.fill`, tinted per
-pulse.md's provider table) are a natural fit here — likely faster to wire up than a custom Canvas
-glyph, and free Dynamic Type scaling comes with it.
+pips. Glyphs should be SF Symbols per item 8.
 
-**9. Work-panel stage-track is a generic 3-dot progress bar, not the 4-stop lit pipeline.**
+**10. Work-panel stage-track is a generic 3-dot progress bar, not the 4-stop lit pipeline.**
 (`design/pulse.md` Layer 5.) *Expected:* Building → Review → Checks → Merged, current stage lit,
 rest dim, stage labels visible. *Current:* three evenly-spaced dots on a plain bar with no labels
 and no clear mapping to the four stages. Also: rows #2 and #4 show no assignee avatar/handle even
 though every row should have one — only #3 does.
 
-**10. No activity/event feed below the Pulse graph.** This predates pulse.md (existing
+**11. No activity/event feed below the Pulse graph.** This predates pulse.md (existing
 REQ-GUI-011) — raylib's Pulse always has a filterable event feed filling the bottom of the view;
 the spike's Pulse has empty dark space there instead. Related to P0 #5's "nothing moves," but
 this is missing *content*, not just missing motion.
 
-**11. Sidebar avatars are flat — no glow, no unread-badge language, no "N working" header count.**
+**12. Sidebar avatars are flat — no glow, no unread-badge language, no "N working" header count.**
 (`design/system.md` Avatar component; sidebar header today shows `"{n} working"` next to "TEAM.")
 Minor next to the graph's own gaps, but reinforces the same "static, not alive" read.
 
-**12. Milestone progress bar reads low-contrast.** Hard to fully judge color from a screenshot, but
+**13. Milestone progress bar reads low-contrast.** Hard to fully judge color from a screenshot, but
 the fill looks closer to a thin gray line than the vivid fill `design/pulse.md`'s Work panel
 implies. Worth a contrast pass once the rest lands.
 
-## Where native macOS can beat raylib, not just match it
+## Remaining native-macOS notes (not promoted, still worth doing)
 
-- **Vibrancy/materials:** the sidebar and Work-panel dock as `.background(.regularMaterial)` (or a
-  custom vibrant dark material) instead of flat fills — real translucency/depth raylib can't do,
-  and it's a direct implementation of `design/pulse.md`'s own Linear citation about elevation
-  reading as one coherent material rather than three separately-designed panels.
 - **Native source list** for the team sidebar (`List` with built-in selection/hover/keyboard nav)
   instead of custom-drawn rows.
-- **SF Symbols** for provider glyphs, waiting-state glyphs, and ticker icons instead of hand-drawn
-  shapes — sharper at every scale, accessibility labels for free.
 - **Board layout** via `HStack`/`LazyVGrid` with `.frame(maxWidth: .infinity)` per-column columns
   fixes both P0 Board bugs (#2, #3) essentially for free — this should end up *easier* to get right
   in SwiftUI than raylib's manual `Rect` math was, not harder.
@@ -107,6 +110,17 @@ implies. Worth a contrast pass once the rest lands.
   (P0 #5, comets, tethers) — per pm's own stated plan for the "sexy parts." The finding here is
   that it doesn't look implemented anywhere yet, not that it's implemented and looks wrong — worth
   confirming which of those it actually is before scoping the fix.
+
+## Verification for #59 (pm's addition, msg #353)
+
+Stills can't show motion, and motion is most of what's missing here. #59 isn't done until it can be
+*seen* moving, not just described:
+- A short screen recording (`screencapture -v -V 8` or an equivalent frame sequence) showing, at
+  minimum: idle breathing, a working pulse, and a comet traveling with its subject label visible.
+- My sign-off, from actually watching the recording — not from reading a description of what was
+  implemented.
+- That recording is what pm shows the human as their first look at the Swift direction, alongside
+  the stills — so it needs to actually demonstrate the P0 fixes above, not just play something.
 
 ## Screenshots referenced
 - `/tmp/pm-mac-pulse.png` — Pulse tab, `demo3.jsonl` fixture.
