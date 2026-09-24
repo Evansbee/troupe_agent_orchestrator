@@ -163,6 +163,9 @@ Client reporting does not depend on the deferred service supervisor shipping.
     - **Skip is decided up front.** Only a positive "no display" detection made before the clients launch may
       skip, for example a window-open probe or raylib/GLFW's own no-display error. A client killed by a
       signal (negative exit code, such as a segfault) or any other non-zero exit is a failure, never a skip.
+      (#112) A probe that itself raises a traceback or times out is also a failure; only its positive
+      "no display" result skips. On a gate timeout, the whole process group (clients and any engine they
+      started) is killed.
     - **Nothing of the human's is touched.** `HOME` (and XDG dirs) point into the temp dir for `troupe init`
       and both clients, so `~/.troupe/projects.json` and the human's live project are never modified.
     - **Cleanup always runs.** Clients and any engine they start are stopped in a `finally`, even if setup or
@@ -371,6 +374,10 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       the merged tree contains both. The default globs are `specs/**`, `design/**`, `docs/**`, `*.md`,
       `README*` and `LICENSE`. A commit set with any path outside the globs takes the re-merge + re-check path.
       `doc_only_paths` is guarded by REQ-SAFE-021, since widening it would skip re-checks.
+      Config load also rejects over-broad patterns as a config error, even ones the human approved. That means
+      `*`, `**`, and any pattern matching a typical source, test or build path (`src/x.py`, `tests/test_x.py`,
+      `x.py`, `pyproject.toml`, `uv.lock`). The human's approval stays the primary guard, because those probe
+      paths assume a Python layout. Test: each probe-matching pattern is refused with a message naming it.
     - [ ] (#107) **Exhausted retries don't bounce approved work.** After 3 consecutive "main moved" retries
       caused by real code movement, the task stays `approved` and the merge is requeued with a backoff
       (`next_attempt_at`). It's logged to the check log only: no builder mail, no builder wake, no QA re-review.
@@ -598,6 +605,7 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-040: over-broad `doc_only_paths` patterns are rejected at load (#107, lead decision).
 - 2026-09-24 — ENG-040 (#107): doc-only main movement merges without a re-check (`[git] doc_only_paths`, guarded
   by SAFE-021), and exhausted main-moved retries keep the task approved and requeued instead of bouncing it.
 - 2026-09-24 — ENG-059 hardened from QA's #92 review: runs the candidate tree's code, deterministic injection
