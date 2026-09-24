@@ -106,7 +106,7 @@ def merge_branch(root: Path, branch: str, message: str) -> tuple[bool, str]:
 
 def remove_worktree(root: Path, path: Path) -> None:
     with MAIN_LOCK:
-        subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=root, capture_output=True)
+        git(root, "worktree", "remove", "--force", str(path))
 
 
 def diffstat(root: Path, branch: str) -> str:
@@ -115,3 +115,28 @@ def diffstat(root: Path, branch: str) -> str:
         return git(root, "diff", "--stat", f"{base}...{branch}")
     except GitError:
         return ""
+
+
+def delete_branch(root: Path, branch: str) -> None:
+    """Delete only a branch Git confirms is merged."""
+    with MAIN_LOCK:
+        git(root, "branch", "-d", branch)
+
+
+def task_worktrees(root: Path, directory: Path) -> list[tuple[int, Path]]:
+    """Return registered task worktrees directly inside the managed directory."""
+    records = git(root, "worktree", "list", "--porcelain", "-z").split("\0")
+    out = []
+    for record in records:
+        if not record.startswith("worktree "):
+            continue
+        path = Path(record[len("worktree "):])
+        match = re.fullmatch(r"t(\d+)", path.name)
+        if match and path.parent.resolve() == directory.resolve() and not path.is_symlink():
+            out.append((int(match[1]), path))
+    return out
+
+
+def prune_worktrees(root: Path) -> None:
+    with MAIN_LOCK:
+        git(root, "worktree", "prune")

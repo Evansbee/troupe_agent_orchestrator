@@ -49,6 +49,11 @@ class Backends:
 
 
 @dataclass
+class GitSettings:
+    setup: str = ""
+
+
+@dataclass
 class Config:
     root: Path
     project: str
@@ -56,6 +61,7 @@ class Config:
     budget: Budget = field(default_factory=Budget)
     backends: Backends = field(default_factory=Backends)
     git_autocommit: bool = True
+    git: GitSettings = field(default_factory=GitSettings)
 
     @property
     def state_dir(self) -> Path:
@@ -101,6 +107,7 @@ local_api_key = "lm-studio"
 
 [git]
 autocommit = true         # commit doc/spec changes in the main tree after each non-builder run
+setup = ""               # command run once in each new worktree, e.g. "uv sync"
 
 # ── The team ─────────────────────────────────────────────────────────────
 # backend: claude | codex | local.  model: backend-specific ("" = backend default).
@@ -204,4 +211,5 @@ def load(root: Path) -> Config:
         budget=Budget(**{k: v for k, v in b.items() if k in Budget.__dataclass_fields__}),
         backends=Backends(**{k: v for k, v in be.items() if k in Backends.__dataclass_fields__}),
         git_autocommit=raw.get("git", {}).get("autocommit", True),
+        git=GitSettings(setup=raw.get("git", {}).get("setup", "")),
     )

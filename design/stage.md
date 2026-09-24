@@ -1,9 +1,12 @@
 # Stage — ambient full-screen view of the team at work
 
 Behavior: `specs/40-gui.md` REQ-GUI-030..037. This doc defines the *look*: layout, visual states,
-motion timing, and pacing. Builds on `design/system.md` (tokens, components) and the existing Pulse
-constellation (`gui/views.py pulse_view`) — Stage is Pulse's content model at ambient scale, not a
-different visual language.
+motion timing, and pacing. Builds on `design/system.md` (tokens, components). **As of the #32 redesign,
+`design/pulse.md` is the master spec for the shared scene** (agent states, tethers, comets, task cards,
+model chips, the Work panel) — Pulse and Stage are one scene at two densities. This doc keeps only
+what's Stage-specific: entering/leaving full-screen, sizing-by-screen-fraction, quiet-mode dimming/
+drift, the ready-queue tray, and the engine-offline state. Read `design/pulse.md` first for what a
+node/comet/task actually looks like; this doc assumes it.
 
 ## Principle: watching, not reading
 
@@ -48,10 +51,12 @@ carry it back into the rest of the GUI.
   running it shows the **Engine offline** state below, not an error screen — Stage always renders
   something calm.
 - `TROUPE_STAGE_DEMO=1` (with `TROUPE_TAB=Stage TROUPE_SHOT=...`) seeds one of everything at once for
-  a single representative screenshot: a working node, an idle node, a parked node, a throttled node,
-  one in-flight comet mid-label, one fan-out (2-3 comets from one sender), one attached task card, one
-  bounce-in-progress, the gold YOU glow at count 2, and a full 5-line ticker. Design elements below are
-  written so all of those can coexist without overlapping.
+  a single representative screenshot: a working node (with model chip + mail pips), an idle node, a
+  parked node, one node in each of the seven `waiting_on` kinds from `design/pulse.md` (including a
+  rate-limited one with its provider badge lit), one in-flight comet mid-label, one fan-out (2-3 comets
+  from one sender), one attached task card, one bounce-in-progress, the gold YOU glow at count 2, and a
+  full 5-line ticker with at least one work-entry slot. Design elements below (and in `design/pulse.md`)
+  are written so all of those can coexist without overlapping.
 
 ## Layout
 
@@ -91,19 +96,17 @@ Center, `T.HUMAN` colored ring (matches Pulse). Two states:
   — a fast ease (speed ~10), distinctly quicker than the slow breathing itself, so resolution reads as
   immediate relief rather than another cycle.
 
-### Agent nodes — four visually distinct states (REQ-GUI-031)
-All states share the base: `ui.avatar`-style ringed circle in the agent's role color
-(`design/system.md`'s role palette), name label below at the sizes in the table above.
+### Agent nodes — eight visually distinct states (REQ-GUI-031)
+**Superseded by `design/pulse.md`'s Layer 2** (the #32 redesign expanded this from four states to
+eight — idle, working, and five named "waiting" substates plus parked — with a two-tier
+coarse-silhouette/fine-treatment legend, dashed tethers to whatever's being waited on, and provider
+badges for the rate-limited case). Use `design/pulse.md`'s "Full state legend" table as the source of
+truth; this section is left in place only as a pointer, not a duplicate spec.
 
-| State | Treatment |
-|---|---|
-| **Idle** | Slow breathing glow, 5s sine period, low amplitude — calm, present, doing nothing. No caption. |
-| **Working** | The existing avatar `running` treatment (rotating arc, `sin(t·3.2)` pulse — same formula as `core.py`'s `ui.avatar`, so Stage and the sidebar agree) plus a caption beneath the name: the current tool/activity, truncated to fit, `TEXT_DIM`→role-color blend. |
-| **Parked** (owes work, REQ-GUI-002) | Static (non-pulsing) `T.ORANGE` outer ring plus a small `!` glyph badge at the node's upper-right. Deliberately *not* animated — parked means "stalled," and a pulsing warning would read as active/urgent, which is the wrong signal for "idle when it shouldn't be." |
-| **Throttled / rate-limited** (REQ-ENG-016) | Node desaturates toward `T.CYAN` (mixed 55% toward `T.BG`, ringed in `T.CYAN`) — a "frozen" look, distinct from the warm amber of parked. Caption shows the reset time ("resets 14:05"), same phrasing as the top-bar rate-limit pill in `design/system.md`. This is a new *semantic* use of `T.CYAN` (elsewhere it labels the "ready" task status) — no collision risk since a task-status pill and an agent-node ring never share a view. |
-
-Only one state applies at a time (a throttled agent can't also be "working" — REQ-ENG-016 blocks runs
-on a limited backend entirely).
+All states still share the base described here: `ui.avatar`-style ringed circle in the agent's role
+color (`design/system.md`'s role palette), name label below at the sizes in the table above, model chip
+beneath that (`design/pulse.md` Layer 4 — full chip at n≤9, glyph+pips only above 9, per that doc's
+Density section).
 
 ### Comets (REQ-GUI-032)
 A comet = a bright head (glow + core dot, same construction as Pulse's particles) trailing a short
@@ -112,6 +115,11 @@ positions — plus a **label pill**: a small `T.TOOLTIP`-colored rounded rect ri
 comet head, holding the subject (or first ~40 chars of the body), horizontal (never rotated to the
 path — rotated text is unreadable in motion). The pill fades in over the first 150ms and out over the
 last 200ms of flight; for the rest of the flight it's fully legible.
+
+`design/pulse.md`'s Layer 1 adds two refinements that apply equally here: the comet head reads
+visibly larger/brighter than its tail (obvious direction), and every edge a comet crosses leaves a
+warm residual spoke-glow (brightest on arrival, fading over 3 minutes, thickness scaling with recent
+volume) — Stage inherits this exactly as Pulse does, it's the same scene.
 
 - **Flight time: 2.0s** (comfortably over the ≥1.5s floor, and slower than Pulse's 1.4s particles
   because these have text to read, not just motion to notice).
@@ -162,6 +170,11 @@ comets, and marquees are hard to read from a distance mid-scroll), the ticker sh
 it. A new entry pushes in from the right with a 300ms slide+fade; older entries shift down and dim in
 the same motion. Icon/color per event matches the existing activity-feed dot convention in `pulse_view`
 (role color for agent actions, `T.RED` for rejections/errors, `T.PINK` for new questions).
+
+**This is also where the Work panel lives on Stage.** Stage has no docked panel (chrome-free), so per
+`design/pulse.md`'s Layer 5, this same ticker's five slots draw from two pools: event entries (above,
+unchanged) and, roughly every 4th slot, a work entry — the milestone progress line or one task's
+compact stage-track. One ticker, one visual treatment, not a second competing strip.
 
 ## Quiet mode (REQ-GUI-036)
 
@@ -235,10 +248,11 @@ requirements specify (flagged to spec/lead, not blocking):
 
 ## New tokens
 
-No new RGB values. Two new *semantic* uses of existing `design/system.md` colors, both noted above:
-`T.CYAN` for the throttled/rate-limited agent-node state (elsewhere only a task-status color), and
-`T.PINK`→`T.YELLOW` gold blend for the YOU question glow (`T.PINK` already means "needs you" on the
-inbox badge; the gold shift on Stage is new but built from existing hues, not a new constant).
+No new RGB values. The `T.PINK`→`T.YELLOW` gold blend for the YOU question glow (`T.PINK` already means
+"needs you" on the inbox badge; the gold shift on Stage is new but built from existing hues, not a new
+constant) — this is still current. The earlier `T.CYAN` throttled-node treatment noted here is
+superseded by `design/pulse.md`'s provider-badge + orange tether treatment for rate-limiting; see that
+doc's own "New components" section for the current token/component list for agent states.
 
 Stage introduces its own **type scale** (the sizing table above), which is deliberately not part of
 `design/system.md`'s scale — see "Sizing is relative, not fixed."

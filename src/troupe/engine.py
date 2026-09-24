@@ -70,6 +70,25 @@ class Engine:
         s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
+        self.cleanup_worktrees()
+
+    def cleanup_worktrees(self) -> None:
+        try:
+            for task_id, path in gitops.task_worktrees(self.cfg.root, self.cfg.worktrees_dir):
+                task = self.store.task(task_id)
+                if task and task["status"] not in ("done", "cancelled"):
+                    continue
+                # An open task may point to a tree with a different legacy name/id.
+                if self.store.scalar("SELECT 1 FROM tasks WHERE worktree=? AND status NOT IN ('done','cancelled')",
+                                     str(path)):
+                    continue
+                try:
+                    gitops.remove_worktree(self.cfg.root, path)
+                except gitops.GitError as e:
+                    self.store.event("system", "error", str(e), significant=False)
+            gitops.prune_worktrees(self.cfg.root)
+        except gitops.GitError as e:
+            self.store.event("system", "error", f"Worktree cleanup failed: {e}", significant=False)
 
     async def main(self) -> None:
         self.recover()
@@ -189,8 +208,11 @@ class Engine:
         fields: dict = {"status": "in_progress"}
         if role.works_in_task_tree and not t["worktree"]:
             try:
+                existed = (self.cfg.worktrees_dir / f"t{t['id']}").exists()
                 branch, path = gitops.create_worktree(self.cfg.root, self.cfg.worktrees_dir, t["id"], t["title"])
                 fields.update(branch=branch, worktree=str(path))
+                if not existed and self.cfg.git.setup:
+                    self.store.kv_set(f"setup.{path}", {"status": "pending", "command": self.cfg.git.setup})
             except gitops.GitError as e:
                 self.store.event("system", "error", f"worktree for #{t['id']} failed: {e}", significant=False)
         self.store.update_task(t["id"], actor=a.id, event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
@@ -204,8 +226,12 @@ class Engine:
                 continue
             ok, out = gitops.merge_branch(self.cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
-                if t["worktree"]:
-                    gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                try:
+                    if t["worktree"]:
+                        gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                    gitops.delete_branch(self.cfg.root, t["branch"])
+                except gitops.GitError as e:
+                    s.event("system", "error", f"Merged #{t['id']}, but cleanup failed: {e}", significant=False)
                 s.update_task(t["id"], actor="system", status="done", worktree=None,
                               event_text=f"Merged #{t['id']} {t['title']} into main")
                 if t["assignee"]:
@@ -318,6 +344,46 @@ class Engine:
         atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task))
         self.running[a.id] = (runner, atask, w)
 
+    async def setup_worktree(self, runner: Runner, spec: RunSpec, task: dict | None, run_id: int) -> None:
+        if not task or spec.cwd == self.cfg.root or runner.cancelled:
+            return
+        key = f"setup.{spec.cwd}"
+        setup = self.store.kv_get(key, {})
+        if setup.get("status") == "pending":
+            setup.update(status="started", error="Worktree setup was interrupted before it finished.")
+            self.store.kv_set(key, setup)
+            spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.store.set_agent(spec.agent.id, activity="Setting up worktree…")
+            try:
+                with spec.log_path.open("a") as log:
+                    log.write(json.dumps({"setup_command": setup["command"]}) + "\n")
+                    runner.proc = await asyncio.create_subprocess_shell(
+                        setup["command"], cwd=spec.cwd, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                    if runner.cancelled:
+                        runner.kill()
+                    assert runner.proc.stdout
+                    tail = ""
+                    while chunk := await runner.proc.stdout.read(65536):
+                        text = chunk.decode(errors="replace")
+                        log.write(json.dumps({"setup_output": text}) + "\n")
+                        log.flush()
+                        tail = (tail + text)[-2000:]
+                    code = await runner.proc.wait()
+                    log.write(json.dumps({"setup_exit": code}) + "\n")
+                    setup["error"] = f"Worktree setup failed (exit {code}):\n{tail}" if code else ""
+            except OSError as e:
+                setup["error"] = f"Worktree setup failed: {e}"
+            setup["status"] = "finished"
+            self.store.kv_set(key, setup)
+            if setup["error"]:
+                self.store.task_note(task["id"], "system", setup["error"])
+                self.store.run_line(run_id, "error", setup["error"])
+        if setup.get("error"):
+            footer = "\n\nPrinciple 0 applies: the human comes first."
+            spec.prompt = (spec.prompt.removesuffix(footer) + "\n\n## Worktree setup\n" + setup["error"]
+                           + "\nContinue the task; fix setup if needed." + footer)
+
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
                    task: dict | None) -> None:
         a, s = spec.agent, self.store
@@ -341,7 +407,12 @@ class Engine:
                 s.set_agent(a.id, activity=" ".join(text.split())[:160])
 
         try:
-            res = await runner.run(spec, emit)
+            await self.setup_worktree(runner, spec, task, run_id)
+            if runner.cancelled:
+                from .runners import RunResult
+                res = RunResult(ok=False, error="stopped during setup")
+            else:
+                res = await runner.run(spec, emit)
         except Exception as e:
             from .runners import RunResult
             res = RunResult(ok=False, error=repr(e))
@@ -454,7 +525,9 @@ class Engine:
                      + ("\n".join(fmt_task_line(t) for t in open_tasks[:60]) or "(empty board)"))
         pending_q = s.q("SELECT * FROM questions WHERE asker=? AND status='open'", a.id)
         if pending_q:
-            p.append("\n## Your questions still awaiting the human (don't re-ask)\n"
+            heading = ("Your open questions (did the human just answer one? if so, resolve_question)"
+                       if w.chat else "Your questions still awaiting the human (don't re-ask)")
+            p.append(f"\n## {heading}\n"
                      + "\n".join(f"- #{q['id']}: {q['question']}" for q in pending_q))
         decisions = s.memories(kind="decision", limit=10, include_private_of=a.id)
         if decisions:
@@ -488,7 +561,10 @@ class Engine:
                     "Your FINAL message text in this session is shown to them as your chat reply — write it "
                     "conversationally in markdown, concise, ending with the most useful next question if you "
                     "need input. Act on what they said with your tools first (update docs, brief teammates, "
-                    "record decisions with remember). Don't also send_message the human the same content."
+                    "record decisions with remember). Check your open questions against what the human just said; "
+                    "if they answered one, call resolve_question with their answer, then remember the decision. "
+                    "File any new decision question with ask_human (with options) as well as asking in chat. "
+                    "Don't also send_message the human the same content."
                     + extra)
         if w.reason == "review" and task:
             stat = gitops.diffstat(self.cfg.root, task["branch"]) if task.get("branch") else ""

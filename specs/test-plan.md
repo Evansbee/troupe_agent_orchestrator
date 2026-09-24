@@ -35,6 +35,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-ENG-034 | E `conflict_aborts_and_returns_to_builder`: divergent file edits conflict, main unchanged, merge aborted, tree kept and builder receives merge-main instructions. |
 | REQ-ENG-035 | E `unfinished_task_backs_off_then_escalates`: first retry delayed 45s, configured attempt cap blocks and mails Lead. |
 | REQ-ENG-036 | E `main_checkout_autocommit_policy` (builder/spec): idle builder gets no-edit instruction and no automatic commit; spec changes are committed. |
+| REQ-ENG-038 | `tests/test_worktree_setup.py`: real temporary git repositories verify config default/command, setup once across restart, stdout/stderr and exit logging, failure note/prompt with provider continuation, responsive event loop and stop during setup, merged branch deletion, and startup removal of closed/missing trees while preserving open/external worktrees. |
 
 ## Safety — specs/05-safety.md
 
@@ -56,6 +57,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-COM-021 | C `question_limit_and_answer_delivery`; manual Needs you: options and free-text answer each remove card and deliver mail to asker; fifth open question rejected. |
 | REQ-COM-022 | T `idea_options_and_dismissal_notification`: idea kind and four standard choices. |
 | REQ-COM-023 | T `idea_options_and_dismissal_notification`: GUI data action removes open question and sends judgment instruction. |
+| REQ-COM-026 | `tests/test_resolve_question.py`: chat resolution, permissions, closed/unknown/invalid inputs, additive migration, inbox compatibility, concurrent answer protection, recall, cached card removal/toast signal, MCP registration, and open-question chat hints. Visual check: isolated GUI run confirmed card removal and "Answered in chat ✓" toast (`/tmp/troupe-t37-answer.png`). Optional "also asked in chat" badge not implemented. |
 | REQ-COM-030 | T `memory_visibility_rationale_and_answer_search`; E `prompts_include_role_and_context`: rationale retained, private memory isolated and recent decisions injected. |
 | REQ-COM-031 | T `memory_visibility_rationale_and_answer_search`; C `recall_finds_decisions`: memory and answered-question keyword search. |
 
