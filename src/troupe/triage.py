@@ -41,7 +41,12 @@ def mandatory(message: dict, agent, store) -> bool:
 
 
 def fyi_message(message: dict, agent, store) -> bool:
-    return bool(message.get('fyi') and not mandatory(message, agent, store))
+    """#74/REQ-COM-013: FYI is deterministic — `fyi=True`, or a subject starting with "FYI" (the
+    team's convention before the flag shipped, still honored so an agent who forgets the flag but
+    follows the naming convention gets the same treatment), unless a hard rule (mandatory) overrides
+    it."""
+    is_fyi = bool(message.get('fyi')) or message.get('subject', '').strip().upper().startswith('FYI')
+    return is_fyi and not mandatory(message, agent, store)
 
 
 async def classify(cfg, agent, messages: list[dict], task: dict | None) -> dict:
@@ -72,12 +77,16 @@ async def classify(cfg, agent, messages: list[dict], task: dict | None) -> dict:
 class MailTriage:
     def __init__(self):
         self.entries: dict[str, tuple[tuple, asyncio.Task]] = {}
+        self._fyi_metric_high_water: dict[str, int] = {}  # agent -> highest message id already
+        # credited to the avoided-wake/avoided-model-call counters, so a batch sitting unread for
+        # many ticks (should_wake runs every tick) is counted once, not once per tick.
 
     def should_wake(self, cfg, store, agent, messages, task) -> bool:
         if any(mandatory(m, agent, store) for m in messages) or len(messages) >= cfg.triage.max_pending:
             return True
         ordinary = [m for m in messages if not fyi_message(m, agent, store)]
         if not ordinary:
+            self._record_fyi_metrics(cfg, store, agent, messages)
             return False
         if not cfg.triage.enabled:
             return True
@@ -114,6 +123,20 @@ class MailTriage:
         old = self.entries.pop(agent_id, None)
         if old and not old[1].done():
             old[1].cancel()
+
+    def _record_fyi_metrics(self, cfg, store, agent, messages) -> None:
+        """#74: an all-FYI batch skips both the wake and (if triage would otherwise have run) the
+        model call — count each exactly once per newly-seen batch, keyed by the highest message id
+        involved, not per tick."""
+        high = max(m['id'] for m in messages)
+        if high <= self._fyi_metric_high_water.get(agent.id, 0):
+            return
+        self._fyi_metric_high_water[agent.id] = high
+        name = HandleBook(cfg.project, cfg.agents).name(agent.id)
+        store.event(agent.id, 'fyi_wake_avoided', f'FYI mail held for {name} without waking it', significant=False)
+        if cfg.triage.enabled:
+            store.event(agent.id, 'fyi_model_call_avoided',
+                       f'FYI mail for {name} never reached local-LLM triage', significant=False)
 
 
 def changed_without_pending_mail(store, agent_id: str, since: int, messages: list[dict]) -> bool:

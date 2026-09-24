@@ -475,6 +475,10 @@ class Data:
                 for r in s.q("SELECT * FROM kv WHERE key LIKE 'config_error.%'")
                 if json.loads(r["value"])
             ],
+            # #74/REQ-COM-013: how much the deterministic FYI rule saved in the last hour, for the
+            # TUI header.
+            fyi_wakes_avoided_1h=s.count_events_since("fyi_wake_avoided", time.time() - 3600),
+            fyi_model_calls_avoided_1h=s.count_events_since("fyi_model_call_avoided", time.time() - 3600),
         )
 
     def usage(self):
