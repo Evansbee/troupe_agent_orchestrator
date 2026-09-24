@@ -16,7 +16,7 @@ from .. import config as config_mod
 from ..api import APIError
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
-from .panes.chat import ChatPane
+from .panes.chat import ChatPane, Composer
 from .panes.feed import FeedPane
 from .panes.header import HeaderPane
 from .panes.needs_you import NeedsYouPane
@@ -81,7 +81,9 @@ class TroupeApp(App):
     #right { width: 1fr; height: 1fr; }
     """
     BINDINGS = [
-        Binding("q", "quit_app", "Quit"),
+        # "q" only quits when the composer isn't focused (it's a text character otherwise); ctrl+q
+        # (Textual's own default binding, see action_quit below) always works, so the footer says so.
+        Binding("q", "quit_app", "Quit (^Q always)"),
         Binding("s", "stop_everything", "Stop"),
         # A real terminal reports Shift+R as the plain character "R" (there's no separate shift
         # modifier byte for a printable ASCII letter) — the same caveat panes/chat.py notes for
@@ -89,6 +91,7 @@ class TroupeApp(App):
         # simulating an actual keystroke) but silently never fired from a live terminal.
         Binding("R", "resume_action", "Resume", show=False),
         Binding("r", "restart_engine_action", "Restart"),
+        Binding("/", "focus_chat", "Chat"),
         Binding("tab", "focus_next", "Next pane", show=False),
         Binding("shift+tab", "focus_previous", "Prev pane", show=False),
     ]
@@ -147,6 +150,7 @@ class TroupeApp(App):
         compact = self._is_compact(size)
         if compact == self._compact:
             return
+        composer_was_focused = isinstance(self.focused, Composer)
         self._compact = compact
         body = self.query_one("#body", Container)
         await body.remove_children()
@@ -155,11 +159,36 @@ class TroupeApp(App):
             await body.mount(tabs)
             for pane in self._all_panes:
                 title = getattr(pane, "PANE_TITLE", "") or pane.__class__.__name__
-                await tabs.add_pane(TabPane(title, pane))
+                await tabs.add_pane(TabPane(title, pane, id=f"tab-{pane.__class__.__name__}"))
         else:
             left = Vertical(*self._panes, id="left")
             right = Vertical(*self._right_panes, id="right")
             await body.mount(Horizontal(left, right, id="body-row"))
+        # A layout rebuild (resize) tears down and remounts every pane, dropping whatever had
+        # focus — restore it to somewhere sensible rather than leaving focus on nothing, which
+        # would route plain typing straight into app-level bindings again (#83).
+        if composer_was_focused:
+            self._focus_chat_composer()
+
+    def _chat_pane(self) -> ChatPane | None:
+        return next((p for p in self._right_panes if isinstance(p, ChatPane)), None)
+
+    def _focus_chat_composer(self) -> None:
+        """REQ-TUI-020: `/` (and startup) focuses the PM chat composer. In 80x24 tabs mode the
+        composer lives in a hidden tab, so switch to it first — focusing an off-screen widget
+        would otherwise silently do nothing useful for the human."""
+        chat = self._chat_pane()
+        if chat is None:
+            return
+        tabs = self.query(TabbedContent)
+        if tabs:
+            tabs.first().active = f"tab-{ChatPane.__name__}"
+        composer = chat.query("#chat-composer")
+        if composer:
+            self.set_focus(composer.first())
+
+    def action_focus_chat(self) -> None:
+        self._focus_chat_composer()
 
     async def on_resize(self, event) -> None:
         await self._layout_body(event.size)
@@ -167,6 +196,7 @@ class TroupeApp(App):
     async def on_mount(self) -> None:
         self._install_signal_handlers()
         await self._layout_body()
+        self._focus_chat_composer()
         await self._connect_and_load()
         self._events_task = asyncio.create_task(self._pump_events())
         self.set_interval(2.0, self._refresh_connection_state)
@@ -252,6 +282,7 @@ class TroupeApp(App):
             ok = await self.push_screen_wait(
                 ConfirmScreen(f"{running_runs} agents are working — stop them and quit? y/N"))
             if not ok:
+                self._focus_chat_composer()  # cancelled: back to the primary interaction (#83 QA)
                 return
         if self.owns_engine:
             await stop_owned_engine(self.cfg)
@@ -260,6 +291,10 @@ class TroupeApp(App):
     @work
     async def action_stop_everything(self) -> None:
         ok = await self.push_screen_wait(ConfirmScreen("Stop everything (kill switch)? y/N"))
+        # Textual restores whatever was focused before the modal, not necessarily the composer
+        # (reaching this action at all means it wasn't focused, since a focused composer eats "s")
+        # — return to it either way once the interruption's over, confirmed or cancelled (#83 QA).
+        self._focus_chat_composer()
         if not ok:
             return
         if not self.client.connected:
@@ -282,6 +317,7 @@ class TroupeApp(App):
         if not self._engine_stopped:
             return
         ok = await self.push_screen_wait(ConfirmScreen("Resume the team? y/N"))
+        self._focus_chat_composer()  # same reasoning as action_stop_everything above
         if not ok:
             return
         if not self.client.connected:
@@ -304,8 +340,11 @@ class TroupeApp(App):
             self.owns_engine = True
             await self._connect_and_load()
 
-    async def action_quit(self) -> None:  # Textual's own default binding calls this name
-        await self.action_quit_app()
+    def action_quit(self) -> None:  # Textual's own default binding (ctrl+q) calls this name
+        # action_quit_app is @work: calling it schedules a worker and returns immediately.
+        # `await`ing that Worker used to raise TypeError here, which killed the app before the
+        # confirm dialog or stop_owned_engine ever ran — an orphaned engine with no UI (#83 QA).
+        self.action_quit_app()
 
 
 def run_tui(cfg: config_mod.Config, *, owns_engine: bool) -> None:
