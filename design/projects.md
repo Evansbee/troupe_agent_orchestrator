@@ -61,36 +61,46 @@ name (tooltips, the Add project… flow), or the `@project` suffix already baked
 never a swatch.
 
 ## Project states
-GUI-040 specifies exactly five rail states — working / idle / paused / offline / crashed. Same
-idle-vs-working distinction Stage already uses for agent nodes (`design/stage.md`), just applied at the
-whole-service level: a calm breathing glow for idle vs. an active pulse for working, same hue.
+GUI-040/029 specify seven rail states — working / idle / paused / stopped / reloading / offline /
+crashed. Same idle-vs-working distinction Stage already uses for agent nodes (`design/stage.md`), just
+applied at the whole-service level: a calm breathing glow for idle vs. an active pulse for working,
+same hue.
 
 | State | Dot | Detail (tooltip) |
 |---|---|---|
 | Working (≥1 agent running) | `T.GREEN`, active pulse (same `sin(t·3.2)` language as a working agent node) | "Working · 3 agents" |
 | Idle (live, nothing running) | `T.GREEN`, calm breathing glow, no pulse | "Idle" |
 | Paused | `T.YELLOW` | "Paused" |
+| Stopped (kill switch, REQ-SAFE-010) | `T.RED`, solid, no pulse — deliberately inert, not alarm-flashing | "Stopped — click Resume" |
+| Reloading (config reload in flight, REQ-ENG-009) | `T.YELLOW`, same as Paused but with a small spinning-arc glyph overlay to read as transient rather than a settled state | "Reloading… 2 runs draining" |
 | Offline (registered, not running) | hollow ring, `T.TEXT_FAINT`, no glow | "Offline — click Start" |
 | Crashed (crash loop, REQ-ENG-042) | `T.RED`, solid, small warning glyph | "Crashed — see engine.log" |
 
-**Missing** (`.troupe/` gone, ENG-008) isn't one of the five state dots — it's a registry condition,
+Stopped and Crashed are both solid `T.RED` but need to read distinctly at tile size (one is a deliberate
+human action, the other an unexpected failure) — the warning-glyph badge is Crashed-only; Stopped stays
+plain. Reloading and Paused share `T.YELLOW` for the same "intentional/transient, not broken" reason
+already established for the top-bar pill (`design/system.md`) — Reloading's spinning-arc glyph is what
+tells them apart, same principle as the earlier Paused-vs-Restart-needed pairing this table used to have.
+
+**Missing** (`.troupe/` gone, ENG-008) isn't one of the seven state dots — it's a registry condition,
 not a service state, and gets its own treatment: hollow ring, `T.RED`, tooltip "Project folder not
 found." A missing tile can't be opened, only removed (see Start / Add / Remove below).
 
 ## Needs you across projects
 
 Per GUI-040, the inbox gets a **"This project / All" toggle** (two `ui.chip`s at the top of the panel,
-same shape as any other filter chip pair in the app) rather than always aggregating — this keeps the
-default view identical to today's single-project behavior, and All is an explicit choice, not a
-surprise change to what "Needs You" means.
-- **This project** (default): unchanged from today.
-- **All**: lists every open question from every attached project. Each card gains one addition: a
-  small neutral tag pill (`ui.pill`, `T.TEXT_FAINT`, the project's short name) before the asker's name
-  — same treatment either way regardless of which project's card it is. Answering a card from a
-  background project delivers the answer into *that* project's DB and wakes the right agent there,
-  same as if you'd switched to it first.
-- **Rail badges still always sum across every project** (not gated by the toggle) — a tile's needs-you
-  badge is the "should I check All" signal even while the panel itself is scoped to "This project."
+same shape as any other filter chip pair in the app). **All is the default the moment a second project
+is attached** (spec's correction to my earlier draft, which had This-project as the default) — with the
+rail existing at all, a background question should never be silently hidden behind a toggle the human
+has to know to flip. With only one project attached, the toggle doesn't render (nothing to aggregate),
+matching the rail's own "hidden at 1 project" rule.
+- **All** (default at 2+ projects): lists every open question from every attached project. Each card
+  gains one addition: a small neutral tag pill (`ui.pill`, `T.TEXT_FAINT`, the project's short name)
+  before the asker's name. Answering a card from a background project delivers the answer into *that*
+  project's DB and wakes the right agent there, same as if you'd switched to it first.
+- **This project**: an explicit narrow-down, unchanged from today's single-project behavior otherwise.
+- **Rail badges still always sum across every project** regardless of which toggle position is active —
+  the tile badge and the panel's default should never disagree about "is anything happening elsewhere."
 - **Notifications** for a background-project question name the project in the notification text;
   clicking one switches to that project and opens the panel.
 - **Window title count** (REQ-GUI-027) is the total across every attached project, not just the active

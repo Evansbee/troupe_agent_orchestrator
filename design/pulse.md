@@ -100,63 +100,83 @@ fan-out, the 12-in-flight merge cap) — two refinements the human specifically 
 
 ## Layer 2 — who's waiting on whom
 
-The core addition. Every agent is in exactly one of eight named states at any moment. Two-tier legend,
+The core addition, now specified precisely against REQ-ENG-046's `waiting_on` data model: `{kind,
+target, since, reset_at?, queue_position?}`, or null. Every agent is in exactly one of **ten** named
+states at any moment: idle, working, seven `waiting_on` kinds, or parked. Two-tier legend,
 deliberately: a **coarse silhouette** (idle / working / waiting / parked) readable from across a room
-without color vision or close attention, and a **fine treatment** (which kind of waiting, tether target,
-age) readable up close or in Pulse's tighter viewing distance.
+without color vision or close attention, and a **fine treatment** (which kind, tether target, age)
+readable up close or in Pulse's tighter viewing distance.
 
 ### Coarse silhouette (the four shapes)
 | Shape | Meaning |
 |---|---|
 | Calm breathing glow, no ring | Idle |
 | Pulsing arc + activity caption | Working |
-| Static **dashed** ring | Waiting on something specific (five substates below) |
-| Static **solid** ring, warm amber, `!` badge | Parked — owes work, waiting on nothing in particular (REQ-GUI-002) |
+| Static **dashed** ring | Waiting on something specific (six kinds below have a real target) |
+| Static **solid** ring, warm amber, `!` badge | Parked — owes work, waiting on nothing in particular (REQ-GUI-002; also a `waiting_on` kind, per REQ-ENG-046, just one with no target) |
 
 Dashed vs. solid is the load-bearing distinction: dashed means "there's a specific thing this is waiting
 on, follow the tether to see what"; solid amber (parked) means "this agent should be doing something and
 isn't, but there's no single blocker to point at."
 
-### The five waiting substates (fine treatment)
-Each gets a dashed ring (coarse signal above) plus a small glyph badge on the node, a colored dashed
-**tether** to whatever it's waiting on — a "marching ants" dash pattern scrolling along the line at a
-slow, constant ~12px/s (fast enough to read as "still pending," slow enough not to compete with comet
-motion) — and an age timer (`ago()`-style, e.g. "12m") at the node end of the tether.
+### The seven `waiting_on` kinds (fine treatment)
+Precedence order matches REQ-ENG-046 exactly (only one kind applies at a time — a task could technically
+be both in review and rate-limited, but `human` > `review` > `dependency` > `blocked` > `providers` >
+`rate_limit` > `slot` decides which one shows). Each gets a dashed ring (coarse signal above) plus a
+small glyph badge on the node, an age timer since `since` (`ago()`-style, e.g. "12m"), and — for the six
+with a real target — a colored dashed **tether**: a "marching ants" dash pattern scrolling along the
+line at a slow, constant ~12px/s (fast enough to read as "still pending," slow enough not to compete
+with comet motion).
 
-| Substate | Glyph | Tether color | Tether target | When |
+| Kind | Glyph | Tether color | Tether target | When |
 |---|---|---|---|---|
-| Waiting on the human | `?` | Gold (same hue as YOU's question glow) | YOU | It asked a question or proposed an idea and it's still open |
-| Waiting on review | small checkmark-pending mark | The waiting agent's own role color | The reviewer's node (QA, or another role per task assignment) | Its task is in `review` |
-| Blocked on a dependency/task | chain-link | The waiting agent's own role color, or gold if only the human can unblock it | The blocking task's owner node, or YOU | Task status `blocked` |
-| Rate-limited | snowflake | `T.ORANGE` | That backend's **provider badge** (new element, see below) | REQ-ENG-016, backend-wide |
-| Queued for a run slot | hourglass + numeral | — (no tether: waiting on the scheduler, not a node) | — | A **queued ring**: a segmented dashed ring with a position number at the node ("Q3") instead of a line to anywhere |
+| `human` | `?` | Gold (same hue as YOU's question glow) | YOU | Open question, or a task awaiting a human-approval card |
+| `review` | small checkmark-pending mark | The waiting agent's own role color | The reviewer node(s) | Task is in `review` |
+| `dependency` | chain-link | The waiting agent's own role color | The unmet dependency task's current assignee node, or the ready-queue tray if it's unassigned | Assigned task has unmet `depends_on` |
+| `blocked` | chain-link with a small break/`×` through it (distinguishes from `dependency` at a glance, per spec's "shared glyph, distinguished by label and target") | — (no external target) | **None** — a short self-referential stub instead of a line, since the target is a task id + free-text reason, not another node | Task status is `blocked` |
+| `providers` | broken-link/⊘ | `T.RED` (more severe than a single rate-limit) | **All** of that agent's configured provider badges at once (a small fan of tethers, not one) | Every provider in its fallback list is unavailable (REQ-BE-012) |
+| `rate_limit` | snowflake | `T.ORANGE` | That single provider's **badge** (new element, see below) | Its current provider is limited (REQ-ENG-016) |
+| `slot` | hourglass + numeral | — (no tether: waiting on the scheduler, not a node) | — | Has a wake candidate but no free run slot — a **queued ring** instead: a segmented dashed ring with the 1-based `queue_position` at the node ("Q3") |
 
-Tether color rule: **gold is reserved for "the human is the blocker"** (waiting-on-human, and
-blocked-when-only-the-human-can-unblock) — everywhere else the tether takes the *waiting* agent's own
-role color, so several tethers converging on one busy reviewer stay visually separable by whose they are,
-rather than all blending into one reviewer-colored knot.
+Notes on the two pairs that are easy to conflate:
+- **`dependency` vs. `blocked`:** same base glyph (chain-link) since both are "something else has to
+  happen first," but `blocked` gets no tether (there's no single other node to point at — the reason is
+  free text on the task note) while `dependency` does (there's a concrete other task/assignee). The
+  label under the node always spells out which ("waiting on #14" vs. "blocked: needs prod access"), so
+  the distinction never depends on noticing the glyph break alone.
+- **`providers` vs. `rate_limit`:** `providers` is strictly worse (nothing this agent can run on right
+  now, anywhere) and reads that way — red, broken-link glyph, fans out to every configured provider's
+  badge — versus `rate_limit`'s single orange tether to one badge. Both show a reset countdown (the
+  earliest `reset_at` across providers, for `providers`).
+
+Tether color rule: **gold is reserved for `human`** — everywhere else a tether takes the *waiting*
+agent's own role color (except `providers`/`rate_limit`, which are colored by severity, not role, since
+the backend is the point), so several tethers converging on one busy reviewer stay visually separable by
+whose they are, rather than all blending into one reviewer-colored knot.
 
 ### Provider badges (new element)
 Small fixed badges — one per backend actually in use (claude / codex / local), positioned along the
 scene's outer edge (evenly spaced, bottom arc, so they don't compete with the agent ring for the
-center). Normally just a quiet glyph + label. When REQ-ENG-016 rate-limits that backend, the badge
-lights `T.ORANGE` and shows the reset countdown ("resets 14:05") — every agent on that backend grows a
-rate-limited tether pointing at it. This supersedes `design/stage.md`'s earlier plain "desaturate toward
-cyan" throttled-node treatment — the tether + shared badge is more informative (shows *which* backend,
-and the same countdown the top-bar pill already gives when a project is active), and reuses the same
-copy convention as `design/system.md`'s REQ-ENG-016 pill.
+center). Normally just a quiet glyph + label. When REQ-ENG-016 rate-limits that backend, its badge
+lights `T.ORANGE` and shows the reset countdown ("resets 14:05"); if every backend an agent can fall
+back to is out (the `providers` kind), that agent's tethers fan out to all of its badges at once, each
+lit however that individual backend currently reads (some may be `T.ORANGE`/limited, others just
+generically unavailable). This supersedes `design/stage.md`'s earlier plain "desaturate toward cyan"
+throttled-node treatment — the tether + shared badge is more informative (shows *which* backend(s), and
+the same countdown the top-bar pill already gives when a project is active), and reuses the same copy
+convention as `design/system.md`'s REQ-ENG-016 pill.
 
 ## Layer 3 — mail backlog
 
 A short arc of small envelope pips just outside the node's ring (opposite side from the activity
-caption, so roughly the upper arc). One pip per unread message, up to 5; beyond that, a single numeral
-badge ("12") replaces the pips — this mirrors the app's existing unread-count convention
-(`ui.badge`) rather than inventing a new one.
-- **Queued, not yet delivered** (waiting for the agent's next wake): hollow/outline pips, `T.TEXT_FAINT`
-  — quiet, background information.
-- **Being read right now** (delivered as part of the agent's current run): the same pips render filled
-  and bright for the duration of that run, then disappear as they're marked read — a brief, legible
-  "this mail just got picked up" moment rather than a silent state change.
+caption, so roughly the upper arc). Reads directly off REQ-ENG-046's two published counts. One pip per
+unread message, up to 5; beyond that, a single numeral badge ("12") replaces the pips — this mirrors the
+app's existing unread-count convention (`ui.badge`) rather than inventing a new one.
+- **`mail_queued`** (unread, not yet delivered to a run): hollow/outline pips, `T.TEXT_FAINT` — quiet,
+  background information.
+- **`mail_reading`** (delivered to the currently running run): the same pips render filled and bright
+  for the duration of that run, then disappear as they're marked read — a brief, legible "this mail just
+  got picked up" moment rather than a silent state change.
 
 ## Layer 4 — model chip
 
@@ -171,13 +191,25 @@ A small pill beneath the node's name (Pulse: always; Stage: only at ≤9 agents,
 | Local | `●` | `T.TEXT_DIM` | Deliberately neutral/desaturated — local is the unbranded default, not a fourth vivid hue |
 
 These are small badge glyphs, never the node's ring color (which stays the agent's *role* color) — no
-collision between "who" (role, on the ring) and "what it's running on" (provider, on the chip).
+collision between "who" (role, on the ring) and "what it's running on" (provider, on the chip). **Shape
+is the primary signal, color secondary:** with only 3 provider identities against 7+ role hues sharing
+the same small set of tokens, a coincidence is possible (a Spec-role agent, cyan ring, running on Codex,
+also cyan badge) — the diamond/triangle/circle glyph shapes disambiguate regardless, the same way
+`PRIORITY_COLORS` already reuses `RED` for P0 even though it's also Gadfly's role color elsewhere. Don't
+chase perfect hue-exclusivity across two independent 3- and 7-entry palettes sharing one token set;
+shape-code and move on.
 
 **Level pips:** four dots, filled count = effort level (low=1 … max=4; Codex's ceiling is `xhigh`,
 still renders as 4/4 with the tooltip spelling it out). Filled `TEXT`, empty hollow `TEXT_FAINT`.
 
-Reads live off the current agent config snapshot — when team.yaml changes (#20) and the engine picks it
-up, the chip updates on the next normal data refresh, no special-casing needed.
+**Fallback marker:** when an agent is running on anything other than its first-choice provider (the
+provider-fallback ordering from team.yaml, REQ-BE-011/012), the chip gains a small italic "fallback"
+suffix / secondary-color tag after the pips — e.g. `▲ gpt-5.x · ●●●○ fallback`. This is the visible
+counterpart to the `providers`/`rate_limit` waiting kinds in Layer 2: those show *why* a switch might be
+needed, this shows *that* one already happened.
+
+Reads live off the current agent config snapshot — when team.yaml changes (#20) or the active provider
+changes (fallback triggers), the chip updates on the next normal data refresh, no special-casing needed.
 
 ## Layer 5 — Work panel
 
@@ -233,17 +265,21 @@ viewer shouldn't have to learn a second ticker style, just notice the content va
 
 ## Full state legend
 
-The complete answer to "every agent state has a distinct, named treatment":
+The complete answer to "every agent state has a distinct, named treatment" — ten states: idle, working,
+the seven REQ-ENG-046 `waiting_on` kinds, and parked (itself an eighth `waiting_on` kind, with no
+target).
 
 | State | Silhouette | Tether/badge | Age shown | Model chip |
 |---|---|---|---|---|
 | Idle | Calm breathing glow | none | no | yes (Pulse; glyph-only in Stage @ >9) |
 | Working | Pulsing arc + activity caption | none | no (caption instead) | yes |
-| Waiting on human | Dashed ring + `?` badge | Gold tether → YOU | yes | yes |
-| Waiting on review | Dashed ring + check-pending badge | Role-color tether → reviewer | yes | yes |
-| Blocked | Dashed ring + chain-link badge | Role-color (or gold) tether → owner/YOU | yes | yes |
-| Rate-limited | Dashed ring + snowflake badge | Orange tether → provider badge | yes (on badge) | yes (shows the limited provider) |
-| Queued for a run slot | Segmented dashed ring + "Q3" | none (queue position, not a target) | implicit (position) | yes |
+| `human` | Dashed ring + `?` badge | Gold tether → YOU | yes | yes |
+| `review` | Dashed ring + check-pending badge | Role-color tether → reviewer | yes | yes |
+| `dependency` | Dashed ring + chain-link badge | Role-color tether → dependency's assignee (or ready-queue tray) | yes | yes |
+| `blocked` | Dashed ring + broken chain-link badge | none (label carries the reason) | yes | yes |
+| `providers` | Dashed ring + broken-link/⊘ badge | Red tethers → **all** configured provider badges | yes (earliest reset) | yes (shows "fallback" if currently on a non-first choice) |
+| `rate_limit` | Dashed ring + snowflake badge | Orange tether → the one limited provider's badge | yes (on badge) | yes |
+| `slot` | Segmented dashed ring + "Q3" | none (queue position, not a target) | implicit (position) | yes |
 | Parked (owes work) | Solid amber ring + `!` badge | none | yes | yes |
 
 ## Density: 3, 8, 12(–16) agents

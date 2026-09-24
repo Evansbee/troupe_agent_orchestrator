@@ -64,6 +64,16 @@ pills, graph nodes, sidebar). `data.color_of(agent_id)` resolves an agent to its
 | Builder | `(52,211,153)` green |
 | QA / Tester | `(251,146,60)` orange |
 | Gadfly | `(248,113,113)` red |
+| Architect | `(191,148,82)` bronze | *(proposed — not yet in `roles.py`; see below)* |
+| Researcher | `(192,106,224)` orchid | *(proposed — not yet in `roles.py`; see below)* |
+
+**Architect and Researcher** (spec msg #192): `roles.py` doesn't define these roles yet, so nothing
+assigns them a color — the Mac spec falls back to whatever the API reports until one exists. Proposing
+bronze and orchid here now so both docs and the API have a real value to build against: bronze sits
+apart from Lead's amber (deeper, more muted, not mistakable for it at a glance) and reads as
+"structural/foundational," fitting the Architect's gatekeeping role; orchid fills the actual gap in the
+wheel between PM's pink and Designer's violet rather than crowding either. Neither collides with an
+existing role, `ACCENT`, or `ACCENT2`. Once these roles land in `roles.py`, use these values verbatim.
 
 Role colors and semantic colors share hues (green = builder *and* success, orange = QA *and*
 throttled, red = gadfly *and* error). This is intentional economy, not collision — the two systems
@@ -263,12 +273,22 @@ label — only the color/label/action change:
 | Reloading | `YELLOW` | "Reloading… 2 runs draining" (live count) | — |
 | Restarting (after a crash) | `YELLOW` | "Restarting…" | — |
 | Crashed (crash loop) | `RED` | "Crashed — see engine.log" | **Start team** button inline in the pill |
+| Stopped (kill switch, REQ-SAFE-010) | `RED`, no pulse — deliberately inert, not "alarm-flashing" | "Stopped" | **Resume** button inline in the pill, human-only |
 
 Reloading/Restarting are transient and non-actionable (the engine is already handling it) — no button,
-just a status label, same as today's "Throttled" pill. Offline and Crashed both need a way back in, so
-both carry the same inline **Start team** primary-button treatment already used in the pill (matches
-`design/projects.md`'s rail "Start" action for the same state, applied here to the *current* project's
-own pill rather than a background one).
+just a status label, same as today's "Throttled" pill. Offline, Crashed, and Stopped all need a way
+back in, so each carries an inline primary-button treatment in the pill (matches `design/projects.md`'s
+rail "Start" action for the same states, applied here to the *current* project's own pill).
+
+**Stopped takes precedence over every other state** (REQ-GUI-029) — if the kill switch has fired, the
+pill shows Stopped regardless of what else might be true underneath (reloading, throttled, etc.), since
+nothing else matters until the human resumes.
+
+**Stop everything** (REQ-SAFE-010, ⌘⇧.) is a separate, always-visible top-bar control — not a pill
+state, a permanent button (small, `danger`-kind ghost button, far right of the top bar, always present
+regardless of engine state) that fires the kill switch for the active project. Deliberately not hidden
+inside a menu: this is a safety control, and safety controls that require hunting for them are safety
+controls that don't get used in time.
 
 ### REQ-ENG-016 — rate-limited backend pill
 - Reuses the existing top-bar engine-state pill component (`app.draw_top`'s Live/Paused/Throttled
