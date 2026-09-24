@@ -56,8 +56,9 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   Failures show as a toast with the API's error text. UI changes wait for the confirming event: the store is
   never updated optimistically, except for the drag-and-drop ghost (REQ-MAC-031).
 - **REQ-MAC-015 [ ]** Service control without a socket: **Start team** on an offline project, and **Add
-  project…** on a folder with no `.troupe/`, run the `troupe` CLI (REQ-MAC-002) to start a detached service
-  (REQ-ENG-001) or run `troupe init`. They never open a second GUI.
+  project…** on a folder with no `.troupe/`, run the `troupe` CLI (REQ-MAC-002): `troupe start` starts a
+  detached service only (REQ-ENG-006), and `troupe init` sets a folder up. They never open a second GUI. With no
+  socket, the pill reads `.troupe/service.json` to show "Restarting…" or "Crashed" (REQ-API-074).
 - **REQ-MAC-016 [ ]** Tests: `TroupeKitTests` runs an in-process fake socket server that replays recorded
   fixtures (`mac/Tests/Fixtures/*.jsonl`, the API's wire frames verbatim). It covers the version mismatch,
   snapshot → events, seq resume, `resync_required`, reconnect without an empty store, and command round-trips.
@@ -129,8 +130,8 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   app is unfocused, and the engine's needs-help events (task #35), titled with full handles (REQ-COM-005).
   - Clicking a notification activates the app, switches to its project and opens the item: the question card,
     chat thread, task or agent.
-  - No duplicates: while the app is running, it tells each engine through the API that it is the notifier (the
-    API's client presence, `specs/50-api.md`), and the engine's own OS notifications stay quiet for that project.
+  - No duplicates: while the app is running, it tells each engine through the API that it is the notifier (`hello`
+    with `notifications: true`, REQ-API-010), and the engine's own OS notifications stay quiet for that project.
     Focused-app behavior follows #35 (toasts, no OS notification).
 - **REQ-MAC-034 [ ]** The dock badge is the number of open questions across all attached projects, and has no
   badge at 0. The window title is `troupe — <project>` with an `(N) ` prefix (REQ-GUI-027, total across projects).

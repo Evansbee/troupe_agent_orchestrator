@@ -47,7 +47,9 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
   (case-insensitive) are returned as `"***"`, as is anything read from the environment.
 
 ## Handshake
-- **REQ-API-010 [ ]** `hello` must be the first request. Params: `{"api_version": 0, "client": "troupe-mac/0.1"}`.
+- **REQ-API-010 [ ]** `hello` must be the first request. Params: `{"api_version": 0, "client": "troupe-mac/0.1",
+  "notifications": bool}`. With `notifications: true` the client says it shows OS notifications itself. While at
+  least one such client is connected, the engine's own notifications (task #35) are suppressed, to avoid duplicates.
   - Result: `{api_version, project, handle_suffix, root, troupe_version, epoch, seq, server_time, engine}`.
     `project` is `[project] name`; `handle_suffix` is `@<project>` as used in handles; `root` is the absolute
     project path; `epoch` is a random string that changes every time the engine (re)starts or reloads; `seq` is
@@ -61,10 +63,10 @@ Fields marked `?` may be null. Lists are never null.
 ```
 Agent      id: str, handle, name, role, state: "idle"|"running", enabled: bool, parked: bool (REQ-GUI-002 rule),
            status: str (set_status text), activity: str (live, ≤160 chars), current_run: int?,
-           providers: [str] (configured chain, primary first; REQ-BE-007), provider: str (the one the current or
+           providers: [str] (configured chain, primary first; REQ-BE-012), provider: str (the one the current or
            next run uses), fallback: bool (provider ≠ providers[0]), model: str, level: str?,
            chat_unread: int (chat from this agent the human hasn't read), mail_queued: int (mail to this agent not
-           yet delivered), waiting_on: WaitingOn?, runs: int, tokens: int, cost: float, last_run_at: ts?
+           yet delivered), mail_reading: int (mail delivered to the running run; REQ-ENG-046), waiting_on: WaitingOn?, runs: int, tokens: int, cost: float, last_run_at: ts?
 WaitingOn  kind: "human"|"review"|"dependency"|"blocked"|"rate_limit"|"slot"|"providers"|"parked",
            target: str|int? (question id | reviewer handle | task id | provider), since: ts, detail: str,
            reset_at?: ts (rate_limit), queue_position?: int (slot). Null while running. If several apply, the
@@ -89,9 +91,10 @@ Run        id, agent, started: ts, ended: ts?, reason, status: "running"|"ok"|"e
            provider, model, cost, tokens, task_id: int?, summary, lines: int
 RunLine    seq: int (run_lines.id), ts, kind: str ("text"|"tool"|"result"|"error"|…), text
 Activity   id, ts, agent, kind, text, ref: str ("task:12", "msg:40", …), significant: bool
-Engine     state: "live"|"paused"|"throttled"|"reloading", paused: bool, throttled: str?, heartbeat: ts,
+Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: bool, stopped: bool (kill switch,
+           REQ-SAFE-010; only the human resumes), throttled: str?, heartbeat: ts,
            version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
-           (state precedence: reloading > paused > throttled > live)
+           (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
            throttled: str?, providers: [{provider, limited_until: ts?, windows: [{name: "5h"|"7d"|…,
            used_pct: float, cap_pct: float?, resets_at: ts?}]}]
@@ -152,6 +155,7 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
   | `update_task` | `id`, `fields` | see REQ-API-041 | `{task}` |
   | `add_task_note` | `id`, `text` | note; mailed to the assignee as "Note on #id", else an event | `{note}` |
   | `comment_decision` | `decision_id`, `body` | REQ-COM-035 comment + routing mail | `{comment}` |
+  | `update_config` | `file: "team.yaml"\|"troupe.toml"`, `patch` (keys → values) | validated with REQ-ENG-019 rules, written preserving comments, counts as the human's approval for `[safety]` and `[git] check` (REQ-SAFE-021); invalid → `bad_request` naming the field | `{config}` |
   | `update_memory` | `id`, `pinned?`, `major?`, `title?`, `content?`, `rationale?` | REQ-COM-033/034 | `{memory}` |
   | `delete_memory` | `id` | REQ-COM-033 (the client confirms first) | `{deleted: true}` |
   | `mark_seen` | `key` (`human_last_seen`\|`decisions_seen_at`), `ts?` (default now) | kv write (GUI-028/041); never moves backwards | `{seen}` |
@@ -222,6 +226,11 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
   don't bump it. Removing or renaming anything, or changing a type or meaning, does. Clients must ignore unknown
   fields and unknown event types. The server rejects unknown **params** with `bad_request`, so typos surface.
 
+- **REQ-API-074 [ ]** Service state when the socket is down: the supervisor (REQ-ENG-042) writes
+  `.troupe/service.json` = `{state: "running"|"restarting"|"crashed"|"stopped", reason, since, restarts}` on every
+  transition. With no socket, clients read that file (a read-only local file, like docs) to show "Restarting…" or
+  "Crashed" (REQ-GUI-029) instead of a bare "offline".
+
 ## Tooling
 - **REQ-API-080 [ ]** `troupe api <method> [json-params]` connects to the current project's socket, does `hello`,
   calls the method, and prints the result as indented JSON.
@@ -235,10 +244,7 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
 ## Open questions
 1. Should the API also carry doc/spec file contents (and file-change events) for a future remote client?
 2. Auth beyond file permissions if the socket ever leaves the machine (out of scope for v0).
-3. The engine serves the socket, so a crashed or crash-looping service (REQ-ENG-042) has no socket, and the client
-   only sees "offline". Should the supervisor serve the API so "Restarting…" and "Crashed" are visible over it?
-4. Settings (REQ-GUI-021) writes `team.yaml` and `troupe.toml`. Should those writes go through the API
-   (`update_config`, with ENG-019 validation) or stay as client-side file edits?
+
 
 ## Out of scope
 TCP or remote access, multiple users, cross-project calls, streaming raw backend JSONL (`.troupe/runs/*.jsonl`),
@@ -246,3 +252,6 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
 
 ## Changelog
 - 2026-09-23 — API v0 written (human confirmed the native SwiftUI app; pm msg #110).
+- 2026-09-23 — `stopped` engine state (kill switch), `mail_reading`, client `notifications` presence, `update_config`
+  (Settings go through the API, so validation stays in one place), and `service.json` for crash/restart visibility
+  (closes former open questions 3 and 4).

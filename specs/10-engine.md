@@ -26,7 +26,8 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
-  - `troupe restart` = stop + start. It is used after reinstalling troupe.
+  - `troupe start` starts the detached service only, with no GUI (used by the Mac app's Start team and by scripts).
+    `troupe restart` = stop + start.
   - `troupe status` first prints the service state (`running` with pid, uptime, heartbeat age and version,
     `stopped`, or `stale`) and exits 0 if running, 1 otherwise.
   - `troupe reload` = graceful reload (REQ-ENG-009). `troupe status` shows the running service's version; a
