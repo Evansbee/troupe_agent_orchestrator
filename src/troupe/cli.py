@@ -14,7 +14,7 @@ import httpx
 
 from . import config as config_mod
 from . import gitops
-from .store import OPEN_STATUSES, Store
+from .store import OPEN_STATUSES, Store, HandleBook
 
 PM_GREETING = """\
 Hi — I'm your **Product Manager**. 👋
@@ -137,19 +137,20 @@ def cmd_status(args: argparse.Namespace) -> None:
     cfg = config_mod.load(require_root())
     s = Store(cfg.db_path)
     pid = engine_alive(cfg)
+    names = HandleBook(cfg.project, cfg.agents)
     print(f"{cfg.project} — engine {'running (pid %d)' % pid if pid else 'stopped'}"
           f"{' · PAUSED' if s.kv_get('paused') else ''}")
     for a in s.agents():
-        print(f"  {a['id']:<12} {a['state']:<8} {a['backend']}/{a['model'] or '-':<10} {a['status'][:60]}")
+        print(f"  {names.name(a['id']):<12} {a['state']:<8} {a['backend']}/{a['model'] or '-':<10} {a['status'][:60]}")
     tasks = s.tasks(OPEN_STATUSES)
     print(f"\n{len(tasks)} open tasks")
     for t in tasks[:20]:
-        print(f"  #{t['id']:<4} {t['status']:<12} {t['assignee'] or '-':<10} {t['title'][:70]}")
+        print(f"  #{t['id']:<4} {t['status']:<12} {names.name(t['assignee']):<10} {t['title'][:70]}")
     qs = s.questions()
     if qs:
         print(f"\n{len(qs)} questions for you:")
         for q in qs:
-            print(f"  #{q['id']} ({q['asker']}) {q['question'][:100]}")
+            print(f"  #{q['id']} ({names.name(q['asker'])}) {q['question'][:100]}")
 
 
 def cmd_say(args: argparse.Namespace) -> None:

@@ -31,7 +31,7 @@ _REPLACE = {"\t": "    ", "’": "'", "‘": "'", "“": '"', "”": '"'}
 ZOOM_DEFAULT = 1.15
 ZOOM_MIN = 0.8
 # Validated at the default 1560x980 window: all seven tabs render without overlap/clipping up to
-# here (see specs/40-gui.md REQ-GUI-043). Above this, several views' fixed-width chrome (Board's
+# here (see specs/40-gui.md REQ-GUI-009). Above this, several views' fixed-width chrome (Board's
 # 5 columns, Agent's header, Pulse's node orbit) run out of absolute room as the logical canvas
 # shrinks — a views.py-wide responsive redesign, not a zoom-math problem (tracked separately).
 ZOOM_MAX = 1.20

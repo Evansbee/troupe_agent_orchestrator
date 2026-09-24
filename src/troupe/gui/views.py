@@ -173,7 +173,7 @@ def chat_view(app: "App", r: Rect) -> None:
             ui.rect(rr, T.HOVER, 9)
             ui.hand()
         ui.avatar(rr.x + 20, rr.cy, 13, col, d.initials_of(a["id"]), a["state"] == "running")
-        ui.text_fit(rr.x + 42, rr.y + 9, a["name"], rr.w - 70, 13, T.TEXT if sel or hov else T.TEXT_DIM, "med")
+        ui.text_fit(rr.x + 42, rr.y + 9, d.name_of(a["id"]), rr.w - 70, 13, T.TEXT if sel or hov else T.TEXT_DIM, "med")
         ui.text_fit(rr.x + 42, rr.y + 28, get_role(a["role"]).title, rr.w - 70, 11, T.TEXT_FAINT)
         n = d.chat_unread.get(a["id"], 0)
         if n:
@@ -191,7 +191,7 @@ def chat_view(app: "App", r: Rect) -> None:
     col = d.color_of(agent_id)
     head, rest = main.cut_top(62)
     ui.avatar(head.x + 34, head.cy, 17, col, d.initials_of(agent_id), a["state"] == "running")
-    ui.text(head.x + 62, head.y + 13, a["name"], 16, T.TEXT, "bold")
+    ui.text(head.x + 62, head.y + 13, d.name_of(a["id"]), 16, T.TEXT, "bold")
     role = get_role(a["role"])
     sub = role.title + (" · working" if a["state"] == "running" else " · idle") + f" · {a['backend']}" \
         + (f"/{a['model']}" if a["model"] else "")
@@ -219,7 +219,7 @@ def chat_view(app: "App", r: Rect) -> None:
     ui.scroll_end(sc, y + sc.offset - convo.y + 8)
     # composer
     cr = Rect(compose.x + 24, compose.y + 8, in_w, ih)
-    sub_text = ui.text_input(iid, cr, f"Message {a['name']}…   Enter to send · Shift+Enter for a new line", 14)
+    sub_text = ui.text_input(iid, cr, f"Message {app.data.name_of(a['id'])}…   Enter to send · Shift+Enter for a new line", 14)
     br = Rect(cr.r + 10, cr.b - 40, 80, 40)
     if ui.button(f"send:{agent_id}", br, "Send", "primary", 14) and ui.input_text(iid).strip():
         sub_text = ui.input_text(iid).strip()
@@ -247,7 +247,7 @@ def _chat_empty(app: "App", a: dict, area: Rect, y: float) -> float:
     cy = area.y + area.h * 0.28
     ui.glow(area.cx, cy, 70, col, 0.18)
     ui.avatar(area.cx, cy, 28, col, app.data.initials_of(a["id"]))
-    t = f"Start a conversation with {a['name']}"
+    t = f"Start a conversation with {app.data.name_of(a['id'])}"
     ui.text(area.cx - ui.measure(t, 17, "bold") / 2, cy + 44, t, 17, T.TEXT, "bold")
     ui.text(area.cx - min(520, ui.measure(role.blurb, 13)) / 2, cy + 72, ui.ellipsize(role.blurb, 520, 13), 13,
             T.TEXT_DIM)
@@ -327,7 +327,7 @@ def _typing(app: "App", a: dict, area: Rect, y: float, maxw: float) -> float:
     for i in range(3):
         ph = ui.t * 5 - i * 0.7
         ui.circle(br.x + 20 + i * 12, br.y + 18 + math.sin(ph) * 2.5, 3.2, alpha(col, 0.5 + 0.5 * max(0, math.sin(ph))))
-    ui.text_fit(br.x + 58, br.y + 10, f"{a['name']} is waiting" if limit else f"{a['name']} is working", w - 70, 12, col, "med")
+    ui.text_fit(br.x + 58, br.y + 10, f"{app.data.name_of(a['id'])} is waiting" if limit else f"{app.data.name_of(a['id'])} is working", w - 70, 12, col, "med")
     ui.text_fit(br.x + 16, br.y + 30, act, w - 30, 12, T.TEXT_DIM)
     return br.b
 
@@ -435,7 +435,7 @@ def pulse_view(app: "App", r: Rect) -> None:
         bump = max(0.0, 1 - (now - p.bumps.get(a["id"], 0)) / 0.5)
         rad = 25 + 5 * bump
         ui.avatar(x, y, rad, col, d.initials_of(a["id"]), a["state"] == "running", not a["enabled"])
-        name = a["name"]
+        name = d.name_of(a["id"], local=True)
         ui.text(x - ui.measure(name, 13, "med") / 2, y + rad + 8, name, 13, T.TEXT, "med")
         line = a["activity"] if a["state"] == "running" else (a["status"] or get_role(a["role"]).title)
         line = ui.ellipsize(line or "", 190, 11)
@@ -443,7 +443,7 @@ def pulse_view(app: "App", r: Rect) -> None:
         nr = Rect(x - rad, y - rad, rad * 2, rad * 2)
         if ui.hover(nr):
             ui.hand()
-            ui.tip(f"{a['name']} — {get_role(a['role']).blurb}\nclick: details · right-click: chat")
+            ui.tip(f"{app.data.name_of(a['id'])} — {get_role(a['role']).blurb}\nclick: details · right-click: chat")
         if ui.click(nr):
             app.sel_agent, app.tab = a["id"], "Agent"
         if ui.hover(nr) and ui.right_clicked:
@@ -528,7 +528,7 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
         col = d.color_of(who)
         ui.avatar(x + pad + 8, fy + 8, 8, col, d.initials_of(who)[:2], d.agent_by_id.get(who, {}).get("state") == "running")
         name_budget = max(20.0, iw - 22 - (age_w + 10))
-        ui.text_fit(x + pad + 22, fy + 1, d.name_of(who), min(iw * 0.6, name_budget), 11.5, T.TEXT_DIM)
+        ui.text_fit(x + pad + 22, fy + 1, d.name_of(who, local=True), min(iw * 0.6, name_budget), 11.5, T.TEXT_DIM)
     else:
         ui.text_fit(x + pad, fy + 1, "unassigned", max(20.0, iw - (age_w + 10)), 11.5, T.TEXT_FAINT)
     ui.text(r.r - pad - age_w, fy + 2, age, 11, T.TEXT_FAINT)
@@ -579,7 +579,7 @@ def mail_view(app: "App", r: Rect) -> None:
         app.mail_filter = None
     x += w + 6
     for a in d.agents:
-        clicked, w = ui.chip(f"mf:{a['id']}", x, bar.y + 11, a["name"], app.mail_filter == a["id"], d.color_of(a["id"]))
+        clicked, w = ui.chip(f"mf:{a['id']}", x, bar.y + 11, d.name_of(a["id"]), app.mail_filter == a["id"], d.color_of(a["id"]))
         if clicked:
             app.mail_filter = a["id"]
         x += w + 6
@@ -818,7 +818,7 @@ def agent_view(app: "App", r: Rect) -> None:
     buttons_w = sum(ui.button_w(label) + 8 for _, label, _ in buttons)
     pill_limit = head.r - 16 - buttons_w - 16
 
-    nx = tx + ui.text(tx, head.y + 20, a["name"], 21, T.TEXT, "bold") + 12
+    nx = tx + ui.text(tx, head.y + 20, d.name_of(a["id"]), 21, T.TEXT, "bold") + 12
     for label, pcol in ((role.title, col), (a["backend"] + (f" · {a['model']}" if a["model"] else ""), T.TEXT_DIM),
                         (state, T.GREEN if state == "working" else T.TEXT_FAINT)):
         pw = ui.measure(label, 11, "med") + 16
@@ -840,14 +840,14 @@ def agent_view(app: "App", r: Rect) -> None:
                 app.chat_with, app.tab = a["id"], "Chat"
             elif key == "wake":
                 d.command("poke", a["id"])
-                app.toast(f"Waking {a['name']}…", col)
+                app.toast(f"Waking {app.data.name_of(a['id'])}…", col)
             elif key == "stop":
                 d.command("stop", a["id"])
             elif key == "toggle":
                 d.command("disable" if a["enabled"] else "enable", a["id"])
             elif key == "reset":
                 d.command("reset_session", a["id"])
-                app.toast(f"{a['name']} will start a fresh session next run", col)
+                app.toast(f"{app.data.name_of(a['id'])} will start a fresh session next run", col)
         bx -= 8
     ui.hline(r.x, head.b, r.w, T.BORDER)
     left, right = body.cut_left(body.w * 0.63)

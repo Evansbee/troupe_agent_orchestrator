@@ -181,7 +181,9 @@ def test_prompts_include_role_and_context(project):
     assert "Hidden secret" not in prompt
     system = engine.system_prompt(a)
     assert get_role(a.role).prompt in system
-    assert all(agent.id in system for agent in cfg.agents)
+    from troupe.store import HandleBook
+    names = HandleBook(cfg.project, cfg.agents)
+    assert all(names.name(agent.id) in system for agent in cfg.agents)
 
 
 def test_dispatch_waits_for_dependency_and_skips_disabled(project):
