@@ -312,7 +312,32 @@ def run_foreground(cfg) -> bool:
                         )
                     await asyncio.sleep(0.2)
 
+            async def watch_liveness():
+                # #103: this process is detached (start_new_session=True in start_service), so
+                # nothing else notices if what it's serving disappears out from under it — the
+                # exact way orphaned test engines outlived their already-deleted /tmp project dirs
+                # and kept burning CPU/RAM on the human's laptop. Self-exit is the backstop: no
+                # matter *why* the root vanished (a crashed test's tmpdir cleanup, the human
+                # deleting a project, a stray `rm -rf`), the engine notices within a couple of
+                # ticks instead of running forever. TROUPE_EXIT_WITH_PARENT_PID (set only by the
+                # test fixture, never in production) adds a second, tighter trigger: exit as soon
+                # as the process that spawned this engine is gone, rather than waiting for its
+                # directory to vanish too.
+                parent_pid_raw = os.environ.get("TROUPE_EXIT_WITH_PARENT_PID", "")
+                parent_pid = int(parent_pid_raw) if parent_pid_raw.isdigit() else None
+                while True:
+                    if not cfg.root.is_dir() or not cfg.state_dir.is_dir():
+                        logger.info("Project root %s disappeared; stopping.", cfg.root)
+                        eng.stop()
+                        return
+                    if parent_pid is not None and not _process_alive(parent_pid):
+                        logger.info("Parent process %s is gone; stopping.", parent_pid)
+                        eng.stop()
+                        return
+                    await asyncio.sleep(2)
+
             worker = asyncio.create_task(log_events())
+            liveness = asyncio.create_task(watch_liveness())
             try:
                 logger.info(
                     "Engine started pid=%s version=%s", os.getpid(), __version__
@@ -320,7 +345,8 @@ def run_foreground(cfg) -> bool:
                 await eng.main()
             finally:
                 worker.cancel()
-                await asyncio.gather(worker, return_exceptions=True)
+                liveness.cancel()
+                await asyncio.gather(worker, liveness, return_exceptions=True)
 
         try:
             asyncio.run(run())

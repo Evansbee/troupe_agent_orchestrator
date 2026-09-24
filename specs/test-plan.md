@@ -93,7 +93,7 @@ verify clicks, animation, keyboard input or frame rates: run the paired interact
 | REQ-GUI-002 | TROUPE_SHOT Agent: roles, backend/model, activity/status, task/last-run/unread counts and parked diagnosis visible. Manual: working ring animates; left-click selects Agent, right-click opens correct Chat. |
 | REQ-GUI-003 | TROUPE_SHOT Chat with populated and empty Needs you; manual choose option, submit free text, dismiss and verify mail/card removal. |
 | REQ-GUI-004 | Manual: click each of seven tabs and use ⌘1–7; each selects corresponding view with no lost state. Capture each using TROUPE_SHOT. |
-| REQ-GUI-005 | Manual: background window, deliver question/chat, see macOS notification; focus window and verify toast behavior without duplicate notifications after refresh. |
+| REQ-GUI-005 | `tests/test_gui_notify_crash.py`: insert a needs_help message to human after the initial snapshot, refresh, and handle notifications without crashing; assert the safety toast appears. Restoring the removed `Data.notify` call must fail this regression. Manual: background window, deliver question/chat, see macOS notification; focus window and verify toast behavior without duplicate notifications after refresh. |
 | REQ-GUI-006 | Manual: measure frame timing in idle and working/animating states; approximately 20 and 60 fps respectively; interaction remains responsive. |
 | REQ-GUI-007 | TROUPE_SHOT command creates valid PNG and exits; manual F12 produces readable screenshot under `.troupe/`. |
 | REQ-GUI-010 | TROUPE_SHOT Chat empty/populated: PM/Spec/Lead order, suggestions, markdown and working bubble/activity. Manual Enter sends, Shift+Enter adds newline, final backend text replaces waiting state and scroll remains usable. |
