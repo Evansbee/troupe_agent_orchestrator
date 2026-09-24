@@ -171,7 +171,7 @@ Blocked actions return a tool error telling the agent what was blocked and to us
     (others) plus `.troupe/`. Network is per role profile (`-c sandbox_workspace_write.network_access`). Its
     `PreToolUse` hook turned out wire-compatible with Claude's — the unmodified `guard()` (REQ-SAFE-030..033, plus
     the new troupe.db/api.sock checks below) now runs for codex too, closing the gap REQ-SAFE-034 named.
-  - **codex MCP and git [ ] (#96; lead decision after QA's review, 2026-09-24):**
+  - **codex MCP and git [x] (#96; lead decision after QA's review, 2026-09-24):**
     - troupe's own MCP server is pre-approved (`mcp_servers.troupe.default_tools_approval_mode`), so its tools
       work under `approval_policy=never`. No other server or app is approved, and `approval_policy` stays
       `never`.
