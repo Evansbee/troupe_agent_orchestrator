@@ -98,6 +98,11 @@ class Notifier:
         suppressed = api_suppressed or (focus > 0 and stamp - focus < FOCUS_TTL)
         pending = state['pending']
         for key, item in list(pending.items()):
+            if item['kind'] == 'concern':
+                # REQ-COM-029: must-deliver. troupe.toml is agent-writable, so neither
+                # notify.enabled nor notify.quiet may hold this back — NotifySettings also rejects
+                # "concern" in quiet outright; this is the belt-and-suspenders half.
+                continue
             if suppressed or not cfg.notify.enabled or item['kind'] in cfg.notify.quiet:
                 state['seen'].append(key)
                 del pending[key]  # already visible in-window or owned by the native client

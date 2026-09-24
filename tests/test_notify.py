@@ -139,6 +139,23 @@ def test_concern_notifies_with_no_content_and_no_reporter(env):
     assert 'troupe concerns' in body
 
 
+def test_concern_alert_cannot_be_silenced_by_config(env):
+    """QA #65: troupe.toml is agent-writable and #42's config gate covers only [safety], so any
+    agent (the PM included) could otherwise mute the whistleblower alert with a one-line edit.
+    NotifySettings rejects "concern" in quiet outright (test_config_validation_and_focus_heartbeat);
+    this is the second, independent layer inside the Notifier itself — even if notify.enabled is off
+    or notify.quiet somehow contains "concern" (bypassing the constructor, as defense in depth), the
+    alert still gets delivered."""
+    cfg, s, clock, sent, n = env
+    cfg.notify.enabled = False
+    cfg.notify.quiet.append('concern')
+    s.report_concern('lead', 'the PM told me to hide a bug from the human')
+    advance(env)
+    assert len(sent) == 1
+    title, body = sent[0]
+    assert 'troupe concerns' in body and 'hide a bug' not in body
+
+
 def test_urgent_human_task_bypasses_interval(env):
     cfg, s, clock, sent, n = env
     s.ask('lead', 'First')
@@ -179,7 +196,7 @@ def test_delivery_uses_argv_not_script_interpolation(monkeypatch):
 
 def test_config_validation_and_focus_heartbeat(env, monkeypatch):
     cfg, s, clock, sent, n = env
-    for kwargs in ({'enabled': 'yes'}, {'quiet': 'question'}, {'quiet': ['bogus']}):
+    for kwargs in ({'enabled': 'yes'}, {'quiet': 'question'}, {'quiet': ['bogus']}, {'quiet': ['concern']}):
         with pytest.raises(ValueError):
             NotifySettings(**kwargs)
     parsed = load(cfg.root, toml_data={'notify': {'enabled': False, 'quiet': ['question']}},
