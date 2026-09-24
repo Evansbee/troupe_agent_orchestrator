@@ -1,10 +1,16 @@
 """REQ-BE-015: codex runs are isolated from the human's personal ~/.codex (no plugins, no notify)."""
 import asyncio
 import os
+import shutil
+import subprocess
+import tomllib
 from pathlib import Path
 
+import pytest
+
 from troupe.runners import (
-    CodexRunner, RunSpec, codex_config_toml, codex_home_dir, ensure_codex_home, link_codex_auth,
+    CODEX_DISABLED_FEATURES, CodexRunner, RunSpec, codex_config_toml, codex_home_dir, ensure_codex_home,
+    link_codex_auth,
 )
 
 
@@ -20,11 +26,79 @@ def test_generated_config_has_no_plugins_or_notify(project):
     a.model, a.effort = "gpt-5-codex", "high"
     toml = codex_config_toml(cfg, a)
     body = "\n".join(line for line in toml.splitlines() if not line.startswith("#"))
-    assert "plugin" not in body.lower()
+    assert "plugins = true" not in body.lower()
     assert "notify" not in body.lower()
     assert "[mcp_servers.troupe]" in toml
     assert 'model = "gpt-5-codex"' in toml
     assert 'model_reasoning_effort = "high"' in toml
+
+
+def test_generated_config_disables_every_feature_and_only_troupe_mcp_server(project):
+    """QA rejection of #62 v1: an isolated CODEX_HOME still auto-enabled `apps`/`plugins`, which sync in
+    the human's ChatGPT-account connectors (Gmail send/delete, Canva, ...) via the symlinked auth. The
+    fix is an allowlist: every optional feature explicitly false, and troupe as the only MCP server."""
+    cfg, _ = project
+    a = cfg.agents[0]
+    parsed = tomllib.loads(codex_config_toml(cfg, a))
+    assert set(parsed["mcp_servers"]) == {"troupe"}
+    assert set(CODEX_DISABLED_FEATURES) <= set(parsed["features"])
+    for name in CODEX_DISABLED_FEATURES:
+        assert parsed["features"][name] is False
+
+
+def test_codex_runner_argv_also_disables_features_belt_and_braces(project, monkeypatch, tmp_path):
+    """A stale or hand-edited config.toml in the isolated home shouldn't be able to re-enable a
+    feature — the launch argv repeats the same disables as `-c` overrides."""
+    cfg, _ = project
+    a = cfg.agents[0]
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["args"] = args
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+
+    args = seen["args"]
+    for name in CODEX_DISABLED_FEATURES:
+        i = args.index(f"features.{name}=false")
+        assert args[i - 1] == "-c"
+
+
+CODEX_LIVE = shutil.which("codex") and (Path.home() / ".codex" / "auth.json").exists()
+
+
+@pytest.mark.skipif(not CODEX_LIVE, reason="needs a real, logged-in codex CLI")
+def test_live_isolated_home_has_no_enabled_plugins_or_features(project):
+    """Live check (not mocked) for REQ-BE-015: builds a real isolated CODEX_HOME and asks the actual
+    codex CLI — not the model, so this is deterministic and free — what it sees. `plugin list` synced
+    Gmail/Canva connectors from the human's account before the [features] allowlist fix landed."""
+    cfg, _ = project
+    a = cfg.agents[0]
+    home = codex_home_dir(cfg, a.id)
+    ensure_codex_home(cfg, a, home)
+    env = dict(os.environ, CODEX_HOME=str(home))
+
+    plugins = subprocess.run(["codex", "plugin", "list"], env=env, capture_output=True, text=True, timeout=30)
+    assert plugins.returncode == 0
+    assert "enabled" not in plugins.stdout.lower()
+    for bad in ("gmail", "canva", "spotify"):
+        assert bad not in plugins.stdout.lower()
+
+    features = subprocess.run(["codex", "features", "list"], env=env, capture_output=True, text=True, timeout=30)
+    assert features.returncode == 0
+    lines = {line.split()[0]: line for line in features.stdout.splitlines() if line.strip()}
+    for name in CODEX_DISABLED_FEATURES:
+        assert name in lines, f"{name} missing from `codex features list`"
+        assert lines[name].split()[-1] == "false", lines[name]
 
 
 def test_generated_config_maps_max_effort_to_xhigh(project):
