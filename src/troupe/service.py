@@ -405,11 +405,22 @@ def run_foreground(cfg) -> bool:
         try:
             asyncio.run(run())
         finally:
-            eng.store.kv_set("heartbeat", 0)
+            # #100: this must be the very first thing that happens, unconditionally -- the pid
+            # file's absence has to be a guarantee callers (stop_service's graceful-return path,
+            # which trusts we've already done this before it observes the lock released) can rely
+            # on regardless of what else in this block does. Under load, a later step here (an
+            # SQLite write, a logging call) can be slow enough that stop_service's own timeout
+            # expires and escalates to SIGKILL before reaching this line, or can itself raise and
+            # abort the rest of the block -- either way, unlinking last made the guarantee only
+            # probabilistic instead of ordered.
+            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+            try:
+                eng.store.kv_set("heartbeat", 0)
+            except Exception:
+                pass
             logger.info("Engine stopped")
             logger.removeHandler(handler)
             handler.close()
-            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
             for sig, previous in old_handlers.items():
                 signal.signal(sig, previous)
         return True
