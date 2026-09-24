@@ -856,14 +856,16 @@ def agent_view(app: "App", r: Rect) -> None:
     left, right = body.cut_left(body.w * 0.63)
     ui.rect(Rect(left.r, left.y, 1, left.h), T.BORDER)
     # runs strip
-    runs = d.store.runs(a["id"], limit=200) if (ui.t % 1 < 0.05 or not hasattr(app, "_runs")) else app._runs
-    app._runs = runs
+    runs = d.runs_for(a["id"])
     if runs and a["id"] != getattr(app, "_runs_agent", None):
         app._runs_agent = a["id"]
         app.sel_run = None
     rsel = app.sel_run or (runs[0]["id"] if runs else None)
     strip, tr = left.cut_top(46)
-    view_w = 190.0
+    # Sized to the actual chip widths (not a flat guess) so the run selector keeps as much of the
+    # strip as it can spare — at the 1120px minimum window width, a flat reservation left the
+    # selector too narrow to show which run was even selected (#54).
+    view_w = 22 + sum(ui.measure(mode, 11.5, "med") + 20 for mode in ("Transcript", "Prompt"))
     view_toggle, sel_area = strip.cut_right(view_w)
     _run_selector(app, a, runs, rsel, Rect(sel_area.x + 14, sel_area.y + 8, min(260.0, sel_area.w - 22), 30))
     vx = view_toggle.x + 8
@@ -891,7 +893,7 @@ def _run_selector(app: "App", a: dict, runs: list[dict], rsel: int | None, r: Re
     agent, so history stays reachable at any window width (no chip-fitting, no overflow-by-omission).
     """
     global _run_picker_agent, _run_picker_anchor, _run_picker_runs
-    ui = app.ui
+    ui, d = app.ui, app.data
     open_ = _run_picker_agent == a["id"]
     if open_:
         _run_picker_anchor, _run_picker_runs = r, runs
@@ -904,11 +906,18 @@ def _run_selector(app: "App", a: dict, runs: list[dict], rsel: int | None, r: Re
         ui.stroke(r, alpha(T.ACCENT, 0.55), 8)
     if run:
         ui.dot(r.x + 14, r.cy, col, 4)
-    ui.text_fit(r.x + 24, r.y + (r.h - 12) / 2, label, r.w - 54, 12, T.TEXT, "med")
+    # arrow first (fixed position), then the count sized/placed off the arrow's actual left edge —
+    # a flat offset for the count broke once counts went to 3 digits (200+ runs, #54's own scenario)
+    arrow = "↑" if open_ else "↓"
+    arrow_x = r.r - 16 - ui.measure(arrow, 11, "bold")
+    ui.text(arrow_x, r.y + (r.h - 11) / 2, arrow, 11, T.TEXT_FAINT, "bold")
     if len(runs) > 1:
-        ui.text(r.r - 16 - ui.measure(str(len(runs)), 10.5), r.y + (r.h - 10.5) / 2, str(len(runs)), 10.5,
-                T.TEXT_FAINT)
-    ui.text(r.r - 30, r.y + (r.h - 11) / 2, "↑" if open_ else "↓", 11, T.TEXT_FAINT, "bold")
+        count = f"{len(runs)}+" if d.has_more_runs(a["id"]) else str(len(runs))
+        count_w = ui.measure(count, 10.5)
+        ui.text(arrow_x - 8 - count_w, r.y + (r.h - 10.5) / 2, count, 10.5, T.TEXT_FAINT)
+        ui.text_fit(r.x + 24, r.y + (r.h - 12) / 2, label, arrow_x - 8 - count_w - 8 - (r.x + 24), 12, T.TEXT, "med")
+    else:
+        ui.text_fit(r.x + 24, r.y + (r.h - 12) / 2, label, arrow_x - 8 - (r.x + 24), 12, T.TEXT, "med")
     if hov:
         ui.hand()
         if run:
@@ -919,11 +928,12 @@ def _run_selector(app: "App", a: dict, runs: list[dict], rsel: int | None, r: Re
 
 
 def _run_picker_popover(app: "App") -> None:
-    ui = app.ui
+    ui, d = app.ui, app.data
     global _run_picker_agent
     anchor, runs = _run_picker_anchor, _run_picker_runs
+    more = d.has_more_runs(_run_picker_agent)
     w = 300.0
-    h = min(420.0, 44 + len(runs) * 38)
+    h = min(420.0, 44 + (len(runs) + (1 if more else 0)) * 38)
     x = min(anchor.x, ui.w - w - 16)
     y = anchor.b + 6
     if y + h > ui.h - 16:
@@ -935,7 +945,8 @@ def _run_picker_popover(app: "App") -> None:
         return
     ui.panel(r, T.PANEL2, 10, T.BORDER_HI)
     head, body = r.cut_top(32)
-    ui.text(head.x + 14, head.y + 9, f"{len(runs)} run{'s' if len(runs) != 1 else ''}", 11, T.TEXT_FAINT, "bold")
+    count_label = f"{len(runs)}+ runs" if more else f"{len(runs)} run{'s' if len(runs) != 1 else ''}"
+    ui.text(head.x + 14, head.y + 9, count_label, 11, T.TEXT_FAINT, "bold")
     sc = ui.scroll_begin(f"runpicker:{_run_picker_agent}", body.inset(4, 4))
     y2 = body.y + 4 - sc.offset
     rw = body.w - 8
@@ -960,6 +971,18 @@ def _run_picker_popover(app: "App") -> None:
                 app.sel_run = run["id"]
                 _run_picker_agent = None
         y2 += 36
+    if more:
+        rr = Rect(body.x + 4, y2, rw, 30)
+        if rr.b > body.y - 10 and rr.y < body.b + 10:
+            hov = ui.hover(rr)
+            if hov:
+                ui.rect(rr, T.HOVER, 6)
+                ui.hand()
+            label = "Load older runs"
+            ui.text_center(rr, label, 11.5, T.ACCENT, "med")
+            if ui.click(rr):
+                d.load_older_runs(_run_picker_agent)
+        y2 += 32
     ui.scroll_end(sc, y2 + sc.offset - body.y + 4)
 
 

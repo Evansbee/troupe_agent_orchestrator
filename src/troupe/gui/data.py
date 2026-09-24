@@ -10,6 +10,8 @@ from ..config import Config
 from ..roles import get_role
 from ..store import OPEN_STATUSES, Store, HandleBook
 
+RUNS_PAGE = 200  # size of the recent-runs window refreshed every cycle, and of each "load older" page
+
 
 class Data:
     REFRESH = 0.35
@@ -38,6 +40,11 @@ class Data:
         self._max_q = -1
         self.docs: list[Path] = []
         self._docs_at = 0.0
+        self._runs_cache: dict[str, dict[int, dict]] = {}  # agent_id -> {run_id: row}; merge-only, never evicted
+        self._runs_watched: set[str] = set()  # agents whose run history has been viewed; kept fresh by refresh()
+        self._runs_exhausted: dict[str, bool] = {}  # agent_id -> True once its oldest run is loaded
+        self._runs_older_limit: dict[str, int] = {}  # agent_id -> deepest "load older" depth actually fetched
+        self._runs_older_pending: dict[str, int] = {}  # agent_id -> depth queued by load_older_runs, not yet fetched
 
     def role_of(self, agent_id: str):
         a = self.agent_by_id.get(agent_id)
@@ -114,6 +121,18 @@ class Data:
         if now - self._docs_at > 3:
             self._docs_at = now
             self.docs = self.scan_docs()
+        # run history for watched agents: a bounded, flat-size fetch every cycle (not the grown
+        # "load older" depth) unless a load_older_runs() click queued a deeper page, merged into the
+        # cache so it never evicts already-paged-in history — this is the only place runs are
+        # fetched from the store, matching every other snapshot above; runs_for()/has_more_runs()/
+        # load_older_runs() are all pure cache reads or queue writes, safe to call from draw code.
+        for agent_id in self._runs_watched:
+            pending = self._runs_older_pending.pop(agent_id, None)
+            if pending is not None:
+                self._fetch_and_merge_runs(agent_id, pending)
+                self._runs_older_limit[agent_id] = pending
+            else:
+                self._fetch_and_merge_runs(agent_id, RUNS_PAGE)
 
     # ── derived ───────────────────────────────────────────────────────────
     def limit_label(self, backend: str) -> str:
@@ -147,6 +166,47 @@ class Data:
 
     def chat_thread(self, agent_id: str) -> list[dict]:
         return self.store.chat_thread(agent_id)
+
+    def _fetch_and_merge_runs(self, agent_id: str, limit: int) -> None:
+        """Fetch the `limit` most recent runs and merge them into the cache by id — never replaces
+        or trims the cache wholesale, so a fetch at one depth can't evict rows a deeper fetch (an
+        earlier load_older_runs call) already proved exist. Over-fetches by one to tell "exactly
+        `limit` runs total" apart from "more than `limit` exist" without a separate COUNT query.
+        Exhaustion only ever tightens (False -> True): once a deep enough fetch has proven there's
+        no older run left, a later shallower one (the flat-size periodic refresh) must not un-prove
+        it just because it wasn't asked to look that far back."""
+        rows = self.store.runs(agent_id, limit=limit + 1)
+        exhausted = len(rows) <= limit
+        self._runs_exhausted[agent_id] = exhausted or self._runs_exhausted.get(agent_id, False)
+        cache = self._runs_cache.setdefault(agent_id, {})
+        for row in rows[:limit]:  # the +1 was only to detect exhaustion; don't cache past the asked-for depth
+            cache[row["id"]] = row
+
+    def runs_for(self, agent_id: str) -> list[dict]:
+        """Cached run history for an agent, newest first — a pure cache read with no store access,
+        safe to call every draw frame. Marks the agent as "watched" so refresh() (called once per
+        frame, outside the draw path) starts keeping its recent runs current; historical pages
+        loaded via load_older_runs() persist across those refreshes so no run — however old — is
+        ever permanently out of reach (see REQ-GUI-022). Returns [] for at most one refresh cycle
+        the first time an agent is viewed, before refresh() has had a chance to populate it."""
+        self._runs_watched.add(agent_id)
+        cache = self._runs_cache.get(agent_id, {})
+        return sorted(cache.values(), key=lambda run: -run["id"])
+
+    def has_more_runs(self, agent_id: str) -> bool:
+        self._runs_watched.add(agent_id)
+        return not self._runs_exhausted.get(agent_id, False)
+
+    def load_older_runs(self, agent_id: str) -> None:
+        """Queue another page of older history for an agent. Unlike most user-triggered Data actions
+        (send_chat, answer, ...), this doesn't fetch synchronously — the "Load older runs" click
+        happens from inside draw code, and a page can be hundreds of rows of prompt/system/summary
+        text, so the fetch itself must happen in refresh() on the next cycle, outside the draw path.
+        Safe to call more than once before that cycle runs: each call advances the queued depth by
+        one more page rather than clobbering a still-pending request."""
+        self._runs_watched.add(agent_id)
+        requested = max(self._runs_older_limit.get(agent_id, RUNS_PAGE), self._runs_older_pending.get(agent_id, 0))
+        self._runs_older_pending[agent_id] = requested + RUNS_PAGE
 
     def scan_docs(self) -> list[Path]:
         root = self.cfg.root
