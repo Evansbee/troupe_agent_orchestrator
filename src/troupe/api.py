@@ -34,7 +34,6 @@ STAGED = {
     "delete_memory": ("REQ-COM-033", 8),
     "comment_decision": ("REQ-COM-035", 27),
     "update_config": ("REQ-ENG-019", 5),
-    "stop_now": ("REQ-SAFE-010", 42),
 }
 PARAMS = {
     "ping": "",
@@ -678,6 +677,11 @@ class Data:
             return dict(milestone=s.milestone(mid))
         if method == "stop_team":
             return {"accepted": True}
+        if method == "stop_now":
+            from .safety import stop_now
+            killed = s.scalar("SELECT count(*) FROM runs WHERE status='running'", default=0)
+            stop_now(s)
+            return dict(killed=killed)
         if method in STAGED:
             unavailable(*STAGED[method])
         if method in (
@@ -719,17 +723,17 @@ class Data:
                 ),
             )
         if method in ("pause", "resume"):
-            if method == "resume" and s.kv_get("stopped"):
-                unavailable("REQ-SAFE-010", 42)
-            s.kv_set("paused", method == "pause")
-            s.event(
-                "human",
-                "control",
-                "You paused the troupe"
-                if method == "pause"
-                else "You resumed the troupe",
-                significant=False,
-            )
+            if method == "pause":
+                s.kv_set("paused", True)
+                s.event("human", "control", "You paused the troupe", significant=False)
+            else:
+                # Mirrors engine.handle_commands()'s "resume": clears both the plain pause
+                # (REQ-ENG-014) and the kill switch (REQ-SAFE-010), which stop_now sets together, so
+                # resuming always fully recovers regardless of which state the human is coming from.
+                from .safety import audit
+                s.kv_set("stopped", False)
+                s.kv_set("paused", False)
+                audit(s, "Human resumed the troupe", notify=False)
             return dict(engine=self.engine_state())
         if method in ("answer_question", "dismiss_question"):
             qid = integer(p, "id", minimum=1)
@@ -743,7 +747,13 @@ class Data:
                     )
                 if p.get("decision") not in ("approve", "reject"):
                     raise APIError("bad_request", "decision must be approve or reject")
-                unavailable("REQ-SAFE-020", 42)
+                # Same answer text shape as the raylib GUI's approval buttons (views.py
+                # answer_question_option): "Approve"/"Reject" + an optional " — note", which is what
+                # gates.py's verdict() parses to decide the outcome — one shared path, not a second.
+                note = string(p, "text", "")
+                label = "Approve" if p["decision"] == "approve" else "Reject"
+                s.answer(qid, f"{label} — {note}" if note else label, status="answered")
+                return dict(question=self.question(self.require("questions", qid)))
             if "decision" in p:
                 raise APIError(
                     "bad_request", "decision only applies to approval questions"

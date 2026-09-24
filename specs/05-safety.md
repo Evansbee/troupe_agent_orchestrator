@@ -47,19 +47,22 @@ normal project work, including pushing to the project's own remote with the huma
     quietly dropped or shrunk. The mechanics (★ flag, reporting back) are task #45.
 
 ## Kill switch (#42)
-- **REQ-SAFE-010 [~]** **Stop everything** (CLI + raylib GUI shipped; API via #48, Mac via REQ-MAC) is available as:
+- **REQ-SAFE-010 [~]** **Stop everything** (CLI + raylib GUI + API shipped, #57; Mac via REQ-MAC) is available as:
   - a GUI button plus ⌘⇧. (raylib and Mac app);
   - `troupe stop --now`;
-  - the API `stop_now` command (specs/50-api.md).
+  - the API `stop_now` command (specs/50-api.md), which calls the same `safety.stop_now()` the CLI does — one
+    implementation, not a second one behind the socket.
   Within **2 s** every running agent process group gets SIGTERM, then SIGKILL, and the engine enters `stopped` state.
   - No runs start, **chat included**, until the human resumes.
   - The service stays up so the human can inspect. Runs that were in flight are marked `interrupted` and their mail is
     re-queued.
-  - Resume is human-only: the GUI Resume button, `troupe resume`, or the API. Agents have no tool that resumes.
+  - Resume is human-only: the GUI Resume button, `troupe resume`, or the API. Agents have no tool that resumes or
+    stops everything — `stop_now`/`resume`/approval decisions aren't exposed as agent tools, only through the GUI,
+    CLI and the local-user-only (0600) API socket.
   - The stopped state persists in kv across reload, restart and crash recovery (REQ-ENG-009/042).
   - Differs from `troupe stop` (REQ-ENG-006), which shuts the service down.
   - Test: with 2 runs in flight, both the CLI and the API command leave zero agent processes within 2 s, and nothing
-    launches until resumed.
+    launches until resumed; no agent-tool path can reach resume or an approval decision.
 
 ## Human gate on safety-critical changes (#42)
 - **REQ-SAFE-020 [x]** `[safety] protected` in `troupe.toml` lists paths (files or directories) that agents can't change
@@ -130,6 +133,8 @@ Blocked actions return a tool error telling the agent what was blocked and to us
   - Each is an event of kind `safety` in the feed (redacted) and a line in `engine.log`.
   - Each triggers a needs-help notification (task #35), except resume and approvals the human just made.
   - The Pulse/Stage ticker (REQ-GUI-035) shows them.
+  - The API's `stop_now`/`resume`/approval-decision commands (#57) go through the same `safety.audit()` call as the
+    CLI and GUI, so they're recorded identically — no separate audit path for the API.
 
 ## Least-privilege sandbox (#43)
 - **REQ-SAFE-050 [ ]** No run uses `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox`
