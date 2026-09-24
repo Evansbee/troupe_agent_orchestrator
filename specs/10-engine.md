@@ -180,7 +180,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     while both remain in flight. Tasks with empty territories are never flagged.
   - Serializing (holding the second task) is out of scope for now.
   - Test: parsing, prefix rules, notify-once-per-pair.
-- **REQ-ENG-038 [ ]** Worktree setup and cleanup. (#3)
+- **REQ-ENG-038 [x]** Worktree setup and cleanup. (#3)
   - Config `[git] setup = "uv sync"` (default empty = none) runs once in each newly created worktree, before the
     builder's first run. Output is appended to that run's log; a non-zero exit adds a note to the task and the
     builder is still started (told that setup failed and why).
