@@ -165,8 +165,11 @@ def test_stop_kills_two_runs_and_blocks_chat_until_human_resume(project, monkeyp
         else:
             store.command('stop_now')
         await engine.tick()
-        await asyncio.wait_for(asyncio.gather(*(t for _, t, _ in running)), 5)
-        assert time.monotonic() - start < 5
+        # REQ-SAFE-010 promises the kill switch acts within 2s — that's the behavior under test,
+        # not test-infrastructure slack, so unlike the setup polls above this isn't widened for
+        # #71 (start is captured after setup, so setup delays don't eat into this budget).
+        await asyncio.wait_for(asyncio.gather(*(t for _, t, _ in running)), 1.5)
+        assert time.monotonic() - start < 2
         assert all(r.proc.returncode is not None for r, _, _ in running)
         assert all(r['status'] == 'interrupted' for r in store.runs())
         assert all(store.unread(aid) for aid in ('lead', 'pm'))
