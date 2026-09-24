@@ -27,7 +27,7 @@ Code: `src/troupe/runners.py`.
     fields. The Settings view will show "not supported" next to level for local agents (#5).
   - Test: argv built for each provider/level pair.
 
-- **REQ-BE-015 [ ]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
+- **REQ-BE-015 [x]** (#62; Principle 0) Codex runs are isolated from the human's personal Codex setup. Found
   2026-09-24: agents inherited `~/.codex/config.toml` plugins, including computer-use, browser, app tools and a notify
   hook into the Computer Use app. Those could drive the human's desktop and apps, and are a likely cause of the hangs.
   - Codex runs with `CODEX_HOME=.troupe/codex-home/<agent>`. That directory has a minimal generated `config.toml`
