@@ -20,3 +20,4 @@ Code: `src/troupe/runners.py`.
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
+- 2026-09-23 — rate-limit handling is specified in REQ-ENG-016 (runners detect it, the engine backs off).

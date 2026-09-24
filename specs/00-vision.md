@@ -11,7 +11,13 @@ verifies, someone who designs, someone who pushes back, and someone looking over
 
 ## Who it's for
 A builder (the **human**, the project owner) who wants to direct a product, not type every line. They have
-Claude / Codex subscriptions and maybe local models, and want those used where each is best.
+Claude / Codex subscriptions and maybe local models, and want those used where each is best. No provider
+is the default: codex and claude are peers, and reviewers should run on a different provider than writers.
+
+## What "finished" means
+troupe is finished when the human can point it at an empty directory, describe a project, and use it
+to build that project into working software, while seeing at every moment what each agent is doing and
+why. Until then, anything that blocks that end-to-end use or hides agent activity takes priority.
 
 ## Principles
 1. **The human is the owner, and their attention is scarce.** Agents batch questions, offer concrete
@@ -26,7 +32,8 @@ Claude / Codex subscriptions and maybe local models, and want those used where e
    verifies by effect before anything merges.
 6. **Everything is visible.** A beautiful, crazy-useful desktop app shows who's doing what, how they're
    talking, the backlog, the mailboxes, the decisions, and what needs the human — live.
-7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. Config is a TOML file.
+7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The team (provider, model and level per agent) is a
+   live-editable `team.yaml`; budget and plumbing live in `troupe.toml`.
 
 ## The team (roles)
 | Role | Job |
@@ -57,3 +64,7 @@ territories for parallel builders, reviewers on a different runtime than writers
 
 ## Changelog
 - 2026-09-23 — initial vision written during bootstrap (from the human's brief).
+- 2026-09-23 — added "What finished means" (human: a tool we can use to build a project; agent activity
+  always visible). Merge gate approved (idea #1 → REQ-ENG-040).
+- 2026-09-23 — team config moves to `team.yaml` (provider/model/level, hot-reloaded); codex and claude are
+  treated as peers (human feedback).
