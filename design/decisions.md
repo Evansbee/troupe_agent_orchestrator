@@ -166,3 +166,30 @@ outcome-event marker in the thread ("— superseded by lead_1@troupe —") **and
 + successor link on the row, same as a manually-set `superseded` outcome — i.e. there's no visual
 difference between an automatic and a manually-set outcome. Flagging only so it's explicit; I don't
 think it needs a spec change.
+
+**Update:** spec confirmed (msg #93) — auto-superseded renders identically to manual. Also confirmed
+the strikethrough primitive and the clickable-link layer below are fine as implementation details
+scoped to this tab.
+
+## Implementation notes: raylib-specific vs. portable
+
+pm's note (msg #90): a native SwiftUI GUI is proposed (unconfirmed). The list anatomy, thread layout,
+outcome palette, filters, and copy above are the design and carry over regardless of shell. Two of the
+"New primitives" above, however, were solving raylib-specific gaps that **don't exist on native
+macOS** — worth flagging as a case where the native platform is simply better, not just different:
+
+- **Strikethrough text**: raylib's text renderer has no strikethrough, hence the custom draw-a-line-
+  through-the-title workaround described above. `AttributedString`/`Text` on macOS supports
+  `.strikethrough()` natively — a native implementation should just use that, no custom line-drawing
+  needed. The *visual result* (struck-through title on superseded/reverted rows) is the spec; the
+  workaround is raylib-only.
+- **Clickable inline links** (`#n`/`REQ-…`/`specs/…` auto-linking): the raylib-specific plan above
+  (preprocess into markdown link syntax, hand-roll hit-test rects by walking word spans) exists only
+  because `ui.markdown` doesn't hit-test its own link styling. `AttributedString` with `.link`
+  attributes (or `NSTextView`) gives clickable, native-feeling links for free, including hover cursor
+  and accessibility — a native build should use that directly rather than porting the hand-rolled hit-
+  testing. The *behavior* (these three token types navigate on click) is the spec; everything else in
+  that section was working around a raylib gap.
+
+Everything else in this doc (row anatomy, outcome badges, thread structure, filters, pin/edit/delete,
+empty state) is described independent of any toolkit and needs no translation.

@@ -101,12 +101,18 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   - Test: migration on an old-schema DB; a launched run persists both fields.
 - **REQ-ENG-019 [ ]** The team is defined in `.troupe/team.yaml` and both config files hot-reload. (#20; human,
   live chat: "the agent setup should be a yaml file, which provider, which level")
-  - `team.yaml` holds `agents:`, a list of `{id, role, name, provider, model, level, enabled, idle_minutes,
-    extra_args}`. `provider` is `claude | codex | local`. `level` is `low | medium | high | max`, or empty for the
-    provider default (mapping in REQ-BE-010). Only `id`, `role` and `provider` are required. `troupe.toml` keeps
-    `[project]`, `[budget]`, `[backends]` and `[git]`.
+  - `team.yaml` holds `agents:`, a list of `{id, role, name, providers, enabled, idle_minutes, extra_args}`, plus the
+    top-level `provider_limits` (REQ-BE-011).
+    - `providers` is an **ordered** preference list of `{provider, model, level}`, first = preferred (human request).
+      Fallback between entries is REQ-BE-012.
+    - `provider` is `claude | codex | local`. `level` is `low | medium | high | max`, or empty for the provider
+      default (mapping in REQ-BE-010).
+    - Shorthand: `provider`/`model`/`level` at the agent's top level means a one-entry list.
+    - Only `id`, `role` and a provider are required. The config exposes `cfg.agent(id).providers` as the list.
+  - `troupe.toml` keeps `[project]`, `[budget]`, `[backends]`, `[git]`, `[safety]` and `[research]`.
   - Validation (on load and on reload): ids are unique, exactly one `lead`, roles and providers are known, `level`
-    is valid, and numbers are non-negative. The error message names the file, the agent id and the field.
+    is valid, and numbers are non-negative. A `providers` list is non-empty with no duplicate `provider`+`model`
+    entries. The error message names the file, the agent id and the field.
   - Migration: if `team.yaml` is missing and `troupe.toml` has `[[agents]]`, write `team.yaml` from them once
     (`backend` → `provider`, `effort` → `level`) and log an event. `troupe.toml` is not modified. When both exist,
     `team.yaml` wins and a leftover `[[agents]]` gets a one-time "ignored" event. `troupe init` writes `team.yaml`.
@@ -122,19 +128,25 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     invalid file keeps the old config.
   - Ids: new agents use `<role>_<N>` ids (the handle's local part, REQ-COM-005). If `id` is omitted it is derived
     from role + the next free N. Legacy ids (`builder-1`, `spec`) stay valid and are never rewritten in the DB.
-- **REQ-ENG-041 [ ]** (#20) Default roster, written by `troupe init` and adopted for this project once #20 lands (human:
-  trust codex; QA on a different provider from the builders):
-  | id | provider | model | level |
-  |---|---|---|---|
-  | lead_1 | claude | opus | high |
-  | pm_1 | codex | (default) | high |
-  | spec_1 | codex | (default) | high |
-  | designer_1 | claude | sonnet | medium |
-  | builder_1, builder_2 | codex | (default) | high |
-  | qa_1 | claude | opus | high |
-  | gadfly_1 | local | first model the local server reports | (ignored) |
-  - If no local server answers during `troupe init`, gadfly_1 is written as `codex / (default) / medium` with a
-    comment saying how to switch it to local. Test: the generated team.yaml validates and matches the table.
+- **REQ-ENG-041 [ ]** (#20; lists #38; architect #36; researcher #41) Default roster, written by `troupe init` and
+  adopted for this project once #20 lands. Human: trust codex; reviewers run on a different provider from writers.
+  Each cell is a preference list, first = preferred:
+  | id | providers (provider · model · level) |
+  |---|---|
+  | lead_1 | claude · opus · high → codex · default · high |
+  | pm_1 | codex · default · high → claude · opus · high |
+  | spec_1 | codex · default · high → claude · opus · high |
+  | designer_1 | claude · sonnet · medium → codex · default · medium |
+  | builder_1, builder_2 | codex · default · high → claude · sonnet · high → local · detected |
+  | architect_1 | claude · opus · high → codex · default · high |
+  | qa_1 | claude · opus · high → codex · default · high |
+  | researcher_1 | local · detected → codex · default · medium |
+  | gadfly_1 | local · detected → codex · default · medium |
+  - "detected" = the first model the local server reports during `troupe init`. If no local server answers, local
+    entries are written commented out, with a note saying how to enable them.
+  - Default `provider_limits`: claude `five_hour: 50, seven_day: 50` (the human's example); codex and local uncapped.
+  - `troupe init` writes the architect and researcher, and either can be disabled in team.yaml.
+  - Test: the generated team.yaml validates and matches the table.
 
 ## Prompts
 - **REQ-ENG-020 [x]** System prompt = team charter (roster, rules, tools) + role prompt (`roles.py`).
