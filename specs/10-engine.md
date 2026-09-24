@@ -242,7 +242,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - The detection is a pure function of the diff and flag.
   - Test: a `store.py` schema change or a `pyproject.toml` dependency needs both approvals; a `gui/views.py`-only change
     merges on QA alone; an architect reject sends it back.
-- **REQ-ENG-045 [ ]** Milestones are first-class (human: Pulse should show the major work and how close the goal is).
+- **REQ-ENG-045 [x]** (#50) Milestones are first-class (human: Pulse should show the major work and how close the goal is).
   - Additive schema: a `milestones` table (`id, name, goal, sort_order, status active|done, created`) and
     `tasks.milestone_id`.
   - Tools:
@@ -257,7 +257,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - The first milestone is "Ready for a test project" (#1, #2, #3, #15, #20, #23, #24, #25, plus the lead's additions).
     The lead creates it with the tool, not a code seed.
   - Test: create, assign and filter; progress excludes cancelled tasks; non-lead edits return `ERROR:`.
-- **REQ-ENG-046 [ ]** The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
+- **REQ-ENG-046 [x]** (#50) The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
   columns or kv, exposed by the API), so Pulse (REQ-GUI-038) doesn't infer it.
   - `waiting_on` = `{kind, target, since, reset_at?, queue_position?}` or null. Kinds, in precedence order:
     - `human`: the agent's open question, or its task awaiting a human approval card. Target is `human`.
