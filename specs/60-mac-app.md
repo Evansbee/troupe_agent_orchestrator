@@ -219,6 +219,11 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   - **M3, native only:** the remaining `[ ]` GUI REQs, built only in Swift.
 
 ## Open questions
+- **Role of the Mac app (interface model, pm 2026-09-24):** it becomes the cross-project **portfolio** view, while the
+  per-project seat is the TUI (specs/45-tui.md) and the PM is the human's single contact. The coordinator shape
+  (slot broker, team templates, optional Director agent; `docs/architecture/portfolio.md`) waits on the human's
+  answer to question #15. Portfolio REQs get written once that's answered. Until then, REQ-GUI-040 (multi-project
+  rail) is the cross-project behavior.
 - Distribution and signing: an ad-hoc local signature for now. Should there be a Developer ID and notarization
   later?
 - Once installed, should `troupe up` launch the Mac app automatically (M2 as written), or only through
@@ -236,3 +241,4 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   `service.json` wired into REQ-MAC-015.
 - 2026-09-24 — MAC-052 motion recording evidence and MAC-053 design fidelity gate (pm/lead decisions after the #49
   review; #58/#59).
+- 2026-09-24 — noted the portfolio-view direction and question #15 as open; the TUI is specs/45-tui.md.
