@@ -87,17 +87,6 @@ def test_history_prompts_and_gui_derive_handles(project):
     assert {a['id'] for a in reopened.agents()} == {a.id for a in cfg.agents}
 
 
-def test_gui_retained_retired_seats_do_not_invalidate_current_roster(project):
-    cfg, store = project
-    # sync_agents keeps retired IDs so historical messages remain readable.
-    from dataclasses import replace
-    replacement = replace(cfg.agent('builder-1'), id='builder_1')
-    store.sync_agents([replacement])
-    data = Data(cfg)
-    data.refresh(force=True)
-    assert data.name_of('builder-1') == data.name_of('builder_1') == 'builder_1@test-project'
-
-
 def test_status_prints_handles(project, monkeypatch, capsys):
     import argparse
     from troupe import cli

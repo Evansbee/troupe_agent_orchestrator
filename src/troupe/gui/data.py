@@ -75,7 +75,7 @@ class Data:
         self.last = now
         s = self.store
         self.agents = s.agents()
-        self.names = HandleBook(self.cfg.project, self.agents, validate=False)
+        self.names = HandleBook(self.cfg.project, self.agents)
         self.agent_by_id = {a["id"]: a for a in self.agents}
         self.tasks = s.tasks(limit=800)
         checking = s.kv_get("checking_task")

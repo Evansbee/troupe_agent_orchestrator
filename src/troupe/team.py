@@ -108,7 +108,7 @@ class TeamAPI:
                      task_id: int | None = None) -> str:
         """Send a message to a teammate's mailbox; it wakes them up.
 
-        `to`: an agent id (e.g. "lead", "builder-1"), a role (e.g. "builder" = every builder), "team"
+        `to`: a full/local handle or legacy agent id, a role (e.g. "builder" = every builder), "team"
         (everyone), or "human" (the project owner — for decisions prefer ask_human). Keep it concise and
         specific, one topic per message. Reference tasks (#12), specs (specs/10-auth.md REQ-AUTH-004) and
         message ids (reply_to) so the recipient has full context."""
@@ -184,7 +184,7 @@ class TeamAPI:
         `territory` (files/dirs it owns, e.g. "src/auth/, tests/test_auth.py").
 
         `role`: which role does it ("builder", "designer", "spec", "qa"...). `assignee`: a specific agent
-        id, or leave empty to let the orchestrator dispatch to a free agent of that role.
+        handle or legacy id, a role, or leave empty to dispatch to a free agent of that role.
         `priority`: 0 urgent, 1 high, 2 normal, 3 low. `depends_on`: task ids that must be done first.
         Tasks created by the lead are ready immediately; others land in backlog for the lead to triage."""
         try:

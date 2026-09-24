@@ -75,7 +75,7 @@ def now() -> float:
 class HandleBook:
     """Derived display handles and aliases; database identities remain untouched."""
 
-    def __init__(self, project: str, agents: list, *, validate: bool = True):
+    def __init__(self, project: str, agents: list):
         self.project = re.sub(r"[^A-Za-z0-9_.-]", "", re.sub(r"\s+", "_", project))
         self.handles: dict[str, str] = {}
         self.aliases: dict[str, str] = {}
@@ -87,7 +87,7 @@ class HandleBook:
             handle = f"{local}@{self.project}"
             for alias in (aid, local, handle):
                 previous = self.aliases.get(alias.casefold())
-                if validate and previous is not None and previous != aid:
+                if previous is not None and previous != aid:
                     raise ValueError(f"team.yaml: {aid}: handle {handle} collides with {previous}")
                 self.aliases[alias.casefold()] = aid
             self.handles[aid] = handle
