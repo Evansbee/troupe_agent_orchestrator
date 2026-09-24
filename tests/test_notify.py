@@ -243,6 +243,12 @@ def test_service_delivers_with_no_gui(env, tmp_path):
     state = cfg.state_dir
     (state / 'troupe.toml').write_text('[project]\nname="Notify subprocess"\n[git]\nautocommit=false\n')
     (state / 'team.yaml').write_text('agents:\n  - id: lead\n    role: lead\n    provider: local\n    enabled: false\n')
+    # A fresh project asks the human to approve its safety baseline on first load; pre-approve it
+    # here so the subprocess below doesn't add a second, unrelated "needs you" notification.
+    load(cfg.root)
+    baseline = next(q for q in s.questions() if q['kind'] == 'safety')
+    s.answer(baseline['id'], 'Approve')
+    load(cfg.root)
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
     output = tmp_path / 'delivered.json'

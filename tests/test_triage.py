@@ -34,6 +34,16 @@ async def settled(engine):
         await asyncio.gather(*(t for _, t in engine.mail_triage.entries.values()))
 
 
+def test_fyi_mail_is_still_redacted(project):
+    cfg, store = project
+    fake = 'ghp_' + 'a' * 36
+    store.send('pm', 'lead', f'token: {fake}', fyi=True)
+    messages = store.unread('lead')
+    assert messages[0]['fyi'] == 1
+    assert fake not in messages[0]['body']
+    assert fake not in json.dumps(store.messages())
+
+
 def test_fyi_stays_unread_until_next_natural_wake(project, monkeypatch):
     cfg, store, engine = setup(project, monkeypatch)
     TeamAPI(cfg, store, 'pm').send_message('lead', 'All done', fyi=True)
