@@ -109,9 +109,10 @@ the Mac app.
   - Searching must not block the frame: it runs over the `gui/data.py` snapshot, not direct DB queries per keystroke.
 - **REQ-GUI-025 [ ]** Usage view: cost/tokens per agent over time (charts).
 - **REQ-GUI-026 [ ]** Docs: show what changed in each spec recently (git diff), and who changed it.
-- **REQ-GUI-027 [ ]** App icon + window title with needs-you count; dock badge.
+- **REQ-GUI-027 [~]** App icon + window title with needs-you count; dock badge. (Title shipped with #12; the icon is #34,
+  and the dock badge comes with the Mac app, REQ-MAC.)
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
-    second of a question arriving or being answered. (Title part: #12. Icon and dock badge: not yet tasked.)
+    second of a question arriving or being answered.
 - **REQ-GUI-028 [ ]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
@@ -254,3 +255,4 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   treatment, and `providers` must be distinct from `rate_limit`.
 - 2026-09-24 — new GUI-008 minimum window (#55), GUI-009 zoom (#23), GUI-017 stick-to-bottom (#33), GUI-043 text
   selection (#47). GUI-022 gains older-run paging (#54). GUI-023 shipped (#7/#53). GUI-005 OS notifications move to ENG-047.
+- 2026-09-24 — GUI-027 marked partial (title shipped, #12). COM-025 shipped.
