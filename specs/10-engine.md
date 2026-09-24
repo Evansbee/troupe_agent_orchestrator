@@ -170,7 +170,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   | id | providers (provider · model · level) |
   |---|---|
   | lead_1 | claude · opus · high → codex · default · high |
-  | pm_1 | codex · default · high → claude · opus · high |
+  | pm_1 | claude · fable · high → claude · opus · high (REQ-ROLE-030: strongest model) |
   | spec_1 | codex · default · high → claude · opus · high |
   | designer_1 | claude · sonnet · medium → codex · default · medium |
   | builder_1, builder_2 | codex · default · high → claude · sonnet · high → local · detected |
@@ -184,6 +184,9 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   - `troupe init` writes the architect and researcher once their roles exist (#36, #41), and either can be disabled
     in team.yaml.
   - Test: the generated team.yaml validates and matches the table.
+  - This is the default for **new** projects. troupe's own roster is the human's separate choice (2026-09-24, "for
+    now"): mixed builders (1 claude, 1 codex, 1 local for basic tasks), PM on claude, spec on codex. It lives in this
+    project's team.yaml, not in this table.
 
 ## Prompts
 - **REQ-ENG-020 [x]** System prompt = team charter (roster, rules, tools) + role prompt (`roles.py`).
@@ -348,7 +351,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     words> → what was delivered, where to look".
   - Test: the ★ flag and quote, dispatch order, the cancel/scope guard, escalation at max attempts, and the Done
     report. Screenshot of the badge and filter.
-- **REQ-ENG-049 [ ]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
+- **REQ-ENG-049 [x]** (#46; human: "is there some way we could insert a local llm to parse the busy work?") Cheap
   wake-ups via local-LLM mail triage.
   - Before a `messages` wake, a local model (`[triage] enabled, model`, using the `local` backend) reads the pending
     mail, the agent's role and its active task title. It returns `{wake_now, reason, digest}`.
@@ -357,10 +360,42 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - **Hard rules the model can't override:** human mail, questions to the agent, review requests, mail about the
     agent's own active task, and ≥ N pending mails always wake. If the local model is down or errors, the agent
     wakes as today.
-  - Several pending mails become one wake.
+  - Several pending mails become one wake. `[triage]` defaults: `enabled=false`, `model=""` (use the local
+    agent model), `max_pending=5`, `timeout=5.0` seconds (maximum 30). The count guard includes FYIs.
+  - Classification is asynchronous and cached per pending batch/config; pending classification never blocks
+    heartbeat/chat. New mail invalidates the batch. Holds do not mark mail read and do not themselves
+    trigger cadence wakes. Questions/review words and explicit own-task links bypass conservatively.
+  - Hourly metrics exclude chat; runs with a task link or task/review reason count as work, others as coordination.
+    Synthetic regression replay: 28 arrivals → 8 message wakes; this is not a measured deployment saving.
   - Metrics: runs record `wake_reason` and tokens, and the Usage/Pulse view shows coordination vs work tokens per hour.
+  - FYI mail never reaches triage (REQ-COM-013, #74). Triage sees only ambiguous mail.
   - Test: with a mocked model, a hold, the hard rules and the fallback. A replay of an hour of mail shows ≥ 50% fewer
     `messages` wakes.
+
+## Task calibre tiers (#75)
+- **REQ-ENG-051 [ ]** (#75; human: "one good model … and one medium model … for different calibre of tasks, which the
+  lead should determine") The model a run uses comes from the **task's tier**. Builders stay provider lanes, so
+  there's no extra agent per model.
+  - Tasks gain `tier` = `hard | medium | basic` (additive column, default `medium`), and `create_task`/`update_task`
+    accept it.
+  - The lead's prompt gives the guidance: architecture, safety or tricky concurrency → hard; routine features →
+    medium; docs, small edits and tests → basic. `roles.py` is protected, so the human approves the change.
+  - `team.yaml`: each agent may have a `tiers:` map from tier to `{provider, model, level}`, for example the claude
+    builder `{hard: opus/high, medium: sonnet/high}` and the local builder `{basic: <local model>}`. An unmapped
+    tier uses the agent's normal `providers` list (REQ-ENG-019). Validated like ENG-019.
+  - **Dispatch** (extends REQ-ENG-031):
+    - `basic` tasks prefer a free builder that maps `basic`, otherwise any free builder at its cheapest mapped tier;
+    - `hard` tasks prefer builders that map `hard`;
+    - `medium` tasks go to the least-loaded builder as today.
+  - At launch, the tier's entry is tried first, then fallback follows BE-012 (caps, rate limits, down providers).
+  - **Visibility:** the task (board card, TUI Tasks pane, API Task) shows its tier and the model its last run
+    actually used. Runs record the tier, so usage per tier can be reported.
+  - Test:
+    - a hard task on the claude builder launches opus and a medium one sonnet (launch args);
+    - the codex builder maps hard/medium to its configured models;
+    - a basic task goes to the local builder when it's free;
+    - caps/fallback still apply;
+    - an unmapped tier uses the default.
 
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
@@ -385,3 +420,5 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-24 — ENG-050 run watchdog (stall/timeout/zombie), one REQ for the overlapping #61 and #62 briefs.
 - 2026-09-24 — lifecycle change: the TUI owns the engine ("quit and everything quits"). ENG-001/006 superseded for the default
   flow, ENG-009/042 deferred (human via pm msg #431).
+- 2026-09-24 — ENG-051 task calibre tiers (#75, human). ENG-049: FYI never reaches triage (#74). ENG-041 note: troupe's
+  own roster differs from the init default.

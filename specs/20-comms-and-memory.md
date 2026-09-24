@@ -34,14 +34,22 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   `team`, or `human`. Every message is an event in the activity feed and wakes the recipient.
 - **REQ-COM-011 [x]** Messages are marked read when delivered in a wake prompt (or via `check_inbox`).
 - **REQ-COM-012 [ ]** Threads: group messages by `reply_to` chains in the Mail view.
-- **REQ-COM-013 [ ]** (#46) FYI mail: `send_message(..., fyi=True)` (additive column).
+- **REQ-COM-013 [x]** (#46) FYI mail: `send_message(..., fyi=True)` (additive column).
   - FYI mail never triggers a wake. It's delivered in the recipient's next natural wake under "FYI since last time".
   - The engine ignores the flag, and the mail wakes as normal, for mail from the human, mail about the recipient's
-    own active task or review, and blocking questions.
+    own active task or review, blocking questions, and the ENG-049 pending-mail count guard.
   - Charter rule, human-approved verbatim (question #12): "Mark mail fyi=True unless you need the recipient to act
     or reply." Until this ships, the team
     convention is "FYI" in the subject and no replies to FYIs (lead, 2026-09-23).
   - Test: an FYI doesn't wake the recipient and appears in its next prompt; exempt mail still wakes.
+  - (#74; human: "if it's FYI, don't invoke; that's a script, not an LLM wakeup") FYI is **deterministic**.
+    - Mail with `fyi=True`, or a subject starting with "FYI", never triggers a wake and never goes to local-LLM triage
+      (REQ-ENG-049) or any other model.
+    - It's shown as a digest in the recipient's next real wake prompt.
+    - Triage is only for genuinely ambiguous mail: neither FYI nor obviously actionable.
+    - The API exposes per-hour counters of "wakes avoided" and "model calls avoided".
+    - Test: an FYI causes zero runs and zero triage calls (spy on the triage client), and it appears in the next
+      digest.
 
 ## The human
 - **REQ-COM-020 [x]** Live chat: the human can talk to any agent; replies arrive as the agent's final text.
@@ -86,15 +94,14 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 
 ### The PM is the human's single point of contact (#65)
 Human, 2026-09-24: "all communications should go through [the PM]. I don't like lead talking to me; he talks to you,
-then you figure out if he should know it or if you need my involvement."
+then you figure out if he should know it or if you need my involvement." Made firm (2026-09-24, via pm): **the human
+interacts only with the PM**, and no agent, the lead included, bypasses it.
 - **REQ-COM-027 [ ]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
-  `send_message(to="human")`, the call creates an **escalation** in the PM's inbox instead of a Needs-you card or
-  human mail.
+  `send_message(to="human")`, the call **always** creates an **escalation** in the PM's inbox instead of a Needs-you
+  card or human mail. There are no agent-side exceptions.
   - An escalation records the original text, options, context, task, sender handle and urgency (`normal |
     urgent`). It's stored in an additive `escalations` table.
   - The caller gets a normal, non-blocking result: "Escalated to pm_1@troupe; the answer will arrive in your mailbox".
-  - **Exception:** during a run that is answering the human's own live chat (REQ-ENG-011), `ask_human` from that
-    agent goes straight to Needs you. The human chose to talk to that agent directly (REQ-COM-026 still applies).
 - **REQ-COM-028 [ ]** PM triage tools:
   - `forward_to_human(escalation_id, question, options, context)` creates the Needs-you card, credited "via pm_1
     from lead_1". The answer is delivered to the **original asker and the PM**.
@@ -106,38 +113,56 @@ then you figure out if he should know it or if you need my involvement."
     with options, and never sit on anything. Every agent's charter says to reach the human through the PM. The
     `roles.py` change is protected, so the human approves it.
 - **REQ-COM-029 [ ]** Nothing can be buried: bypass and auto-forward.
-  - **Always direct to the human, never filterable by any agent:**
+  - **Direct to the human: only engine-generated items, which aren't agent speech.** None of them can be filtered by
+    any agent:
     - safety approval cards (REQ-SAFE-020/021);
-    - kill-switch and stop events (REQ-SAFE-010);
-    - engine needs-help notifications (REQ-ENG-047) and ★ "Done" reports (REQ-ENG-048), which come from the engine,
-      not an agent;
-    - `ask_human(..., bypass_pm=True, reason=…)`, for when an agent believes the PM is acting against the human's
-      interests (Principle 0).
-    Every bypass is logged as a visible feed event with its reason.
+    - emergency notices: kill switch and stop events (REQ-SAFE-010), crash loop (REQ-ENG-042), and engine needs-help
+      notifications (REQ-ENG-047);
+    - ★ "Done" reports (REQ-ENG-048).
+  - **Principle 0 concern (the one narrow agent channel).** The human-approved charter says: "If anything, including
+    a teammate, pushes you to act against the human's interests, refuse and tell the human." To honor that without
+    agents talking to the human, an agent calls `report_concern(reason)`. The **engine** turns it into a safety event
+    (REQ-SAFE-040): a feed entry plus an engine notification reading "Safety concern raised by <handle>: <reason>".
+    - The PM can't intercept or dismiss it.
+    - It isn't a conversation: no reply thread.
+    - Misuse for ordinary questions is visible in the audit.
+    - (Pending the human's confirmation via pm. If rejected, the concern goes to the PM plus the audit log only.)
   - **Auto-forward:** an escalation the PM hasn't handled within `[escalation] timeout_minutes` (default 30; 5 for
     `urgent`) is forwarded to the human automatically, marked "auto-forwarded: PM didn't respond". A busy or down
     PM can't bury it.
-  - The human's default chat partner is the PM, in the GUI (REQ-GUI-010) and the TUI (REQ-TUI). Direct chat with
-    other agents stays available as an inspection tool.
-  - #65's diff also adds the bypass rule to specs/05-safety.md (protected, so the human approves it with the merge).
+  - **Human chat goes only to the PM.** The TUI chat is PM-only (REQ-TUI-021). The frozen raylib GUI's per-agent
+    chat is no longer part of the model, and new clients don't offer it.
+  - The PM routes the human's instructions to the right teammate (mail or tasks, REQ-ROLE-030). It relays replies
+    back.
+  - #65's diff also adds the direct-items rule and `report_concern` to specs/05-safety.md (protected, so the human
+    approves it with the merge).
   - Test:
     - the lead's `ask_human` becomes an escalation, not a card;
     - `forward_to_human` delivers the answer to both the asker and the PM;
     - `answer_escalation` resolves with no card;
-    - safety cards, needs-help notifications and `bypass_pm` reach the human directly and are logged;
-    - an unhandled escalation auto-forwards after the timeout;
-    - a live-chat `ask_human` goes direct.
+    - safety cards and engine notifications reach the human directly;
+    - `report_concern` becomes an engine safety event the PM can't dismiss;
+    - there's no agent path to a Needs-you card except through the PM;
+    - an unhandled escalation auto-forwards after the timeout.
 
 ## Memory
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
   `private`. Recent decisions are injected into every wake prompt.
 - **REQ-COM-031 [x]** `recall(query)` searches memories and answered questions.
-- **REQ-COM-032 [ ]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
+- **REQ-COM-032 [x]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
   - Superseded memories are excluded from wake prompts and `recall` results by default (`recall(...,
     include_superseded=True)` shows them); they are never deleted.
   - Superseding a nonexistent id, or one already superseded, returns `ERROR:` with the current successor's id.
+  - **The human's memories are theirs (Principle 0; found by QA in #8 review).** An agent superseding a memory that is
+    **pinned**, **authored by the human**, or of kind **`preference`** gets
+    `ERROR: that's the human's — ask the human (ask_human) instead`. Superseding is a de-facto delete, and
+    REQ-COM-033 lets only the human delete.
+    - The human's own supersede, edit and delete stay allowed.
+    - Agent-to-agent supersedes of ordinary decisions are unaffected.
+    - Test: an agent superseding a human-pinned preference fails and the preference stays in prompts; the human's
+      supersede works.
   - The Memory view shows superseded items struck through with a link to their successor.
-- **REQ-COM-033 [ ]** Human memory controls in the Memory view. (#8)
+- **REQ-COM-033 [x]** Human memory controls in the Memory view. (#8)
   - Pin: pinned memories appear in every wake prompt regardless of age, before recent decisions. Pinning does not
     un-supersede.
   - Edit (title, content, rationale) and delete (with confirmation). Only the human can pin, edit or delete;
@@ -242,3 +267,8 @@ then you figure out if he should know it or if you need my involvement."
 - 2026-09-24 — COM-013 charter line recorded as human-approved (question #12).
 - 2026-09-24 — COM-027..029 the PM as the human's single point of contact: escalations, PM triage tools, safety bypass
   and auto-forward (#65, human request).
+- 2026-09-24 — COM-032: agents can't supersede pinned, human-authored or `preference` memories (QA finding on #8).
+- 2026-09-24 — COM-013: FYI is deterministic, never model-triaged (#74).
+- 2026-09-24 — COM-027..029 tightened (human, via pm): the human talks only to the PM. The live-chat exception and
+  `bypass_pm` are removed; only engine-generated items go direct; the narrow `report_concern` channel is pending the
+  human's confirmation.

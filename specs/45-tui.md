@@ -1,7 +1,8 @@
 # TUI: the per-project terminal dashboard
 
 Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
-Code: `src/troupe/tui/` (Textual app), `src/troupe/cli.py` (default command). Task: #66.
+Code: `src/troupe/tui/` (Textual app), `src/troupe/cli.py` (default command). Tasks: #66–#69. Look and layout:
+`design/tui.md`.
 
 > The human, 2026-09-24: "in a tmux terminal window, I want to do troupe-project or something similar; the TUI for the
 > project will have status for that specific project, something simple that shows mailboxes, comms, tasks, maybe a
@@ -25,7 +26,7 @@ deferred. The lead builds #66 in four slices:
 Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 
 ## Launch
-- **REQ-TUI-001 [ ]** "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
+- **REQ-TUI-001 [x]** "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
   arguments (or `troupe tui`) in a project directory starts the project's engine **as a child of the TUI** and opens
   the TUI on its API.
   - **Quit (`q`):** if runs are in flight, it first asks "N agents are working — stop them and quit? y/N". Quitting
@@ -49,18 +50,19 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     - `q` with a run in flight asks first, then leaves the run `interrupted` with its mail re-queued;
     - SIGHUP stops everything within 5 s with no orphans;
     - a second TUI attaches, and its `q` doesn't stop the engine.
-- **REQ-TUI-002 [ ]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
+- **REQ-TUI-002 [x]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
   subscribe (REQ-API-010/020/060).
-  - No direct DB reads and no polling.
+  - No direct DB reads and no polling. Read-only local files are the exception, as in REQ-API-022: docs, and
+    `git diff` for an approval card's "Open full diff" (design/tui.md).
   - Live updates appear within 1 s of a new message or task change.
   - An engine restart (`r`) reconnects without clearing the screen (as REQ-MAC-012).
   - Methods the API reports as `unavailable` (REQ-API-006) are hidden or disabled, never errors.
   - Test: against a fixture API server, a pushed event updates the pane within 1 s.
-- **REQ-TUI-003 [ ]** One new dependency, `textual`: the standard for rich, tmux-safe Python TUIs, and the human asked
+- **REQ-TUI-003 [x]** One new dependency, `textual`: the standard for rich, tmux-safe Python TUIs, and the human asked
   for a TUI. No other additions without a reason in the task summary.
 
 ## Layout
-- **REQ-TUI-010 [ ]** Panes, dense and calm:
+- **REQ-TUI-010 [~]** Panes, dense and calm (Header/Team/Tasks done, #66; Needs you done, #67; Comms/Chat are #68/#69):
   - **Header:** project, engine state (REQ-GUI-029 states, including Stopped), active milestone progress
     (REQ-ENG-045), and provider usage meters (REQ-BE-011/014).
   - **Team:** one line per agent: handle, state (working / idle / waiting-on-X from `waiting_on`, REQ-ENG-046),
@@ -71,7 +73,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - **Needs you:** open cards, including escalations the PM forwarded, credited "via pm_1 from …".
   - **Chat with the PM:** an input line plus the last few messages, with a streaming "PM is working…" line
     while the PM runs.
-- **REQ-TUI-011 [ ]** Sizes and terminals:
+- **REQ-TUI-011 [x]** Sizes and terminals:
   - Usable at **80×24**: panes collapse to tabs. It scales to full screen.
   - Works inside tmux and over SSH.
   - Honors the terminal's color scheme, with role colors from `design/system.md` mapped to the nearest terminal
@@ -92,7 +94,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     the human is elsewhere in tmux.
 
 ## Keys
-- **REQ-TUI-020 [ ]** Key bindings (shown in a footer):
+- **REQ-TUI-020 [~]** Key bindings (shown in a footer) (Tab/`q`/`s`/`r` done, #66; `a` answering done, #67; `/` is #68, `s` confirmation detail is #69):
 
   | key | action |
   |---|---|
@@ -104,14 +106,14 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   | `q` | quit: stops this project's engine and runs if the TUI owns it, after confirmation when runs are in flight (TUI-001) |
   | `r` | restart the engine when it's offline |
 - **REQ-TUI-021 [ ]** Chat with the PM works end to end: send, the streaming working state, and the reply shown
-  (REQ-COM-020). Chatting with another agent is possible (`:chat <handle>`), but the default is always the PM
-  (REQ-COM-029).
+  (REQ-COM-020). The chat is **PM-only**: the human interacts only with the PM (REQ-COM-029), and there's no way to
+  chat with other agents.
 
 ## Verification
-- **REQ-TUI-030 [ ]** Snapshot mode: `TROUPE_SHOT=/path.svg troupe tui` renders once data has loaded (via Textual's
+- **REQ-TUI-030 [x]** Snapshot mode: `TROUPE_SHOT=/path.svg troupe tui` renders once data has loaded (via Textual's
   `save_screenshot`), writes the SVG and exits 0. `TROUPE_API_FIXTURE` works as in REQ-MAC-051. UI tasks attach
   SVGs at 80×24 and full screen.
-- **REQ-TUI-031 [ ]** `tests/test_tui.py` uses Textual's pilot against a fixture API server. It covers:
+- **REQ-TUI-031 [x]** `tests/test_tui.py` uses Textual's pilot against a fixture API server. It covers:
   - launching and quitting (team still running);
   - a live update within 1 s;
   - sending a chat;
@@ -130,3 +132,4 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   TUI-013 details and catch-up.
 - 2026-09-24 — TUI-001 rewritten: the TUI owns its engine (quit and SIGHUP stop everything, confirm if runs are in flight,
   resume on next start, attach without owning if already running). Slices mapped to #66–#69.
+- 2026-09-24 — TUI-021: chat is PM-only (human).

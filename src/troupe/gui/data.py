@@ -42,6 +42,7 @@ class Data:
         self.kv: dict = {}
         self.cost_24h = 0.0
         self.runs_1h = 0
+        self.work_tokens_1h = {"coordination": 0, "work": 0}
         self.new_messages: list[dict] = []
         self.new_questions: list[dict] = []
         self.new_chat_answers: list[dict] = []
@@ -80,7 +81,7 @@ class Data:
                 s = self.store
                 self.catchup = catchup_items(s.q("SELECT * FROM events WHERE ts>? ORDER BY id DESC", since),
                     s.questions(None, limit=100000), s.q("SELECT * FROM runs WHERE ended>?", since),
-                    s.memories(limit=100000), since)
+                    s.memories(limit=100000, include_superseded=True), since)
                 for rows in self.catchup.values():
                     for row in rows:
                         row["label"] = self.names.event_text(row["label"])
@@ -143,7 +144,9 @@ class Data:
         self.tasks = s.tasks(limit=800)
         checking = s.kv_get("checking_task")
         failed = {r["key"] for r in s.q("SELECT key FROM kv WHERE key LIKE 'check_failed.%' AND value='true'")}
+        waiting = {r["key"] for r in s.q("SELECT key FROM kv WHERE (key LIKE 'safety.waiting.%' OR key LIKE 'safety.baseline_wait.%') AND value='true'")}
         for task in self.tasks:
+            task["awaiting_human"] = any(f"{prefix}.{task['id']}" in waiting for prefix in ("safety.waiting", "safety.baseline_wait"))
             task["merge_check"] = ("checking…" if task["id"] == checking else
                                    "checks failed" if f"check_failed.{task['id']}" in failed else "")
         self.questions = s.questions("open")
@@ -161,9 +164,14 @@ class Data:
                 "WHERE e.id>? AND e.id<=? AND e.kind='answer' AND q.answered_via='chat' ORDER BY e.id",
                 self._answer_event, answer_event)
         self._answer_event = answer_event
+        totals = s.q("SELECT CASE WHEN task_id IS NOT NULL OR reason IN ('task','review') THEN 'work' "
+                     "ELSE 'coordination' END AS category, SUM(tokens) AS tokens FROM runs "
+                     "WHERE started>? AND chat=0 GROUP BY category", now - 3600)
+        self.work_tokens_1h = {"coordination": 0, "work": 0}
+        self.work_tokens_1h.update({r["category"]: r["tokens"] or 0 for r in totals})
         self.messages = s.messages(limit=600)
-        self.memories = s.memories(limit=400)
-        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
+        self.memories = s.memories(limit=400, include_superseded=True)
+        self.kv = {k: s.kv_get(k) for k in ("paused", "stopped", "heartbeat", "throttled", "claude_ratelimit",
                                                        "limit.claude", "limit.codex", "limit.local",
                                                        "config_error.team.yaml", "config_error.troupe.toml")}
         self.cost_24h = s.scalar("SELECT SUM(cost) FROM runs WHERE started>?", now - 86400, default=0.0)
@@ -308,7 +316,20 @@ class Data:
         self.store.answer(qid, "(dismissed without an answer — use your judgment)", status="dismissed")
         self.refresh(force=True)
 
+    def stop_now(self) -> None:
+        from ..safety import stop_now
+        stop_now(self.store)
+        self.refresh(force=True)
+
+    def resume(self) -> None:
+        from ..safety import resume
+        resume(self.store)
+
     def set_paused(self, paused: bool) -> None:
+        if self.kv.get("stopped"):
+            if not paused:
+                self.resume()
+            return
         self.store.kv_set("paused", paused)
         self.store.event("human", "control", "You paused the troupe" if paused else "You resumed the troupe",
                          significant=False)
@@ -326,6 +347,14 @@ class Data:
         tid = self.store.add_task(title, description, status="ready", priority=priority, role=role, created_by="human")
         self.refresh(force=True)
         return tid
+
+    def set_memory(self, memory_id: int, **fields) -> None:
+        self.store.update_memory(memory_id, actor="human", **fields)
+        self.refresh(force=True)
+
+    def delete_memory(self, memory_id: int) -> None:
+        self.store.delete_memory(memory_id, actor="human")
+        self.refresh(force=True)
 
 
 

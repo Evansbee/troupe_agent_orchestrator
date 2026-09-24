@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from .safety import redact
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS questions(
 );
 CREATE TABLE IF NOT EXISTS memories(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, agent TEXT, kind TEXT DEFAULT 'decision',
-  title TEXT, content TEXT DEFAULT '', rationale TEXT DEFAULT '', scope TEXT DEFAULT 'team'
+  title TEXT, content TEXT DEFAULT '', rationale TEXT DEFAULT '', scope TEXT DEFAULT 'team',
+  pinned INTEGER DEFAULT 0, superseded_by INTEGER
 );
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, agent TEXT, kind TEXT, text TEXT,
@@ -134,6 +136,9 @@ class Store:
         self.conn.executescript(SCHEMA)
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
+            mail_columns = {r["name"] for r in self.q("PRAGMA table_info(messages)")}
+            if "fyi" not in mail_columns:
+                self.conn.execute("ALTER TABLE messages ADD COLUMN fyi INTEGER NOT NULL DEFAULT 0")
             columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
             if "answered_via" not in columns:
                 self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
@@ -145,6 +150,11 @@ class Store:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
             if "system" not in run_columns:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
+            memory_columns = {r["name"] for r in self.q("PRAGMA table_info(memories)")}
+            if "pinned" not in memory_columns:
+                self.conn.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0")
+            if "superseded_by" not in memory_columns:
+                self.conn.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -205,6 +215,7 @@ class Store:
 
     # ── events (activity feed) ────────────────────────────────────────────
     def event(self, agent: str, kind: str, text: str, ref: str = "", significant: bool = True) -> int:
+        text = redact(text)
         return self.x("INSERT INTO events(ts,agent,kind,text,ref,significant) VALUES(?,?,?,?,?,?)",
                       now(), agent, kind, text, ref, int(significant))
 
@@ -220,11 +231,12 @@ class Store:
 
     # ── messages ──────────────────────────────────────────────────────────
     def send(self, sender: str, recipient: str, body: str, subject: str = "", kind: str = "msg",
-             reply_to: int | None = None, task_id: int | None = None) -> int:
-        mid = self.x("""INSERT INTO messages(ts,sender,recipient,subject,body,kind,reply_to,task_id)
-                        VALUES(?,?,?,?,?,?,?,?)""", now(), sender, recipient, subject, body, kind, reply_to, task_id)
+             reply_to: int | None = None, task_id: int | None = None, fyi: bool = False) -> int:
+        body, subject = redact(body), redact(subject)
+        mid = self.x("""INSERT INTO messages(ts,sender,recipient,subject,body,kind,reply_to,task_id,fyi)
+                        VALUES(?,?,?,?,?,?,?,?,?)""", now(), sender, recipient, subject, body, kind, reply_to, task_id, int(fyi))
         label = subject or (body.strip().splitlines() or [""])[0]
-        self.event(sender, "message", f"{sender} → {recipient}: {label[:120]}", ref=f"msg:{mid}")
+        self.event(sender, "message", f"{sender} → {recipient}: {label[:120]}", ref=f"msg:{mid}", significant=not fyi)
         return mid
 
     def unread(self, recipient: str) -> list[dict]:
@@ -270,6 +282,7 @@ class Store:
     def add_task(self, title: str, description: str = "", acceptance: str = "", territory: str = "",
                  status: str = "backlog", priority: int = 2, role: str = "builder", assignee: str | None = None,
                  created_by: str = "human", depends_on: list[int] | None = None, milestone_id: int | None = None) -> int:
+        title, description, acceptance = redact(title), redact(description), redact(acceptance)
         if milestone_id is not None and not self.milestone(milestone_id):
             raise ValueError(f"Unknown milestone #{milestone_id}")
         tid = self.x("""INSERT INTO tasks(created,updated,title,description,acceptance,territory,status,priority,
@@ -287,6 +300,7 @@ class Store:
             self.kv_set(f"check_failed.{task_id}", False)
         if "depends_on" in fields and not isinstance(fields["depends_on"], str):
             fields["depends_on"] = json.dumps(fields["depends_on"])
+        fields = {k: redact(v) if isinstance(v, str) else v for k, v in fields.items()}
         fields["updated"] = now()
         cols = ", ".join(f"{k}=?" for k in fields)
         self.x(f"UPDATE tasks SET {cols} WHERE id=?", *fields.values(), task_id)
@@ -294,7 +308,7 @@ class Store:
             self.event(actor or "system", "task", event_text, ref=f"task:{task_id}", significant=significant)
 
     def task_note(self, task_id: int, agent: str, text: str) -> None:
-        self.x("INSERT INTO task_notes(task_id,ts,agent,text) VALUES(?,?,?,?)", task_id, now(), agent, text)
+        self.x("INSERT INTO task_notes(task_id,ts,agent,text) VALUES(?,?,?,?)", task_id, now(), agent, redact(text))
 
     def task_notes(self, task_id: int) -> list[dict]:
         return self.q("SELECT * FROM task_notes WHERE task_id=? ORDER BY id", task_id)
@@ -356,6 +370,7 @@ class Store:
     # ── questions for the human ───────────────────────────────────────────
     def ask(self, asker: str, question: str, context: str = "", options: list[str] | None = None,
             kind: str = "question", task_id: int | None = None) -> int:
+        question, context = redact(question), redact(context)
         qid = self.x("""INSERT INTO questions(ts,asker,kind,question,context,options,task_id)
                         VALUES(?,?,?,?,?,?,?)""", now(), asker, kind, question, context,
                      json.dumps(options or []), task_id)
@@ -373,6 +388,7 @@ class Store:
 
     def answer(self, qid: int, answer: str, status: str = "answered", *,
                via: str = "inbox", notify: bool = True) -> bool:
+        answer = redact(answer)
         qn = self.one("SELECT * FROM questions WHERE id=?", qid)
         if not qn or qn["status"] != "open":
             return False
@@ -384,22 +400,33 @@ class Store:
         label = "Idea" if qn["kind"] == "idea" else "Question"
         verb = "dismissed" if status == "dismissed" else "answered"
         body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
-        if notify:
+        if notify and qn["kind"] != "safety":
             self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
         self.event("human", "answer", f"You {verb} {qn['asker']}'s {label.lower()}: {answer[:100]}", ref=f"q:{qid}")
+        if qn["kind"] == "safety":
+            from .safety import audit
+            audit(self, f"Human {verb} safety approval #{qid}: {answer}", notify=False)
         return True
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",
-                 scope: str = "team") -> int:
+                 scope: str = "team", supersedes: int | None = None) -> int:
+        title, content, rationale = redact(title), redact(content), redact(rationale)
         mid = self.x("INSERT INTO memories(ts,agent,kind,title,content,rationale,scope) VALUES(?,?,?,?,?,?,?)",
                      now(), agent, kind, title, content, rationale, scope)
-        self.event(agent, "memory", f"{agent} recorded {kind}: {title[:120]}", ref=f"mem:{mid}",
+        if supersedes is not None:
+            self.x("UPDATE memories SET superseded_by=? WHERE id=?", mid, supersedes)
+        self.event(agent, "memory", f"{agent} recorded {kind}: {title[:120]}"
+                   + (f" (supersedes #{supersedes})" if supersedes is not None else ""), ref=f"mem:{mid}",
                    significant=scope == "team")
         return mid
 
+    def memory(self, memory_id: int) -> dict | None:
+        return self.one("SELECT * FROM memories WHERE id=?", memory_id)
+
     def memories(self, agent: str | None = None, query: str = "", kind: str = "", limit: int = 50,
-                 include_private_of: str | None = None) -> list[dict]:
+                 include_private_of: str | None = None, include_superseded: bool = False,
+                 pinned_only: bool = False) -> list[dict]:
         sql = "SELECT * FROM memories WHERE 1=1"
         args: list[Any] = []
         if agent:
@@ -411,12 +438,37 @@ class Store:
         if include_private_of is not None:
             sql += " AND (scope='team' OR agent=?)"
             args.append(include_private_of)
+        if not include_superseded:
+            sql += " AND superseded_by IS NULL"
+        if pinned_only:
+            sql += " AND pinned=1"
         for word in query.split():
             sql += " AND (title LIKE ? OR content LIKE ? OR rationale LIKE ?)"
             args += [f"%{word}%"] * 3
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         return self.q(sql, *args)
+
+    def update_memory(self, memory_id: int, actor: str = "human", **fields) -> None:
+        """Human-only: pin/unpin and edit title, content or rationale. Never un-supersedes."""
+        if not fields:
+            return
+        if fields.keys() - {"pinned", "title", "content", "rationale"}:
+            raise ValueError("Invalid memory field")
+        if "pinned" in fields:
+            fields["pinned"] = int(bool(fields["pinned"]))
+        for key in ("title", "content", "rationale"):
+            if key in fields:
+                fields[key] = redact(fields[key])
+        self.x("UPDATE memories SET " + ",".join(f"{key}=?" for key in fields) + " WHERE id=?",
+               *fields.values(), memory_id)
+        self.event(actor, "memory", f"{actor} updated memory #{memory_id}", ref=f"mem:{memory_id}",
+                   significant=False)
+
+    def delete_memory(self, memory_id: int, actor: str = "human") -> None:
+        self.x("DELETE FROM memories WHERE id=?", memory_id)
+        self.event(actor, "memory", f"{actor} deleted memory #{memory_id}", ref=f"mem:{memory_id}",
+                   significant=False)
 
     # ── runs ──────────────────────────────────────────────────────────────
     def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool,
@@ -432,10 +484,10 @@ class Store:
 
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",
-               now(), status, cost, tokens, summary, run_id)
+               now(), status, cost, tokens, redact(summary), run_id)
 
     def run_line(self, run_id: int, kind: str, text: str) -> None:
-        self.x("INSERT INTO run_lines(run_id,ts,kind,text) VALUES(?,?,?,?)", run_id, now(), kind, text)
+        self.x("INSERT INTO run_lines(run_id,ts,kind,text) VALUES(?,?,?,?)", run_id, now(), kind, redact(text))
 
     def run_lines(self, run_id: int, after: int = 0, limit: int = 2000) -> list[dict]:
         return self.q("SELECT * FROM run_lines WHERE run_id=? AND id>? ORDER BY id LIMIT ?", run_id, after, limit)

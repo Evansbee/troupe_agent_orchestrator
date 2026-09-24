@@ -164,7 +164,11 @@ def test_check_config_validation(project):
     path = cfg.state_dir / config.CONFIG_FILE
     path.write_text(path.read_text().replace('# check = "uv run pytest"', 'check = "uv run pytest"'))
     loaded = config.load(cfg.root)
-    assert loaded.git.check == "uv run pytest"
+    assert loaded.git.check == ""  # guarded edits wait for the human
+    from troupe.store import Store
+    store = Store(cfg.db_path)
+    store.answer(store.kv_get("safety.config")["qid"], "Approve")
+    assert config.load(cfg.root).git.check == "uv run pytest"
     assert loaded.git.check_timeout == 600
     with pytest.raises(ValueError, match="git.check_timeout"):
         config.GitSettings(check_timeout=-1)
