@@ -187,6 +187,17 @@ class Engine:
         if not paused:
             self.dispatch()
         wakes = sorted(self.candidates(paused), key=lambda w: w.priority)
+        def task_work(w: Wake) -> bool:
+            return bool(not w.chat and w.task and get_role(w.agent.role).works_in_task_tree
+                        and w.task["status"] in ("ready", "in_progress")
+                        and self.deps_done(w.task) and now() >= (w.task["next_attempt_at"] or 0))
+
+        # Give task work the next free autonomous slot when none is running.
+        work = [w for w in wakes if task_work(w)]
+        if work and not any(task_work(rw) for _, _, rw in self.running.values()):
+            chosen = min(work, key=lambda w: (s.agent(w.agent.id)["last_run_at"] or 0, w.agent.id))
+            wakes.remove(chosen)
+            wakes.insert(next((i for i, w in enumerate(wakes) if not w.chat), len(wakes)), chosen)
         for w in wakes:
             if w.agent.id in self.running:
                 continue
@@ -255,10 +266,10 @@ class Engine:
                 continue
 
             def load(a: AgentCfg) -> int:
-                return sum(1 for x in open_tasks if x["assignee"] == a.id and x["status"] in ("ready", "in_progress"))
+                return sum(1 for x in open_tasks if x["assignee"] == a.id and x["status"] in ("ready", "in_progress", "blocked", "review", "approved"))
 
             best = min(pool, key=lambda a: (load(a), a.id in self.running))
-            if len(pool) > 1 and load(best) > 0 and get_role(t["role"]).works_in_task_tree:
+            if load(best) > 0 and get_role(t["role"]).works_in_task_tree:
                 continue  # builders get one task at a time; wait for a free one
             s.update_task(t["id"], actor="system", assignee=best.id,
                           event_text=f"Dispatched #{t['id']} {t['title']} → {best.id}", significant=False)
