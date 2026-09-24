@@ -71,20 +71,30 @@ should be able to move to codex or even local models as defined in the setup yam
   - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
   - Test: parsing each backend's usage events into per-window %, and cap comparison.
 - **REQ-BE-016 [x]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
-  - `[budget] claude_cap_5h_percent` and `claude_cap_7d_percent` in `troupe.toml` (each 0 = off; unset falls back to
-    `claude_cap_percent`, default 50 — the human's live values are 80/50). Each window is checked against its own
-    cap. If a window's latest Claude usage is ≥ its cap, no new **autonomous** runs start for claude-backed agents,
-    capped until *that window's* reset. Codex and local agents are unaffected, and in-flight runs finish.
+  - Per-window caps in `troupe.toml`: `[budget] claude_cap_5h_percent` and `claude_cap_7d_percent` (each 0 = off).
+    If either is unset it falls back to `claude_cap_percent` (default 50), so older configs keep working. Troupe's own
+    values are the human's choice (question #18): **5h = 80, 7d = 50**.
+  - Each window is checked against its own cap. If either window's latest Claude usage is ≥ its cap, no new
+    **autonomous** runs start for claude-backed agents, and "capped until" is the reset time of the window that
+    tripped. Codex and local agents are unaffected, and in-flight runs finish.
+  - The API exposes `cap_pct` per window (REQ-API Usage).
   - Chat with the human still runs, since they're present and can decide, but it's labeled as over the cap. This
     differs from real rate limits (REQ-ENG-016), which block chat, because the cap is troupe's own seatbelt.
-  - It reuses the ENG-016 per-backend limit state with reason `cap` and resets when the tripped window resets.
-    Affected agents show `waiting_on` kind `providers` (REQ-ENG-046).
-  - A feed event and a needs-help notification (REQ-ENG-047) fire when it engages. The API usage snapshot exposes
-    `capped` and, per window, `cap_pct` (REQ-TUI-010's header renders "capped until HH:MM").
-  - When #38 ships, `provider_limits.claude` (BE-011) replaces these keys. Present `claude_cap_*` values are migrated
-    to it once, with an event.
-  - Test: a window over its own cap with the other under, the reverse, the shared-cap fallback when a window's own
-    key is unset, off, the reset clears it; codex/local are unaffected; chat is allowed.
+  - It reuses the ENG-016 per-backend limit state with reason `cap` and resets when the window resets. Affected agents
+    show `waiting_on` kind `providers` (REQ-ENG-046).
+  - A feed event and a needs-help notification (REQ-ENG-047) fire when it engages. The API usage snapshot exposes the
+    cap and "capped until HH:MM" for the TUI header (REQ-TUI-010).
+  - When #38 ships, `provider_limits.claude` (BE-011) replaces these keys. The present `claude_cap_*` values are
+    migrated to `five_hour`/`seven_day` once, with an event.
+  - **Deploying:** the live values must be in `troupe.toml` before the reinstall. Otherwise the default 50 on a busier
+    5h window caps every claude agent on the first tick, the lead included.
+  - Test:
+    - 5h over its cap with 7d under, and the reverse;
+    - the fallback to `claude_cap_percent`;
+    - off;
+    - the reset clears it;
+    - codex/local are unaffected;
+    - chat is allowed.
 - **REQ-BE-012 [ ]** Provider selection at each wake.
   - A provider is **available** when it is under all its caps, not rate-limited (REQ-ENG-016), and up. Up means its
     CLI is present and, for local, the server answers.
@@ -149,6 +159,7 @@ should be able to move to codex or even local models as defined in the setup yam
 - 2026-09-24 — BE-011 shared window names (five_hour/seven_day/window_<minutes>) and stale-sample rule (#52/#38).
 - 2026-09-24 — BE-015 isolated CODEX_HOME for agents (#62).
 - 2026-09-24 — BE-016 MVP Claude cap (#72).
+- 2026-09-24 — BE-016 split into per-window caps (5h/7d); troupe's values 80/50 (human, question #18).
 
 ## Open questions
 - Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52

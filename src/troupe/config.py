@@ -61,6 +61,9 @@ class Budget:
     claude_cap_5h_percent: float | None = None  # pause new autonomous claude runs at/above this 5h
     # utilization; 0 = off; unset (None) falls back to claude_cap_percent
     claude_cap_7d_percent: float | None = None  # same, for the 7d window
+    stall_minutes: float = 15  # REQ-ENG-050: no run output for this long -> status "stalled"
+    max_run_minutes: float = 90  # REQ-ENG-050: hard cap for worktree-role runs -> status "timeout"
+    max_coord_run_minutes: float = 30  # REQ-ENG-050: hard cap for everyone else; chat is exempt
 
 
 CLAUDE_WINDOW_CAP_FIELDS = {"five_hour": "claude_cap_5h_percent", "seven_day": "claude_cap_7d_percent"}
@@ -165,6 +168,9 @@ max_task_attempts = 4     # builder sessions on one task before it's marked bloc
 claude_cap_percent = 50   # fallback cap for whichever of the two below is left unset
 # claude_cap_5h_percent = 80  # pause new autonomous claude runs at/above this 5h utilization; 0 = off
 # claude_cap_7d_percent = 50  # same, for the 7d utilization; unset = claude_cap_percent applies
+stall_minutes = 15        # no run output for this long -> killed and marked "stalled"
+max_run_minutes = 90      # hard cap for worktree roles (builder, QA in a worktree) -> "timeout"
+max_coord_run_minutes = 30 # hard cap for everyone else; chat runs are exempt from the hard cap
 
 [backends]
 claude_command = "claude"
@@ -175,7 +181,7 @@ local_api_key = "lm-studio"
 
 [notify]
 enabled = true
-quiet = []              # question, blocked, check_failed, rate_limit, providers, backoff, crash_loop, throttle, safety, chat
+quiet = []              # question, blocked, check_failed, rate_limit, providers, backoff, crash_loop, throttle, safety, chat, stalled, timeout
 
 [git]
 autocommit = true         # commit doc/spec changes in the main tree after each non-builder run
