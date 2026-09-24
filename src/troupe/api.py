@@ -10,6 +10,9 @@ import os
 import re
 import socket
 import stat
+import struct
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -33,7 +36,6 @@ STAGED = {
     "reload": ("REQ-ENG-009", 28),
     "comment_decision": ("REQ-COM-035", 27),
     "update_config": ("REQ-ENG-019", 5),
-    "stop_now": ("REQ-SAFE-010", 42),
 }
 PARAMS = {
     "ping": "",
@@ -105,6 +107,77 @@ def unavailable(req, task):
         f"{req} is not available yet (task #{task})",
         {"req": req, "task": task},
     )
+
+
+# ── human-only enforcement (#57, Principle 0) ───────────────────────────────
+# QA found that the 0600 socket permission doesn't distinguish the human from an agent's Bash tool:
+# both run as the same OS user. This identifies the connecting process and refuses commands that
+# only the human may issue (resume, answering/dismissing questions) when the caller looks like an
+# agent. It's a best-effort layer against the easy, accidental path — a determined agent can still
+# detach a process and clear TROUPE_AGENT first. Real enforcement is #43's sandbox job.
+HUMAN_ONLY_METHODS = {"resume", "answer_question", "dismiss_question"}
+
+
+def peer_pid(writer: asyncio.StreamWriter) -> int | None:
+    """The pid of the process on the other end of this Unix socket connection, or None if it can't
+    be determined (unsupported platform, or the peer already disconnected)."""
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return None
+    try:
+        if sys.platform == "darwin":
+            return sock.getsockopt(0, 2)  # SOL_LOCAL, LOCAL_PEERPID (not exported by socket module)
+        raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        pid, _uid, _gid = struct.unpack("3i", raw)
+        return pid
+    except OSError:
+        return None
+
+
+def _pid_env_has_agent(pid: int) -> bool:
+    """Whether `pid`'s own environment carries TROUPE_AGENT — set directly in the env every agent
+    backend launches its CLI with (runners.child_env), so a shell command it runs inherits it too.
+    Same-user processes' environments are readable via `ps`; never logs what it reads."""
+    try:
+        out = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=1).stdout
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return re.search(r"(?:^|\s)TROUPE_AGENT=", out) is not None
+
+
+def _pid_ancestors(pid: int, limit: int = 32) -> set[int]:
+    chain = {pid}
+    current = pid
+    for _ in range(limit):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(current)],
+                                 capture_output=True, text=True, timeout=1).stdout.strip()
+            ppid = int(out)
+        except (subprocess.SubprocessError, ValueError, OSError):
+            break
+        if ppid <= 1 or ppid in chain:
+            break
+        chain.add(ppid)
+        current = ppid
+    return chain
+
+
+def caller_is_agent(writer: asyncio.StreamWriter, engine) -> bool:
+    """True only when the connecting process looks like an agent (or one of its subprocesses), by
+    either signal QA verified: its own env carries TROUPE_AGENT, or it descends from a currently
+    running agent run's process. Undetermined (no pid, no live engine) fails open — this is defense
+    in depth, not the sandbox boundary."""
+    pid = peer_pid(writer)
+    if pid is None:
+        return False
+    if _pid_env_has_agent(pid):
+        return True
+    if engine is not None:
+        runner_pids = {r.proc.pid for r, _, _ in engine.running.values() if r.proc}
+        if runner_pids and runner_pids & _pid_ancestors(pid):
+            return True
+    return False
 
 
 def bounded(value):
@@ -685,6 +758,11 @@ class Data:
             return dict(milestone=s.milestone(mid))
         if method == "stop_team":
             return {"accepted": True}
+        if method == "stop_now":
+            from .safety import stop_now
+            killed = s.scalar("SELECT count(*) FROM runs WHERE status='running'", default=0)
+            stop_now(s)
+            return dict(killed=killed)
         if method in STAGED:
             unavailable(*STAGED[method])
         if method in (
@@ -726,17 +804,17 @@ class Data:
                 ),
             )
         if method in ("pause", "resume"):
-            if method == "resume" and s.kv_get("stopped"):
-                unavailable("REQ-SAFE-010", 42)
-            s.kv_set("paused", method == "pause")
-            s.event(
-                "human",
-                "control",
-                "You paused the troupe"
-                if method == "pause"
-                else "You resumed the troupe",
-                significant=False,
-            )
+            if method == "pause":
+                s.kv_set("paused", True)
+                s.event("human", "control", "You paused the troupe", significant=False)
+            else:
+                # Mirrors engine.handle_commands()'s "resume": clears both the plain pause
+                # (REQ-ENG-014) and the kill switch (REQ-SAFE-010), which stop_now sets together, so
+                # resuming always fully recovers regardless of which state the human is coming from.
+                from .safety import audit
+                s.kv_set("stopped", False)
+                s.kv_set("paused", False)
+                audit(s, "Human resumed the troupe", notify=False)
             return dict(engine=self.engine_state())
         if method in ("answer_question", "dismiss_question"):
             qid = integer(p, "id", minimum=1)
@@ -750,7 +828,13 @@ class Data:
                     )
                 if p.get("decision") not in ("approve", "reject"):
                     raise APIError("bad_request", "decision must be approve or reject")
-                unavailable("REQ-SAFE-020", 42)
+                # Same answer text shape as the raylib GUI's approval buttons (views.py
+                # answer_question_option): "Approve"/"Reject" + an optional " — note", which is what
+                # gates.py's verdict() parses to decide the outcome — one shared path, not a second.
+                note = string(p, "text", "")
+                label = "Approve" if p["decision"] == "approve" else "Reject"
+                s.answer(qid, f"{label} — {note}" if note else label, status="answered")
+                return dict(question=self.question(self.require("questions", qid)))
             if "decision" in p:
                 raise APIError(
                     "bad_request", "decision only applies to approval questions"
@@ -1313,6 +1397,8 @@ class APIServer:
                 if event["seq"] > since and c.subscribed and c.matches(event["event"]):
                     c.enqueue(event, push=True)
             return dict(epoch=self.epoch, seq=self.seq)
+        if method in HUMAN_ONLY_METHODS and caller_is_agent(c.writer, self.engine):
+            raise APIError("forbidden", "only the human can do this; use ask_human instead")
         s = self.data.s
         s.conn.execute("BEGIN IMMEDIATE" if method in COMMANDS else "BEGIN")
         try:
