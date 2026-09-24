@@ -174,6 +174,16 @@ otherwise — animations must stay legible at both.
 - **Card** — no single `ui.card()`; task cards (`views._task_card`) and memory cards
   (`views.memory_view`) share the pattern: `PANEL2`→`PANEL3` on hover, `BORDER`→`BORDER_HI`, a 3px
   colored accent bar on the left edge when status/kind matters.
+- **Question card** (`views._q_layout`) — the "Needs you" panel's base unit: avatar + asker name,
+  question/idea text, option buttons, a free-text reply input, dismiss control. Everything the human
+  is asked to weigh in on that isn't a full task/decision reuses this shell rather than inventing a
+  new one.
+- **Approval card** (REQ-SAFE-020/021, `#42`) — a question-card variant for protected-path diff
+  approval: same shell (avatar/title/dismiss position), with the free-text reply and option buttons
+  replaced by a diff summary (protected files, +/− counts), an "Open full diff" link, and Approve /
+  Reject-with-note in place of generic options. Reusing the question-card shell here is deliberate,
+  not incidental — a safety-critical approval should look like the same kind of thing the human
+  already knows how to act on, not a novel, unfamiliar control.
 - **Chat bubble** (`views._bubble`) — right-aligned accent-tinted for the human, left-aligned
   `PANEL2` for agents; shrink-wraps to content width for short single-line messages instead of
   filling the max bubble width.
@@ -339,6 +349,28 @@ the two never coordinate, which is exactly QA's current #23 repro (Stop button, 
 `ui.text_fit`/ellipsize against `head.w - reserved_left - reserved_right`, where `reserved_right`
 includes that frame's actual button block width — not a fixed constant, so it correctly shrinks further
 whenever Stop is showing.
+
+## App icon (REQ-GUI-027)
+
+`src/troupe/assets/icon/troupe-1024.png` (master), `troupe.iconset/` (standard macOS size set) and
+`troupe.icns` (built via `iconutil`) — regenerate with `design/icon/build-icns.sh <svg>` from the
+1024px source SVG. The iconset's file naming matches Xcode's `AppIcon.appiconset` convention exactly,
+so the same PNGs drop into a SwiftUI asset catalog if/when that's needed — no separate Mac-app asset
+work required.
+
+**Direction ("Orb"), chosen by the human from 3 options (question #9):** a single luminous indigo
+sphere (`ACCENT`-family gradient, bright specular highlight top-left per current Apple icon lighting
+convention) on the midnight squircle background, with a thin orbit ring and one small green
+satellite dot — the calmest, most premium-reading of the three explorations, and the most legible at
+menu-bar/Dock scale since it resolves to one dominant shape rather than several small ones. The other
+two explored directions (a three-orb "Triad" evolving the in-app logo mark literally, and a bold
+abstract "T" monogram) are kept in `design/icon/` for reference; all three were verified legible at
+32px and 16px before presenting them (`design/icon/legibility-check.png`; final shipped-asset check
+at `design/icon/final-legibility-check.png`).
+
+Rendered from hand-authored SVG via `qlmanage -t` (no new runtime dependency — `qlmanage`/`sips`/
+`iconutil` are all macOS built-ins) rather than a raster tool, so the source stays editable and
+resolution-independent.
 
 ## Known gaps (feeds the polish backlog below)
 

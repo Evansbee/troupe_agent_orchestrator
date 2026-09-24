@@ -84,6 +84,19 @@ class GitSettings:
 
 
 @dataclass
+class NotifySettings:
+    enabled: bool = True
+    quiet: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        from .notify import KINDS
+        if not isinstance(self.enabled, bool):
+            raise ValueError('troupe.toml: notify.enabled must be boolean')
+        if not isinstance(self.quiet, list) or any(not isinstance(k, str) or k not in KINDS for k in self.quiet):
+            raise ValueError('troupe.toml: notify.quiet must list known event kinds: ' + ', '.join(sorted(KINDS)))
+
+
+@dataclass
 class Config:
     root: Path
     project: str
@@ -96,6 +109,7 @@ class Config:
     toml_data: dict = field(default_factory=dict, repr=False)
     git: GitSettings = field(default_factory=GitSettings)
     triage: TriageSettings = field(default_factory=TriageSettings)
+    notify: NotifySettings = field(default_factory=NotifySettings)
 
     @property
     def state_dir(self) -> Path:
@@ -138,6 +152,10 @@ claude_strict_mcp = true  # agents only see the troupe MCP server (faster startu
 codex_command = "codex"
 local_base_url = "http://localhost:1234/v1"   # any OpenAI-compatible server (LM Studio, Ollama, vLLM)
 local_api_key = "lm-studio"
+
+[notify]
+enabled = true
+quiet = []              # question, blocked, check_failed, rate_limit, providers, backoff, crash_loop, throttle, safety, chat
 
 [git]
 autocommit = true         # commit doc/spec changes in the main tree after each non-builder run
@@ -403,7 +421,7 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
         migrate_team(root, raw)
         team_data = read_team(root)
     agents = parse_agents(team_data)
-    for section in ("project", "budget", "backends", "git", "triage"):
+    for section in ("project", "budget", "backends", "git", "triage", "notify"):
         if not isinstance(raw.get(section, {}), dict):
             raise ValueError(f"troupe.toml: {section}: expected a table")
     for section in ("budget", "backends", "git"):
@@ -433,6 +451,7 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
         backends=Backends(**{k: v for k, v in raw.get("backends", {}).items() if k in Backends.__dataclass_fields__}),
         git_autocommit=raw.get("git", {}).get("autocommit", True),
         git=GitSettings(**{k: v for k, v in raw.get("git", {}).items() if k in GitSettings.__dataclass_fields__}),
+        notify=NotifySettings(**raw.get("notify", {})),
         provider_limits=limits, team_data=team_data, toml_data=raw,
         triage=TriageSettings(**raw.get("triage", {})),
     )

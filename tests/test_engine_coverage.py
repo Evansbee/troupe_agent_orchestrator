@@ -30,13 +30,17 @@ async def run_wake(engine, wake):
     await engine.running[wake.agent.id][1]
 
 
-def test_cli_starts_once_and_attaches(project, monkeypatch):
+def test_cli_starts_detached_and_attaches(project, monkeypatch):
+    import argparse
+    from troupe import service
+    from troupe.gui import app
     cfg, _ = project
-    starts = []
-    monkeypatch.setattr(Engine, "start_thread", lambda self: starts.append(self))
-    assert cli.start_engine(cfg) is starts[0]
-    assert cli.start_engine(cfg) is None
-    assert len(starts) == 1
+    actions = []
+    monkeypatch.setattr(cli.config_mod, "find_root", lambda: cfg.root)
+    monkeypatch.setattr(service, "start_service", lambda cfg: actions.append("start"))
+    monkeypatch.setattr(app, "run_gui", lambda cfg: actions.append("attach"))
+    cli.cmd_up(argparse.Namespace())
+    assert actions == ["start", "attach"]
 
 
 def test_shared_store_commands_recovery_and_heartbeat(project):

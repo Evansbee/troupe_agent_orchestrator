@@ -120,3 +120,32 @@ Backend fallback/streaming/cost requirements remain pending in specs/30.
 
 - 2026-09-23: isolated dispatch reproduction with a single-builder roster assigned both A and B to
   builder-1, violating REQ-ENG-031. Reported separately; production code unchanged by this test-plan task.
+
+## Current review additions — 2026-09-24
+
+These rows supersede older coverage-gap notes above where the corresponding task has merged.
+
+| Requirement | Verification and expected effect |
+|---|---|
+| ENG-001/003/006/007/008, GUI-028 | `tests/test_service.py`: subprocess concurrent/stale starts, detached GUI lifetime, registry, graceful/forced shutdown and mail recovery. Catch-up navigation regression must render the selected historical run after lazy history initializes, including a target older than 200 runs. Linux execution remains a separate platform check. |
+| ENG-031 | `tests/test_dispatch_capacity.py`: cap ready/in_progress/blocked work; review/approved do not occupy builder capacity (#30). The original single-builder failure above is historical. |
+| ENG-045/046 | `tests/test_milestones.py`: additive migration, role permissions, done/total, engine-owned wait precedence/stable since, queued/reading mail counts, and real socket milestone commands/events. |
+| ENG-047, GUI-005 | `tests/test_notify.py`: coalescing, restart dedupe, focus/API suppression, quiet settings, max-attempt escalation, safe argv and no-GUI service delivery. Manual: isolated service plus question, inspect macOS banner within about 5s; osascript exit success alone does not establish banner visibility. |
+| GUI-009 | `tests/test_gui_zoom.py`; render all seven tabs at 1560x980 and zoom .8/1.15/1.2, including running agents with full handles. Exercise shortcuts, persistence, idle 20fps and stabilized font cache. At 1120x720/1.0 intentional width fixes are permitted; no new regressions. |
+| GUI-022 | `tests/test_agent_view_runs.py`: 200/201 boundary, oldest Prompt/Transcript, retained selection after new arrivals, zero store access in draw and bounded periodic reads. Click through at minimum/default widths. |
+| COM-025, GUI-027 title | `tests/test_inbox_keyboard.py`; real App loop: digit answers hovered/first card, focus and Command suppress answering, and title count changes after answer. Icon/dock badge are separate scope. |
+| MAC-011/012/016 | On the next Swift review (#49 merged as plumbing), run Swift tests and a disposable socket server: initial snapshot, same-epoch resume becomes Live, expired-cursor error triggers snapshot, new epoch replaces state, duplicate seq ignored. These must exercise the real client, not only store methods. |
+| MAC-052 | On animated-view reviews (#59), attach a playable TROUPE_REC recording (default 10s) from fixture/live data, confirm clean exit, and report rendered frame timing/fps under representative load. Timing scene.advance alone is insufficient. |
+| MAC-053 | Before the human sees a new Mac view, obtain designer review of screenshots AND motion against design/*.md, with every P0 in design/mac-fidelity.md checked off. Passing data/transport tests does not satisfy this visual gate. |
+
+Execution: main at eb93d0d, `uv run pytest -q`: 256 passed in 50.05s. Isolated no-GUI service
+question was accepted by osascript in 3.28s; banner visibility not independently confirmed.
+Raylib smoke could not render: GLFW reported no monitor/platform initialization failure in this
+session. App.run then segfaulted at close_window; filed as #60 for graceful initialization-failure handling.
+No Swift package existed on that checkout; #49 has since merged as plumbing, but QA has not yet run the
+MAC-011/012/016 checks against it, so no Swift pass is claimed.
+
+Execution 2026-09-24 07:27: main at f7ea8ba, `uv run pytest -q`: 272 passed in 36s, clean exit, no stray
+engine processes. `troupe doctor` shows all backends OK. Found #63: main's service_status can't see a legacy
+(pre-#24, bare-int pid, no lock) engine that is still running, so a post-reinstall `troupe up` would start a second
+engine (ENG-003/006). That upgrade path needs a test in `tests/test_service.py`.

@@ -26,6 +26,17 @@ CODEPOINTS = [c for a, b in _RANGES for c in range(a, b)]
 CODESET = set(CODEPOINTS)
 _REPLACE = {"\t": "    ", "’": "'", "‘": "'", "“": '"', "”": '"'}
 
+# Global UI zoom: scales the whole logical coordinate system (fonts and layout metrics alike), not
+# individual font sizes — see UI.set_zoom.
+ZOOM_DEFAULT = 1.15
+ZOOM_MIN = 0.8
+# Validated at the default 1560x980 window: all seven tabs render without overlap/clipping up to
+# here (see specs/40-gui.md REQ-GUI-009). Above this, several views' fixed-width chrome (Board's
+# 5 columns, Agent's header, Pulse's node orbit) run out of absolute room as the logical canvas
+# shrinks — a views.py-wide responsive redesign, not a zoom-math problem (tracked separately).
+ZOOM_MAX = 1.20
+ZOOM_STEP = 0.05
+
 
 def clean(s: str) -> str:
     """Drop characters we have no glyphs for (emoji etc.)."""
@@ -102,6 +113,8 @@ class ScrollState:
     stick: bool = False
     rect: Rect | None = None
     dragging: bool = False
+    seen: float = 0.0  # content height as of the last time at_bottom was True (REQ-GUI-017 "New
+    # messages" pill: content arriving past this, while unstuck, is what the pill is telling you about)
 
 
 @dataclass
@@ -114,6 +127,48 @@ class InputState:
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+# ── stick-to-bottom scrolling (REQ-GUI-017) ─────────────────────────────────
+# Pure functions, no raylib calls, so the stickiness rule is unit-testable without an open window:
+# ScrollState.at_bottom (for stick_bottom=True scroll areas) must change only because of the user —
+# scrolling away or back with the wheel/drag (_scroll_apply_wheel, _scroll_apply_drag) or an explicit
+# re-stick (_re_stick, e.g. after sending a message or clicking the "New messages" pill). Content
+# arriving (_scroll_commit_content) never reads or writes at_bottom — it only repositions
+# target/offset, snapping to the new bottom in the same frame when already stuck so a large
+# single-frame content jump (a streaming reply) never leaves a visible gap.
+def _scroll_apply_wheel(sc: ScrollState, wheel: float, max_off: float) -> None:
+    sc.target = max(0.0, min(sc.target - wheel * 48, max_off))
+    if sc.stick:
+        sc.at_bottom = sc.target >= max_off - 4
+
+
+def _scroll_apply_drag(sc: ScrollState, rel: float, max_off: float) -> None:
+    sc.target = sc.offset = max(0.0, min(1.0, rel)) * max_off
+    if sc.stick:
+        sc.at_bottom = sc.target >= max_off - 4
+
+
+def _scroll_commit_content(sc: ScrollState, content_h: float, max_off: float) -> None:
+    sc.content = content_h
+    if sc.stick and sc.at_bottom:
+        sc.target = sc.offset = max_off
+    else:
+        sc.target = min(sc.target, max_off)
+    if sc.at_bottom:
+        sc.seen = content_h
+
+
+def _re_stick(sc: ScrollState) -> None:
+    """Explicit re-stick: sending a message, switching chat partners (a fresh ScrollState already
+    defaults at_bottom=True), or clicking the "New messages" pill."""
+    sc.at_bottom = True
+    sc.target = max(0.0, sc.content - sc.view)
+    # seen tracks *content* height (matching _scroll_commit_content's convention below), not
+    # max_off — setting it to max_off here was off by `view` pixels, which could make the pill
+    # reappear immediately (falsely claiming "new" content) the moment the user next scrolled away,
+    # even with nothing actually new since this re-stick.
+    sc.seen = sc.content
 
 
 def alpha(c: tuple, a: float) -> tuple:
@@ -150,6 +205,7 @@ class UI:
         self.t = 0.0
         self.chars: list[str] = []
         self.dpi = 1.0
+        self.zoom = ZOOM_DEFAULT
         self.cursor = rl.MouseCursor.MOUSE_CURSOR_DEFAULT
         self.click_consumed = False
         self.tooltip: tuple[str, float, float] | None = None
@@ -166,10 +222,12 @@ class UI:
     # ── frame ─────────────────────────────────────────────────────────────
     def begin_frame(self) -> None:
         m = rl.get_mouse_position()
-        new_mouse = (m.x, m.y)
+        new_mouse = (m.x / self.zoom, m.y / self.zoom)
         self.dt = min(rl.get_frame_time(), 0.1)
         self.t = rl.get_time()
-        self.w, self.h = rl.get_screen_width(), rl.get_screen_height()
+        # Logical canvas = screen / zoom: layout code (Rects, theme metrics) works in these smaller
+        # logical units; draw primitives below scale everything back up by zoom at render time.
+        self.w, self.h = rl.get_screen_width() / self.zoom, rl.get_screen_height() / self.zoom
         self.clicked = rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_LEFT)
         self.right_clicked = rl.is_mouse_button_pressed(rl.MouseButton.MOUSE_BUTTON_RIGHT)
         self.down = rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT)
@@ -219,9 +277,28 @@ class UI:
         self.anim[key] = v
         return v
 
+    def set_zoom(self, zoom: float) -> bool:
+        """Clamp/snap to the 0.05 grid and swap in fresh font atlases at the new rasterization size.
+
+        Old atlases are unloaded rather than left cached, since they'll never be hit again at this
+        zoom (the cache key is the rasterized px, which changes with zoom) and would otherwise leak
+        GPU memory across repeated zoom changes.
+        """
+        zoom = round(min(ZOOM_MAX, max(ZOOM_MIN, zoom)) / ZOOM_STEP) * ZOOM_STEP
+        zoom = round(zoom, 2)
+        if zoom == self.zoom:
+            return False
+        self.zoom = zoom
+        for f in self.fonts.values():
+            rl.unload_font(f)
+        self.fonts.clear()
+        return True
+
     # ── fonts & text ──────────────────────────────────────────────────────
     def font(self, face: str, size: float):
-        px = int(round(size * self.dpi))
+        # Rasterize at size × dpi × zoom so a zoomed-in glyph is real texture detail, not a blown-up
+        # bitmap; draw calls then ask for fontSize=size*zoom (see text()), matching 1:1 at this px.
+        px = int(round(size * self.dpi * self.zoom))
         key = (face, px)
         f = self.fonts.get(key)
         if f is None:
@@ -233,10 +310,11 @@ class UI:
         return f
 
     def measure(self, s: str, size: float = 14, face: str = "ui") -> float:
+        """Width in *logical* (zoom-independent) units, so layout math never has to think about zoom."""
         key = (s, size, face)
         v = self.measure_cache.get(key)
         if v is None:
-            v = rl.measure_text_ex(self.font(face, size), s, size, 0).x if s else 0.0
+            v = rl.measure_text_ex(self.font(face, size), s, size * self.zoom, 0).x / self.zoom if s else 0.0
             self.measure_cache[key] = v
         return v
 
@@ -244,9 +322,10 @@ class UI:
         if not s:
             return 0.0
         s = clean(s)
-        px = round(x * self.dpi) / self.dpi
-        py = round(y * self.dpi) / self.dpi
-        rl.draw_text_ex(self.font(face, size), s, (px, py), size, 0, color)
+        scale = self.dpi * self.zoom
+        px = round(x * scale) / self.dpi
+        py = round(y * scale) / self.dpi
+        rl.draw_text_ex(self.font(face, size), s, (px, py), size * self.zoom, 0, color)
         return self.measure(s, size, face)
 
     def text_fit(self, x: float, y: float, s: str, maxw: float, size: float = 14, color: tuple = T.TEXT,
@@ -326,18 +405,34 @@ class UI:
         return n * size * lh
 
     # ── shapes ────────────────────────────────────────────────────────────
+    # Every shape primitive takes LOGICAL coordinates (same numbers as before zoom existed) and scales
+    # them up by self.zoom right before the raylib call. Callers, theme metrics (TOP_H, SIDEBAR_W, GAP,
+    # RADIUS, ...) and higher-level widgets never need to know zoom exists.
+    def _zr(self, r: Rect) -> Rect:
+        z = self.zoom
+        return Rect(r.x * z, r.y * z, r.w * z, r.h * z)
+
     def rect(self, r: Rect, color: tuple, radius: float = 0) -> None:
         if r.w <= 0 or r.h <= 0:
             return
+        zr = self._zr(r)
         if radius <= 0:
-            rl.draw_rectangle_rec(r.t(), color)
+            rl.draw_rectangle_rec(zr.t(), color)
         else:
-            rl.draw_rectangle_rounded(r.t(), min(1.0, radius * 2 / max(1, min(r.w, r.h))), 12, color)
+            zrad = radius * self.zoom
+            rl.draw_rectangle_rounded(zr.t(), min(1.0, zrad * 2 / max(1, min(zr.w, zr.h))), 12, color)
 
     def stroke(self, r: Rect, color: tuple, radius: float = 0, thick: float = 1.0) -> None:
         if r.w <= 0 or r.h <= 0:
             return
-        rl.draw_rectangle_rounded_lines_ex(r.t(), min(1.0, radius * 2 / max(1, min(r.w, r.h))), 12, thick, color)
+        zr = self._zr(r)
+        zrad = radius * self.zoom
+        rl.draw_rectangle_rounded_lines_ex(zr.t(), min(1.0, zrad * 2 / max(1, min(zr.w, zr.h))), 12,
+                                           thick * self.zoom, color)
+
+    def gradient_v(self, r: Rect, top: tuple, bottom: tuple) -> None:
+        zr = self._zr(r)
+        rl.draw_rectangle_gradient_v(int(zr.x), int(zr.y), int(zr.w), int(zr.h), top, bottom)
 
     def panel(self, r: Rect, color: tuple = T.PANEL, radius: float = T.RADIUS, border: tuple | None = T.BORDER) -> None:
         self.rect(r, color, radius)
@@ -345,36 +440,43 @@ class UI:
             self.stroke(r, border, radius, 1.0)
 
     def circle(self, x: float, y: float, rad: float, color: tuple) -> None:
-        rl.draw_circle_v((x, y), rad, color)
+        z = self.zoom
+        rl.draw_circle_v((x * z, y * z), rad * z, color)
 
     def ring(self, x: float, y: float, r_in: float, r_out: float, color: tuple, a0: float = 0, a1: float = 360) -> None:
-        rl.draw_ring((x, y), r_in, r_out, a0, a1, 48, color)
+        z = self.zoom
+        rl.draw_ring((x * z, y * z), r_in * z, r_out * z, a0, a1, 48, color)
 
     def glow(self, x: float, y: float, rad: float, color: tuple, strength: float = 0.5) -> None:
-        rl.draw_circle_gradient((x, y), rad, alpha(color, strength), alpha(color, 0))
+        z = self.zoom
+        rl.draw_circle_gradient((x * z, y * z), rad * z, alpha(color, strength), alpha(color, 0))
 
     def line(self, x1: float, y1: float, x2: float, y2: float, color: tuple, thick: float = 1.0) -> None:
-        rl.draw_line_ex((x1, y1), (x2, y2), thick, color)
+        z = self.zoom
+        rl.draw_line_ex((x1 * z, y1 * z), (x2 * z, y2 * z), thick * z, color)
 
     def hline(self, x: float, y: float, w: float, color: tuple = T.BORDER) -> None:
-        rl.draw_rectangle_rec((x, y, w, 1), color)
+        self.rect(Rect(x, y, w, 1), color)
 
     def dot(self, x: float, y: float, color: tuple, rad: float = 4) -> None:
-        rl.draw_circle_v((x, y), rad, color)
+        self.circle(x, y, rad, color)
 
     # ── clipping & hit-testing ────────────────────────────────────────────
+    # clip_stack itself stays in LOGICAL units (text_block/markdown compare against it directly);
+    # only the actual scissor-mode call needs the zoomed, physical-coordinate rect.
     def push_clip(self, r: Rect) -> None:
         if self.clip_stack:
             r = r.intersect(self.clip_stack[-1])
         self.clip_stack.append(r)
-        rl.begin_scissor_mode(int(r.x), int(r.y), int(max(0, r.w)), int(max(0, r.h)))
+        zr = self._zr(r)
+        rl.begin_scissor_mode(int(zr.x), int(zr.y), int(max(0, zr.w)), int(max(0, zr.h)))
 
     def pop_clip(self) -> None:
         self.clip_stack.pop()
         rl.end_scissor_mode()
         if self.clip_stack:
-            r = self.clip_stack[-1]
-            rl.begin_scissor_mode(int(r.x), int(r.y), int(max(0, r.w)), int(max(0, r.h)))
+            zr = self._zr(self.clip_stack[-1])
+            rl.begin_scissor_mode(int(zr.x), int(zr.y), int(max(0, zr.w)), int(max(0, zr.h)))
 
     def blocked(self) -> bool:
         return self.modal is not None and self.layer != self.modal
@@ -534,9 +636,9 @@ class UI:
         sc = self.scrolls.setdefault(id, ScrollState(stick=stick_bottom))
         sc.rect = r
         sc.view = r.h
-        if self.hover(r) and self.wheel:
-            sc.target -= self.wheel * 48
         max_off = max(0.0, sc.content - sc.view)
+        if self.hover(r) and self.wheel:
+            _scroll_apply_wheel(sc, self.wheel, max_off)
         if sc.stick and sc.at_bottom:
             sc.target = max_off
         sc.target = max(0.0, min(sc.target, max_off))
@@ -548,11 +650,8 @@ class UI:
 
     def scroll_end(self, sc: ScrollState, content_h: float) -> None:
         self.pop_clip()
-        sc.content = content_h
         max_off = max(0.0, content_h - sc.view)
-        if sc.target > max_off:
-            sc.target = max_off
-        sc.at_bottom = sc.target >= max_off - 4
+        _scroll_commit_content(sc, content_h, max_off)
         r = sc.rect
         if r and content_h > sc.view + 1:
             track = Rect(r.r - 6, r.y + 3, 4, r.h - 6)
@@ -568,15 +667,34 @@ class UI:
                 sc.dragging = False
             if sc.dragging:
                 rel = (self.mouse[1] - track.y - th / 2) / max(1, track.h - th)
-                sc.target = sc.offset = max(0.0, min(1.0, rel)) * max_off
+                _scroll_apply_drag(sc, rel, max_off)
             show = self.ease(f"sb:{id(sc)}", 1.0 if (self.hover(r) or sc.dragging) else 0.35, 8)
             self.rect(thumb, alpha(T.TEXT_FAINT, 0.9 * show), 2)
 
     def scroll_to_bottom(self, id: str) -> None:
         sc = self.scrolls.get(id)
         if sc:
-            sc.at_bottom = True
-            sc.target = max(0.0, sc.content - sc.view)
+            _re_stick(sc)
+
+    def new_content_pill(self, sc: ScrollState, r: Rect) -> None:
+        """"↓ New messages" pill (REQ-GUI-017): shown only once unstuck *and* content has actually
+        arrived since — not just "you're scrolled up", which would fire even re-reading old history.
+        Clicking it jumps back to the bottom and re-sticks. Bottom-center inside `r`, floating above
+        the last line of content — solid fill (not alpha-blended) so it never reads as a glitch where
+        it overlaps a message."""
+        if not (sc.stick and not sc.at_bottom and sc.content > sc.seen + 1):
+            return
+        label = "↓ New messages"
+        w = self.measure(label, 12.5, "med") + 30
+        pr = Rect(r.cx - w / 2, r.b - 54, w, 34)
+        hov = self.hover(pr)
+        bg = mix(T.ACCENT, (255, 255, 255, 255), 0.12) if hov else T.ACCENT
+        self.rect(pr, bg, 17)
+        self.text_center(pr, label, 12.5, T.ON_ACCENT, "med")
+        if hov:
+            self.hand()
+        if self.click(pr):
+            _re_stick(sc)
 
     # ── text input ────────────────────────────────────────────────────────
     def input_height(self, id: str, width: float, size: float = 14, max_lines: int = 8, pad: float = 12) -> float:

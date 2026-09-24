@@ -94,7 +94,9 @@ def test_status_prints_handles(project, monkeypatch, capsys):
     store.add_task('Work', assignee='builder-2')
     store.ask('lead', 'A choice?')
     monkeypatch.setattr(cli, 'require_root', lambda: cfg.root)
-    cli.cmd_status(argparse.Namespace())
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_status(argparse.Namespace())
+    assert exc.value.code == 1
     output = capsys.readouterr().out
     assert 'builder_2@test-project' in output and 'lead_1@test-project' in output
     assert 'builder-2' not in output

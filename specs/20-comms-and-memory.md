@@ -38,7 +38,8 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - FYI mail never triggers a wake. It's delivered in the recipient's next natural wake under "FYI since last time".
   - The engine ignores the flag, and the mail wakes as normal, for mail from the human, mail about the recipient's
     own active task or review, blocking questions, and the ENG-049 pending-mail count guard.
-  - Charter rule: mark mail `fyi=True` unless you need the recipient to act or reply. Until this ships, the team
+  - Charter rule, human-approved verbatim (question #12): "Mark mail fyi=True unless you need the recipient to act
+    or reply." Until this ships, the team
     convention is "FYI" in the subject and no replies to FYIs (lead, 2026-09-23).
   - Test: an FYI doesn't wake the recipient and appears in its next prompt; exempt mail still wakes.
 
@@ -58,7 +59,7 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - Agents not woken are not interrupted; the message appears in their next wake prompt under team chat.
   - The room thread interleaves human and agent replies in time order, each bubble in the agent's role color.
   - Test: routing (mention, role mention, @all, no mention, unknown mention).
-- **REQ-COM-025 [ ]** Keyboard answering in the inbox. (#12)
+- **REQ-COM-025 [x]** Keyboard answering in the inbox. (#12)
   - Keys 1–9 pick that option on the hovered question card, or the top card if none is hovered.
   - Ignored whenever a text input has focus (typing "3" in a reply never answers a question).
   - The answered card gets the same feedback as a click (toast + card leaves).
@@ -82,6 +83,50 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - The API exposes `answered_via` on questions (specs/50-api.md), so the Mac app inherits this.
   - Test: ask → resolve via chat (card closed, `answered_via=chat`, recall finds it, no duplicate mail); the error
     cases; open questions in the chat wake prompt; the charter line present verbatim.
+
+### The PM is the human's single point of contact (#65)
+Human, 2026-09-24: "all communications should go through [the PM]. I don't like lead talking to me; he talks to you,
+then you figure out if he should know it or if you need my involvement."
+- **REQ-COM-027 [ ]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
+  `send_message(to="human")`, the call creates an **escalation** in the PM's inbox instead of a Needs-you card or
+  human mail.
+  - An escalation records the original text, options, context, task, sender handle and urgency (`normal |
+    urgent`). It's stored in an additive `escalations` table.
+  - The caller gets a normal, non-blocking result: "Escalated to pm_1@troupe; the answer will arrive in your mailbox".
+  - **Exception:** during a run that is answering the human's own live chat (REQ-ENG-011), `ask_human` from that
+    agent goes straight to Needs you. The human chose to talk to that agent directly (REQ-COM-026 still applies).
+- **REQ-COM-028 [ ]** PM triage tools:
+  - `forward_to_human(escalation_id, question, options, context)` creates the Needs-you card, credited "via pm_1
+    from lead_1". The answer is delivered to the **original asker and the PM**.
+  - `answer_escalation(escalation_id, answer, rationale)` resolves it from existing decisions or memory with no
+    human card. The asker gets the answer and the rationale.
+  - `batch_to_human([ids…])` combines several escalations into one card or digest. Each answer is routed back to
+    its own asker.
+  - The PM prompt gives the triage duty: answer what's already decided, batch what isn't urgent, frame everything
+    with options, and never sit on anything. Every agent's charter says to reach the human through the PM. The
+    `roles.py` change is protected, so the human approves it.
+- **REQ-COM-029 [ ]** Nothing can be buried: bypass and auto-forward.
+  - **Always direct to the human, never filterable by any agent:**
+    - safety approval cards (REQ-SAFE-020/021);
+    - kill-switch and stop events (REQ-SAFE-010);
+    - engine needs-help notifications (REQ-ENG-047) and ★ "Done" reports (REQ-ENG-048), which come from the engine,
+      not an agent;
+    - `ask_human(..., bypass_pm=True, reason=…)`, for when an agent believes the PM is acting against the human's
+      interests (Principle 0).
+    Every bypass is logged as a visible feed event with its reason.
+  - **Auto-forward:** an escalation the PM hasn't handled within `[escalation] timeout_minutes` (default 30; 5 for
+    `urgent`) is forwarded to the human automatically, marked "auto-forwarded: PM didn't respond". A busy or down
+    PM can't bury it.
+  - The human's default chat partner is the PM, in the GUI (REQ-GUI-010) and the TUI (REQ-TUI). Direct chat with
+    other agents stays available as an inspection tool.
+  - #65's diff also adds the bypass rule to specs/05-safety.md (protected, so the human approves it with the merge).
+  - Test:
+    - the lead's `ask_human` becomes an escalation, not a card;
+    - `forward_to_human` delivers the answer to both the asker and the PM;
+    - `answer_escalation` resolves with no card;
+    - safety cards, needs-help notifications and `bypass_pm` reach the human directly and are logged;
+    - an unhandled escalation auto-forwards after the timeout;
+    - a live-chat `ask_human` goes direct.
 
 ## Memory
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
@@ -194,3 +239,6 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
 - 2026-09-23 — COM-026 resolve questions answered in chat (#37; human request; charter line human-approved).
 - 2026-09-24 — COM-013 FYI mail (#46).
+- 2026-09-24 — COM-013 charter line recorded as human-approved (question #12).
+- 2026-09-24 — COM-027..029 the PM as the human's single point of contact: escalations, PM triage tools, safety bypass
+  and auto-forward (#65, human request).
