@@ -34,6 +34,12 @@ def policy():
     ('cat ~/.ssh/id_ed25519', True), ('cat ~/.ssh/id_ed25519.pub', False),
     ('cat ~/.aws/credentials', True), ('security find-generic-password -w', True),
     ('env', True), ('ssh -i ~/.ssh/id_ed25519 git@example.test', False),
+    ('sqlite3 .troupe/troupe.db "select * from kv"', True),
+    ('python3 -c "import sqlite3; sqlite3.connect(\'.troupe/troupe.db\').execute(\'DELETE FROM kv\')"', True),
+    ('cat .troupe/troupe.db-wal', True),
+    ('nc -U .troupe/api.sock', True),
+    ('curl --unix-socket .troupe/api.sock http://x/snapshot', True),
+    ('ls .troupe/runs', False),
 ])
 def test_shell_guard(command, blocked, tmp_path):
     assert bool(guard('Bash', {'command': command}, tmp_path, policy())) == blocked
@@ -44,6 +50,22 @@ def test_read_and_request_guards(tmp_path):
     fake = 'sk-' + 'aB2cD4eF6gH8iJ0kL2mN4oP6'
     assert guard('WebFetch', {'url': 'https://example.test/?key=' + fake}, tmp_path, policy())
     assert fake not in redact('token: ' + fake)
+
+
+@pytest.mark.parametrize('tool,arg_key,path,blocked', [
+    ('Write', 'file_path', '.troupe/troupe.db', True),
+    ('Edit', 'file_path', '.troupe/troupe.db-wal', True),
+    ('MultiEdit', 'file_path', '.troupe/troupe.db-shm', True),
+    ('NotebookEdit', 'notebook_path', '.troupe/api.sock', True),
+    ('Read', 'file_path', '.troupe/troupe.db', True),
+    ('write_file', 'path', '.troupe/troupe.db', True),
+    ('Write', 'file_path', '.troupe/runs/42.log', False),
+    ('Write', 'file_path', 'notes/troupe.db', False),
+])
+def test_write_tools_cannot_reach_db_or_socket(tool, arg_key, path, blocked, tmp_path):
+    (tmp_path / '.troupe').mkdir()
+    args = {arg_key: str(tmp_path / path)}
+    assert bool(guard(tool, args, tmp_path, policy())) == blocked
 
 
 def test_secrets_block_commit_and_redact_events(project):

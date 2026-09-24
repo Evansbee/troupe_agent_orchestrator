@@ -135,14 +135,17 @@ Blocked actions return a tool error telling the agent what was blocked and to us
   - Normal `git push` to an allowed remote isn't blocked.
 - **REQ-SAFE-033 [x]** No secrets in outbound requests: web fetch/search calls and shell commands (curl, wget, http
   clients) whose arguments match the secret patterns of REQ-SAFE-031 are blocked.
-- **REQ-SAFE-034 [~]** Enforcement per backend:
+- **REQ-SAFE-034 [x]** Enforcement per backend:
   - claude: a PreToolUse hook (troupe-provided, passed per run) applies REQ-SAFE-030..033 to Bash, Read, Edit/Write,
     WebFetch and WebSearch.
   - local: troupe's own tools apply them natively. There is no shell tool.
-  - codex: native tools await the sandbox/exec policy in #43 (REQ-SAFE-050). Claude/local guards are implemented;
-    current backend and shell-inspection gaps are listed in docs/adr/004-safety-guards.md.
-  - Test: the claude hook blocks `git push --force origin main`, `cat ~/.ssh/id_ed25519` and `git remote add x …`, and
-    allows `git push origin feature` and `cat ~/.ssh/id_ed25519.pub`.
+  - codex (#43): the same PreToolUse hook, wired into the isolated `CODEX_HOME`'s generated config — codex's hook
+    protocol turned out wire-compatible with Claude's (same payload/response shape), closing the gap this REQ and
+    the #42 ADR named. Remaining shell-inspection limits (an arbitrary script/interpreter/encoded command can still
+    evade text-pattern matching) are inherent to both backends equally now, not codex-specific; see
+    docs/adr/005-least-privilege-sandbox.md.
+  - Test: the hook blocks `git push --force origin main`, `cat ~/.ssh/id_ed25519` and `git remote add x …`, and
+    allows `git push origin feature` and `cat ~/.ssh/id_ed25519.pub` — on both claude and codex.
 
 ## Audit (#42)
 - **REQ-SAFE-040 [~]** Feed + engine.log shipped; notifications with #35. Every safety event is recorded: blocked actions, kill-switch use, resume, approval-card outcomes,
@@ -152,19 +155,27 @@ Blocked actions return a tool error telling the agent what was blocked and to us
   - The Pulse/Stage ticker (REQ-GUI-035) shows them.
 
 ## Least-privilege sandbox (#43)
-- **REQ-SAFE-050 [ ]** No run uses `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox`
-  (grep test on `runners.py`).
-  - **codex:** its sandbox in workspace-write mode. Writable roots are the agent's worktree (builders) or project root
-    (others) plus `.troupe/`. Network is per role profile.
-  - **claude:** an explicit permission mode plus per-run allow/deny rules: edits inside the allowed roots, the Bash
-    commands the role needs, and the REQ-SAFE-030..033 denials. Anything not allowed fails fast in `-p` mode. A run
-    never stalls waiting for an approval prompt.
-  - **local:** file tools are scoped to the cwd with no escape via `..` or symlinks (test), and there is no shell.
-  - **macOS outer layer:** evaluate `sandbox-exec` profiles for all three backends. Deny `~/.ssh` reads by the agent
-    process (while keeping git-over-SSH working through ssh-agent), Keychain, other repos and `~/Library`. Allow the
-    project, `~/.troupe` and toolchains.
-  - The decision and **known gaps** go in an ADR under `docs/adr/`.
-- **REQ-SAFE-051 [ ]** Per-role profiles in `[safety.roles]` (guarded by REQ-SAFE-021):
+- **REQ-SAFE-050 [~]** No run uses `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox`
+  (grep test on `runners.py`) — done, both gone.
+  - **codex [x]:** its own native sandbox in workspace-write mode (`--sandbox workspace-write -c
+    approval_policy=never`), verified real (writes outside the workspace + `--add-dir` roots are denied and reported
+    straight back to the model, no hang). Writable roots are the agent's worktree (builders) or project root
+    (others) plus `.troupe/`. Network is per role profile (`-c sandbox_workspace_write.network_access`). Its
+    `PreToolUse` hook turned out wire-compatible with Claude's — the unmodified `guard()` (REQ-SAFE-030..033, plus
+    the new troupe.db/api.sock checks below) now runs for codex too, closing the gap REQ-SAFE-034 named.
+  - **claude [~]:** `--permission-mode auto --permission-prompts none` (an explicit mode, not bypass) plus the
+    existing PreToolUse guard() hook. Verified: Write/Edit outside allowed roots are denied by Claude's own code;
+    anything needing a prompt fails fast in `-p` mode, never stalls. **Gap:** this does not sandbox Bash at the OS
+    level (verified a Bash-run write reaches anywhere) — see the macOS outer layer note below.
+  - **local [x]:** file tools are scoped to the cwd with no escape via `..` or symlinks (test), and there is no shell.
+  - **macOS outer layer — evaluated, not shipped [ ]:** `sandbox-exec` was built and works correctly on its own
+    (`src/troupe/sandbox/macos.py`), but testing against real tools found that wrapping the whole claude process
+    breaks any tool that self-sandboxes internally (verified: `swift build`'s manifest compilation and `codex exec`
+    both fail with `sandbox_apply: Operation not permitted`, even under a fully permissive outer profile) — macOS
+    won't let an already-sandboxed process self-restrict further. Since `swift build` must keep working (below) and
+    an agent can run any Bash command, there's no safe way to apply this generally. Not wired into either backend's
+    launch. Full investigation and the **known gaps** this leaves are in `docs/adr/005-least-privilege-sandbox.md`.
+- **REQ-SAFE-051 [x]** Per-role profiles in `[safety.roles]` (guarded by REQ-SAFE-021):
   | role | writes | network |
   |---|---|---|
   | builder | own worktree + `.troupe/` | yes (package installs) |
@@ -172,10 +183,14 @@ Blocked actions return a tool error telling the agent what was blocked and to us
   | gadfly | none outside `.troupe/` | no |
   | researcher | `research/` only | yes |
   | others | project root + `.troupe/` | yes |
-  - Test: each backend is denied writing outside its roots, reading `~/.ssh` private keys, and pushing to a non-allowed
-    remote.
-  - Under the sandbox, a builder can still run `uv sync`, `uv run pytest` and `swift build`, and a real run on each
-    backend completes a normal task.
+  - `sandbox.RoleProfile` + `DEFAULT_ROLE_PROFILES`, overridable per-project via `[safety.roles.<role>]`
+    (`sandbox.parse_role_profiles`), folded into `safety.parse_settings` — covered by the existing REQ-SAFE-021
+    human-approval gate with no new gate code.
+  - Test: each backend is denied writing outside its roots (codex's native sandbox; claude's PreToolUse guard()
+    pattern, since there's no OS enforcement for claude's Bash — see REQ-SAFE-050's gap), reading `~/.ssh` private
+    keys (guard() hook, both backends), and pushing to a non-allowed remote (existing REQ-SAFE-032 guard).
+  - Verified live in scratch projects (not the live troupe checkout): `uv sync`, `uv run pytest` and `swift build`
+    all still work under the new sandboxing; `git push` to a disposable remote succeeds under both backends.
 
 ## Open questions
 - Should the human be able to pre-approve a protected-path task at brief time, so its merge doesn't wait? (Default: no,
@@ -222,3 +237,8 @@ Wake-prompt footer: `Principle 0 applies: the human comes first.`
 - 2026-09-23 — written (human request via pm; tasks #42, #43, #44). SAFE-001/004 shipped with #44. Principle 0 as refined by the human: independence
   preserved, ask only for real risk, guards target secret exposure, foreign remotes and force-push.
 - 2026-09-24 — SAFE-011 Kill: the hard stop from the whistleblower board (#78, human answer to question #17).
+- 2026-09-24 — SAFE-050/051 implemented (#43): both dangerous flags gone; codex's own sandbox plus a PreToolUse
+  hook found wire-compatible with Claude's (closes SAFE-034's codex gap); per-role profiles. The macOS sandbox-exec
+  outer layer was evaluated and built but not shipped — verified it breaks any tool that self-sandboxes internally
+  (swift build, codex), so claude's Bash execution stays without OS-level write-scoping. Full write-up:
+  docs/adr/005-least-privilege-sandbox.md.
