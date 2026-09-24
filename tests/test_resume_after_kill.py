@@ -3,6 +3,7 @@ for anything, whether the previous session ended via Ctrl-C's clean stop (which 
 in-flight runs, REQ-ENG-004) or via a `kill -9` of the TUI itself (which can't be caught, so the
 engine it started is left running -- #100 F3's re-adopt handles that case instead)."""
 import asyncio
+import json
 import os
 import pty
 import select
@@ -203,6 +204,109 @@ def test_real_ctrl_c_byte_over_a_pty_stops_tui_and_engine(project):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_tui_ctrl_c_stop_leaves_no_stale_state_or_owner_behind(project):
+    """#113 AC1: after a clean TUI-owned stop, service.json itself (not just service_status(),
+    which hides owner fields once state isn't "running") must show state "stopped" and no owner.
+    The bug: neither the engine's own shutdown nor stop_service ever wrote "stopped" on this path,
+    so service.json kept "state": "running" plus the dead TUI's owner record forever."""
+    cfg = project
+    start_service(cfg, owner="tui")
+    assert stop_service(cfg, timeout=5)  # the product-level effect of a TUI Ctrl-C
+    raw = json.loads((cfg.state_dir / "service.json").read_text())
+    assert raw["state"] == "stopped"
+    assert raw["owner_kind"] is None
+    assert raw["owner_pid"] is None
+
+
+def test_run_foreground_writes_stopped_even_if_the_engine_crashes_before_its_own_write(project, monkeypatch):
+    """#113 AC1 (unit-level, isolates the actual race): api.py's own "stopped" write only happens
+    if the engine's graceful shutdown gets that far. run_foreground's own finally must write
+    "stopped" and clear the owner on ANY exit path -- including one where it never gets that far at
+    all, which is exactly the gap that let a TUI's Ctrl-C leave a stale "running" + "tui" owner."""
+    cfg = project
+    from troupe.engine import Engine
+
+    async def _boom(self):
+        raise RuntimeError("simulated crash before api.py's own shutdown write")
+
+    monkeypatch.setattr(Engine, "main", _boom)
+    set_owner(cfg.state_dir, os.getpid(), "tui")
+
+    from troupe.service import run_foreground
+    with pytest.raises(RuntimeError):
+        run_foreground(cfg)
+
+    raw = json.loads((cfg.state_dir / "service.json").read_text())
+    assert raw["state"] == "stopped"
+    assert raw["owner_kind"] is None
+    assert raw["owner_pid"] is None
+
+
+def test_stale_tui_owner_plus_a_standalone_foreground_engine_is_never_adopted(project):
+    """#113 AC2: a stale "tui" owner record left behind (a TUI that died without cleaning up) must
+    not survive a completely unrelated `troupe engine` run in the foreground. That process records
+    itself as owner_kind "service" at startup -- nothing else ever will, since nothing spawned it
+    via start_service -- so a later `ensure_engine` only attaches (owns=False), never adopts it."""
+    cfg = project
+    set_owner(cfg.state_dir, _dead_pid(), "tui")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "troupe.cli", "engine"], cwd=cfg.root,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert _wait_for(lambda: service_status(cfg.root)["state"] == "running", 15)
+        status = service_status(cfg.root)
+        assert status["owner_kind"] == "service"  # not the stale "tui" anymore
+        pid = status["pid"]
+
+        owns = asyncio.run(lifecycle.ensure_engine(cfg))
+
+        assert owns is False  # attach only, never adopted
+        assert service_status(cfg.root)["pid"] == pid  # same process, never restarted
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+def test_foreground_engine_survives_a_later_tuis_ctrl_c_after_a_stale_owner(project):
+    """#113 AC3 (QA's live repro, automated): a foreground `troupe engine`, started after a dead
+    TUI left a stale "tui" owner record behind, must survive a later TUI's Ctrl-C untouched. The
+    original bug let the later TUI adopt -- and then kill -- the human's own foreground engine."""
+    cfg = project
+    set_owner(cfg.state_dir, _dead_pid(), "tui")
+    engine_proc = subprocess.Popen(
+        [sys.executable, "-m", "troupe.cli", "engine"], cwd=cfg.root,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert _wait_for(lambda: service_status(cfg.root)["state"] == "running", 15)
+        engine_pid = service_status(cfg.root)["pid"]
+
+        tui_proc, master_fd, stop_draining = _spawn_tui_on_pty(cfg.root)
+        try:
+            assert _wait_for(lambda: service_status(cfg.root)["state"] == "running", 15)
+            time.sleep(0.5)
+            os.write(master_fd, b"\x03")
+            assert _wait_for(lambda: tui_proc.poll() is not None, 10)
+            assert tui_proc.returncode == 0
+        finally:
+            stop_draining.set()
+            os.close(master_fd)
+            if tui_proc.poll() is None:
+                tui_proc.kill()
+                tui_proc.wait()
+
+        time.sleep(1)  # give a wrongly-adopting TUI's stop_service a moment to have acted
+        status = service_status(cfg.root)
+        assert status["state"] == "running"
+        assert status["pid"] == engine_pid  # the foreground engine, never touched
+    finally:
+        if engine_proc.poll() is None:
+            engine_proc.terminate()
+            engine_proc.wait(timeout=10)
 
 
 def test_real_sigint_to_the_tui_process_stops_the_engine_too(project):
