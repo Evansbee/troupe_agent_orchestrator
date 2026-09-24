@@ -468,3 +468,57 @@ def test_snapshot_renders_without_error(tmp_path):
             (tmp_path / "needs_you.svg").write_text(svg)
 
     run(body())
+
+
+def _baseline_question(previous, proposed):
+    return question(3, kind="safety", options=["Approve", "Reject"],
+                    context=f"Approved:\n{previous}\nProposed:\n{proposed}",
+                    approval=dict(task_id=None, branch=None, paths=[],
+                                  previous=previous, proposed=proposed))
+
+
+def test_changed_baseline_card_shows_which_role_gained_access():
+    """#85 round 2 (QA reject): a role-only change (builder gaining network) isn't compared by any
+    of the list/scalar fields, so the old summarizer found "no changes" and hid it completely."""
+    from troupe.tui.panes.needs_you import render_card
+
+    previous = dict(safety=dict(protected=["src/troupe/safety.py"], remotes=[], secret_allow=[],
+                                roles={}), check="", check_timeout=600)
+    proposed = dict(safety=dict(protected=["src/troupe/safety.py"], remotes=[], secret_allow=[],
+                                roles={"builder": {"network": True}}), check="", check_timeout=600)
+    body = render_card(_baseline_question(previous, proposed))
+    assert "no changes detected" not in body
+    assert "builder" in body
+    assert "network" in body
+    assert "true" in body.lower()
+
+
+def test_changed_baseline_card_names_the_new_remote_and_dropped_protected_path():
+    """#85 round 2 (QA reject): "protected paths +0 -1; remotes +1 -0" hides exactly what a human
+    approving a safety change needs to see — the actual remote and the actual path."""
+    from troupe.tui.panes.needs_you import render_card
+
+    previous = dict(safety=dict(protected=["src/troupe/safety.py", "src/troupe/roles.py"],
+                                remotes=[], secret_allow=[], roles={}), check="", check_timeout=600)
+    proposed = dict(safety=dict(protected=["src/troupe/roles.py"],
+                                remotes=["git@github.com:attacker/exfil.git"], secret_allow=[],
+                                roles={}), check="", check_timeout=600)
+    body = render_card(_baseline_question(previous, proposed))
+    assert "−src/troupe/safety.py" in body
+    assert "+git@github.com:attacker/exfil.git" in body
+
+
+def test_changed_baseline_card_falls_back_to_raw_context_for_an_unrecognized_change():
+    """#85 round 2 (QA reject): the summarizer only knows protected/remotes/secret_allow/roles/
+    check/check_timeout — a change to anything else must not be reported as "no changes detected"
+    (approving blind), so it falls back to the same raw context main used to show."""
+    from troupe.tui.panes.needs_you import render_card
+
+    previous = dict(safety=dict(protected=["src/troupe/safety.py"], remotes=[], secret_allow=[],
+                                roles={}), check="", check_timeout=600)
+    proposed = dict(safety=dict(protected=["src/troupe/safety.py"], remotes=[], secret_allow=[],
+                                roles={}, unrecognized_field="sneaky"), check="", check_timeout=600)
+    body = render_card(_baseline_question(previous, proposed))
+    assert "no changes detected" not in body
+    assert "unrecognized_field" in body
+    assert "sneaky" in body
