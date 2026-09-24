@@ -182,6 +182,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(0 if ok else 1)
 
 
+def cmd_api(args: argparse.Namespace) -> None:
+    from .api_client import cli
+    raise SystemExit(cli(require_root(), args.method, args.params))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="troupe", description="A team of AI agents that builds software with you.")
     sub = ap.add_subparsers(dest="cmd")
@@ -196,8 +201,11 @@ def main() -> None:
     p = sub.add_parser("say", help="chat to an agent from the terminal")
     p.add_argument("agent")
     p.add_argument("text", nargs="+")
+    p = sub.add_parser("api", help="call the engine local API")
+    p.add_argument("method")
+    p.add_argument("params", nargs="?", default="{}")
     sub.add_parser("doctor", help="check backends are available")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui, "status": cmd_status,
-                "say": cmd_say, "doctor": cmd_doctor}
+                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api}
     handlers.get(args.cmd or "up", cmd_up)(args)
