@@ -242,3 +242,28 @@ inbox badge; the gold shift on Stage is new but built from existing hues, not a 
 
 Stage introduces its own **type scale** (the sizing table above), which is deliberately not part of
 `design/system.md`'s scale — see "Sizing is relative, not fixed."
+
+## Implementation notes: raylib-specific vs. portable
+
+pm's note (msg #90): a native SwiftUI GUI is proposed (unconfirmed). This design's states, layout,
+colors, copy, and motion *timings* (the seconds/periods in the tables above) are the design and carry
+over regardless of shell. A few specific mechanics above were described in terms of the current raylib
+toolkit and would translate rather than port literally:
+
+- **The "ease speed" column** in the motion timing table is a raylib `ui.ease` parameter (exponential
+  approach, `speed` in the 6–18 range used throughout the app). The *durations and periods* next to it
+  are the actual spec; a SwiftUI implementation would drive the same numbers through
+  `.animation(.easeOut(duration:))` / `TimelineView`-driven interpolation rather than that function —
+  same curve shape, different API.
+- **Comets, particles, glows, and the bezier flight paths** (`pulse_view._bez`) are exactly the "sexy
+  part" pm's proposal calls out for `Canvas` + `TimelineView` (or Metal) — likely a *better* native fit
+  than raylib's immediate-mode circles/lines, not just a port. The visual result (glow head, fading
+  trail, bezier arc) is the spec; the draw technique is free to be whatever's idiomatic in Canvas.
+- **The working-node pulse formula** (`sin(t·3.2)`, shared with `core.py`'s `ui.avatar`) is a raylib
+  implementation detail of "a ~2s breathing pulse while working" — the timing is the spec (see the
+  table), not the specific sine call.
+- **The suggested `gui/stage_model.py` pure-module split** (snapshot → comets/cards/ticker mapping,
+  unit-tested without a window) is architecture-neutral advice, not raylib-specific — it applies just
+  as well to a SwiftUI app reading the same engine snapshots, and is worth keeping regardless of shell.
+
+Nothing else in this doc assumes raylib.
