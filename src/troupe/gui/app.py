@@ -264,7 +264,7 @@ class App:
         tx = r.x + 52
         tw = r.w - 60
         name_col = T.TEXT_FAINT if dim else T.TEXT
-        nw = ui.text(tx, r.y + 11, ui.ellipsize(a["name"], tw * 0.55, 14, "med"), 14, name_col, "med")
+        nw = ui.text(tx, r.y + 11, ui.ellipsize(d.name_of(a["id"], local=True), tw * 0.55, 14, "med"), 14, name_col, "med")
         model = f"{a['backend']}" + (f" · {a['model']}" if a["model"] else "")
         ui.text_fit(tx + nw + 8, r.y + 13, model, tw - nw - 34, 11, T.TEXT_FAINT)
         if running:

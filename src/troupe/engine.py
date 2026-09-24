@@ -15,7 +15,7 @@ from . import gitops, config as config_mod
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
 from .runners import RunSpec, make_runner, Runner, usage_limit, reported_reset
-from .store import OPEN_STATUSES, Store, now
+from .store import OPEN_STATUSES, Store, now, HandleBook
 from .team import ago, fmt_message, fmt_task_full, fmt_task_line
 
 TICK = 1.0
@@ -637,31 +637,33 @@ class Engine:
     # ── prompts ───────────────────────────────────────────────────────────
     def system_prompt(self, a: AgentCfg) -> str:
         role = get_role(a.role)
+        names = HandleBook(self.cfg.project, self.cfg.agents)
         roster = "\n".join(
-            f"- {x.id}: {x.name}, {get_role(x.role).title} — {get_role(x.role).blurb}"
+            f"- {names.name(x.id)}: {x.name}, {get_role(x.role).title} — {get_role(x.role).blurb}"
             + (" (you)" if x.id == a.id else "") for x in self.cfg.agents)
-        return CHARTER.format(name=a.name, agent_id=a.id, title=role.title, project=self.cfg.project,
+        return CHARTER.format(name=a.name, agent_id=names.name(a.id), title=role.title, project=self.cfg.project,
                               root=self.cfg.root, roster=roster) + "\n" + role.prompt
 
     def build_prompt(self, a: AgentCfg, w: Wake, msgs: list[dict], task: dict | None, row: dict) -> str:
         s = self.store
+        names = HandleBook(self.cfg.project, self.cfg.agents)
         p: list[str] = [f"# Wake-up · {time.strftime('%Y-%m-%d %H:%M')} · {REASONS[w.reason]}"]
         if msgs:
             p.append(f"\n## New messages ({len(msgs)})")
             for m in msgs:
                 tag = " [LIVE CHAT]" if m["sender"] == "human" and m["kind"] == "chat" else ""
-                p.append(fmt_message(m) + tag + "\n")
+                p.append(fmt_message(m, names) + tag + "\n")
         if task:
             label = "Task to review" if w.reason == "review" else "Your current task"
-            p.append(f"\n## {label}\n" + fmt_task_full(s, task))
+            p.append(f"\n## {label}\n" + fmt_task_full(s, task, names))
         open_tasks = s.tasks(OPEN_STATUSES)
         others = [t for t in open_tasks if t["assignee"] == a.id and (not task or t["id"] != task["id"])]
         if others:
-            p.append("\n## Your other open tasks\n" + "\n".join(fmt_task_line(t) for t in others))
+            p.append("\n## Your other open tasks\n" + "\n".join(fmt_task_line(t, names) for t in others))
         if a.role in ("lead", "pm", "gadfly", "spec"):
             done = s.tasks(("done",), limit=400)
             p.append(f"\n## Board ({len(open_tasks)} open, {len(done)} done)\n"
-                     + ("\n".join(fmt_task_line(t) for t in open_tasks[:60]) or "(empty board)"))
+                     + ("\n".join(fmt_task_line(t, names) for t in open_tasks[:60]) or "(empty board)"))
         pending_q = s.q("SELECT * FROM questions WHERE asker=? AND status='open'", a.id)
         if pending_q:
             heading = ("Your open questions (did the human just answer one? if so, resolve_question)"
@@ -671,12 +673,12 @@ class Engine:
         decisions = s.memories(kind="decision", limit=10, include_private_of=a.id)
         if decisions:
             p.append("\n## Recent team decisions\n" + "\n".join(
-                f"- {m['title']} ({m['agent']}, {ago(m['ts'])})" + (f" — why: {m['rationale'][:160]}" if m["rationale"] else "")
+                f"- {m['title']} ({names.name(m['agent'])}, {ago(m['ts'])})" + (f" — why: {m['rationale'][:160]}" if m["rationale"] else "")
                 for m in decisions))
         notes = s.q("SELECT * FROM memories WHERE agent=? AND scope='private' ORDER BY id DESC LIMIT 6", a.id)
         if notes:
             p.append("\n## Your private notes\n" + "\n".join(f"- {m['title']}: {m['content'][:200]}" for m in notes))
-        team = [f"- {x['id']}: {x['state']}" + (f" · {x['status']}" if x["status"] else "")
+        team = [f"- {names.name(x['id'])}: {x['state']}" + (f" · {x['status']}" if x["status"] else "")
                 for x in s.agents() if x["id"] != a.id]
         p.append("\n## Team right now\n" + "\n".join(team))
         if w.reason in ("proactive", "poke"):
@@ -684,7 +686,7 @@ class Engine:
             evs = [e for e in reversed(s.events(limit=40, after=since)) if e["agent"] != a.id and e["significant"]]
             if evs:
                 p.append("\n## What happened since you last looked\n"
-                         + "\n".join(f"- {ago(e['ts'])}: {e['text']}" for e in evs[-25:]))
+                         + "\n".join(f"- {ago(e['ts'])}: {names.event_text(e['text'])}" for e in evs[-25:]))
         p.append("\n## Now\n" + self.instruction(a, w, task, bool(msgs)))
         p.append("\nPrinciple 0 applies: the human comes first.")
         return "\n".join(p)
