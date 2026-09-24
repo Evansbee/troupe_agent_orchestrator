@@ -59,7 +59,9 @@ class TroupeApp(App):
     #right { width: 1fr; height: 1fr; }
     """
     BINDINGS = [
-        Binding("q", "quit_app", "Quit"),
+        # "q" only quits when the composer isn't focused (it's a text character otherwise); ctrl+q
+        # (Textual's own default binding, see action_quit below) always works, so the footer says so.
+        Binding("q", "quit_app", "Quit (^Q always)"),
         Binding("s", "stop_everything", "Stop"),
         Binding("r", "restart_engine_action", "Restart"),
         Binding("/", "focus_chat", "Chat"),
@@ -251,8 +253,11 @@ class TroupeApp(App):
             self.owns_engine = True
             await self._connect_and_load()
 
-    async def action_quit(self) -> None:  # Textual's own default binding calls this name
-        await self.action_quit_app()
+    def action_quit(self) -> None:  # Textual's own default binding (ctrl+q) calls this name
+        # action_quit_app is @work: calling it schedules a worker and returns immediately.
+        # `await`ing that Worker used to raise TypeError here, which killed the app before the
+        # confirm dialog or stop_owned_engine ever ran — an orphaned engine with no UI (#83 QA).
+        self.action_quit_app()
 
 
 def run_tui(cfg: config_mod.Config, *, owns_engine: bool) -> None:
