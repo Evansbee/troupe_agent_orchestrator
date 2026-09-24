@@ -153,7 +153,7 @@ def test_event_order_persists_authoritative_expiry(project, monkeypatch, resets,
         await engine.running[a.id][1]
     asyncio.run(run())
     assert store.kv_get("limit.codex") == expected
-    assert store.kv_get("limit_meta.codex") == {"until": expected, "reported": True}
+    assert store.kv_get("limit_meta.codex") == {"until": expected, "reported": True, "reason": "provider"}
     restarted = Engine(cfg)
     assert restarted.backend_limited("codex")
     clock[0] = expected
