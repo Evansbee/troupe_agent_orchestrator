@@ -245,4 +245,4 @@ uv run pytest
 
 ## License
 
-Not chosen yet. Until a license is added, all rights are reserved by the author.
+[MIT](LICENSE). Copyright (c) 2026 Evan Ackmann.
