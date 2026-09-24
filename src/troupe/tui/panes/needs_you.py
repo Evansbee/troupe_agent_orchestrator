@@ -16,6 +16,8 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Static
 
+from . import AutoRetrier, ReloadCoalescer
+
 APPROVAL_KINDS = ("approval", "safety")
 CALL_TIMEOUT = 5.0
 
@@ -204,6 +206,9 @@ class NeedsYouPane(Widget):
         self.status = ""
         self._answering_id: int | None = None
         self._confirm_reject_id: int | None = None
+        self._load_error_shown = False
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield Static("Needs you", classes="pane-title")
@@ -226,12 +231,26 @@ class NeedsYouPane(Widget):
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        # #108: a load failure here must not crash the app -- see chat.py's load() for why.
+        # #108: coalesced (a burst of question.* events collapses to one in-flight + one trailing
+        # reload) -- see panes/__init__.py's Pane.load(). #ny-status is its own small status line,
+        # separate from #ny-cards, so a failed reload here already can't wipe the visible cards.
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
         try:
             result = await self.client.call("questions", timeout=CALL_TIMEOUT, status="open", limit=1000)
         except Exception as e:
-            self.query_one("#ny-status", Static).update(f"couldn't load: {e or type(e).__name__} (r to retry)")
+            reason = str(e) or type(e).__name__
+            self._load_error_shown = True
+            self._set_status(f"couldn't load: {reason} (r to retry)")
+            self._retrier.schedule()
             return
+        self._retrier.reset()
+        if self._load_error_shown:
+            # Only clear #ny-status if a load failure is what's showing there -- it's shared with
+            # _call_safely's own action-failure messages, which a background resync must not stomp.
+            self._load_error_shown = False
+            self._set_status("")
         await self._set_cards(result.get("items", []))
 
     async def action_retry(self) -> None:

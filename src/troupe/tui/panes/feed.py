@@ -19,6 +19,7 @@ from textual.containers import Container
 from textual.widgets import RichLog
 
 from .. import colors as C
+from . import AutoRetrier, ReloadCoalescer
 
 MAX_ITEMS = 300  # kept in memory per source; RichLog itself is unbounded scrollback
 
@@ -60,13 +61,20 @@ class FeedPane(Container):
         self._agent_filter: str | None = None  # None = all
         self._fyi_filter: bool | None = None  # None = all, True = FYI only, False = action only
         self._decisions_only = False
+        self._loaded_ok = False
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="feed-log", auto_scroll=True, markup=False, wrap=True, max_lines=2000)
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        # #108: see chat.py's load() for why this can no longer let errors propagate.
+        # #108: coalesced (a burst of triggers collapses to one in-flight + one trailing reload)
+        # and non-destructive on a refresh failure -- see panes/__init__.py's Pane.load().
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
         try:
             agents = await self.client.call("agents")
             self._agents_by_id = {a["id"]: a for a in agents["items"]}
@@ -75,9 +83,18 @@ class FeedPane(Container):
             decisions = await self.client.call("memories", kind="decision", limit=MAX_ITEMS)
             self._decisions = list(reversed(decisions["items"]))
         except Exception as e:
-            self.query_one(RichLog).clear()
-            self.query_one(RichLog).write(f"couldn't load: {e or type(e).__name__} (r to retry)")
+            reason = str(e) or type(e).__name__
+            if self._loaded_ok:
+                self.border_subtitle = f"couldn't refresh: {reason} (r)"
+            else:
+                log = self.query_one(RichLog)
+                log.clear()
+                log.write(f"couldn't load: {reason} (r to retry)")
+            self._retrier.schedule()
             return
+        self._loaded_ok = True
+        self._retrier.reset()
+        self.border_subtitle = ""
         self._repaint()
 
     async def action_retry(self) -> None:

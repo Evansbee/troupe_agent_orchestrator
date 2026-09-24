@@ -18,6 +18,7 @@ from textual.widget import Widget
 from textual.widgets import Markdown, Static, TextArea
 
 from .. import colors as C
+from . import AutoRetrier, ReloadCoalescer
 
 HUMAN_COLOR = C.ACCENT
 DIM_COLOR = C.TEXT_DIM
@@ -102,6 +103,8 @@ class ChatPane(Widget):
         self._working_text = ""
         self._seen_ids: set[int] = set()
         self._sending = False
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-thread")
@@ -113,6 +116,13 @@ class ChatPane(Widget):
 
     # ── shared pane interface ────────────────────────────────────────────
     async def load(self) -> None:
+        # #108: coalesced (at most one in-flight reload plus one trailing) and auto-retried with
+        # backoff on failure -- see panes/__init__.py's Pane.load(). A failure here only ever
+        # touches the small #chat-working line, never the mounted #chat-thread history, so there's
+        # nothing to preserve/replace the way Tasks/Team's single-Static render needed.
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
         # #108: a load failure here (an oversized response, a timeout under load, a dropped
         # connection) must not propagate -- app.py gathers every pane's load() together, so one
         # uncaught exception used to take the whole TUI down with it. This used to deliberately let
@@ -139,7 +149,9 @@ class ChatPane(Widget):
             self._pm_activity = pm.get("activity") or ""
         except Exception as e:
             self.query_one("#chat-working", Static).update(f"couldn't load: {str(e) or type(e).__name__}")
+            self._retrier.schedule()
             return
+        self._retrier.reset()
         self._refresh_working()
 
     def on_troupe_event(self, event: dict) -> None:

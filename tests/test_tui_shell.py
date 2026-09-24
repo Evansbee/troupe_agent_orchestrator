@@ -271,6 +271,42 @@ def test_tasks_pane_load_failure_shows_inline_error_and_app_keeps_running(projec
     asyncio.run(scenario())
 
 
+def test_tasks_pane_refresh_failure_preserves_last_good_content(project):
+    """QA's #108 soak review: a REFRESH failure (the initial load already succeeded) must not wipe
+    a working table with a bare error -- only an initial load with nothing to show yet should ever
+    render the error alone. A refresh failure instead leaves the table up and notes it quietly."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tasks_pane = app._panes[1]
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+
+                server.errors["tasks"] = ("internal", "")  # an empty-message exception, on purpose
+                await server.push_event("task.changed", {})
+                await _wait_until(lambda: tasks_pane.border_subtitle)
+                # the table is still the last good render -- not replaced by the error
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+                assert "couldn't refresh:" in str(tasks_pane.border_subtitle)
+                # blank exception message must still show *something*, not a bare "couldn't refresh: "
+                assert "couldn't refresh: \n" not in str(tasks_pane.border_subtitle) + "\n"
+                assert str(tasks_pane.border_subtitle).strip() != "couldn't refresh:"
+
+                del server.errors["tasks"]
+                await _wait_until(lambda: not tasks_pane.border_subtitle, timeout=3.0)  # auto-retried
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_any_pane_load_failure_is_survivable_not_just_tasks(project):
     """The base Pane class (panes/__init__.py), not just TasksPane, catches a load() failure --
     live-testing #108's fix against a realistically sized seeded project (300 tasks/8000 events/
