@@ -455,28 +455,33 @@ class Engine(MergeGateMixin):
         self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported, "reason": reason})
 
     def check_claude_cap(self) -> None:
-        """REQ-BE-016 (#72): an MVP usage cap. If claude's latest known 5h/7d utilization (the same
-        claude_ratelimit data the usage meters read) is at or above `[budget] claude_cap_percent`,
+        """REQ-BE-016 (#72): an MVP usage cap. Each claude usage window (5h, 7d — same
+        claude_ratelimit data the usage meters read) has its own cap, `[budget]
+        claude_cap_5h_percent`/`claude_cap_7d_percent` (each falling back to claude_cap_percent
+        when unset; 0 = off). If a window's latest known utilization is at or above its own cap,
         block new autonomous claude runs via the existing per-backend limit mechanism (reason
-        "cap") until that window's reset. Chat is exempt (see launch()) — the human is present and
-        can decide — but the header shows it as over the cap.
+        "cap") until *that window's* reset. Chat is exempt (see launch()) — the human is present
+        and can decide — but the header shows it as over the cap.
 
         Once triggered, this doesn't re-check until the limit clears, and even then won't re-cap
         off the *same* stale snapshot: nothing refreshes claude_ratelimit while claude is capped
         (no runs happen to report fresh usage), so re-triggering on stale data would cap forever.
         Letting one tick through on stale data gives a real run a chance to report a fresh reading.
         """
-        cap = self.cfg.budget.claude_cap_percent
-        if not cap or self.backend_limited("claude"):
+        if self.backend_limited("claude"):
             return
         snapshot = self.store.kv_get("claude_ratelimit") or {}
         snapshot_at = snapshot.get("at")
         if snapshot_at is not None and snapshot_at == self.store.kv_get("claude_cap_snapshot_at"):
             return
-        worst_pct, worst_until = 0.0, None
-        for window in (snapshot.get("unifiedWindows") or {}).values():
+        budget = self.cfg.budget
+        tripped = None  # (pct, cap, until, window_key) of the window that tripped, if any
+        for key, window in (snapshot.get("unifiedWindows") or {}).items():
+            cap = config_mod.claude_window_cap(budget, key)
+            if not cap:
+                continue
             pct = float(window.get("utilization") or 0) * 100
-            if pct < cap or pct < worst_pct:
+            if pct < cap:
                 continue
             reset = window.get("resetsAt") or window.get("resets_at") or window.get("reset")
             if isinstance(reset, str):
@@ -484,15 +489,18 @@ class Engine(MergeGateMixin):
                     reset = datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
                 except ValueError:
                     reset = None
-            worst_pct, worst_until = pct, reset
-        if worst_pct < cap:
+            if tripped is None or pct > tripped[0]:
+                tripped = (pct, cap, reset, key)
+        if tripped is None:
             return
-        until = worst_until if worst_until and worst_until > now() else now() + 900
+        pct, cap, reset, key = tripped
+        until = reset if reset and reset > now() else now() + 900
         self.record_limit("claude", until, reported=True, reason="cap")
         self.store.kv_set("claude_cap_snapshot_at", snapshot_at)
+        label = {"five_hour": "5h", "seven_day": "7d"}.get(key, key)
         self.store.event("system", "providers",
-                         f"Claude usage cap engaged: {worst_pct:.0f}% >= {cap}% — new autonomous claude runs "
-                         f"paused until {time.strftime('%H:%M', time.localtime(until))} (chat still works)")
+                         f"Claude usage cap engaged: {label} at {pct:.0f}% >= {cap:.0f}% — new autonomous claude "
+                         f"runs paused until {time.strftime('%H:%M', time.localtime(until))} (chat still works)")
 
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:

@@ -57,8 +57,22 @@ class Budget:
     max_runs_per_hour: int = 40
     max_usd_per_day: float = 0.0  # 0 = unlimited (claude-reported cost)
     max_task_attempts: int = 4
-    claude_cap_percent: float = 50  # REQ-BE-016: pause new autonomous claude runs at/above this
-    # 5h/7d utilization; 0 = off
+    claude_cap_percent: float = 50  # REQ-BE-016: fallback cap when a per-window one below is unset
+    claude_cap_5h_percent: float | None = None  # pause new autonomous claude runs at/above this 5h
+    # utilization; 0 = off; unset (None) falls back to claude_cap_percent
+    claude_cap_7d_percent: float | None = None  # same, for the 7d window
+
+
+CLAUDE_WINDOW_CAP_FIELDS = {"five_hour": "claude_cap_5h_percent", "seven_day": "claude_cap_7d_percent"}
+
+
+def claude_window_cap(budget: "Budget", window_key: str) -> float:
+    """REQ-BE-016: the effective cap percent for one claude usage window (`five_hour`/`seven_day`,
+    per REQ-BE-011's naming) — that window's own cap if set, else the shared fallback. Shared by
+    engine.py (the gate) and api.py (the snapshot) so both agree on what "the cap" means."""
+    field = CLAUDE_WINDOW_CAP_FIELDS.get(window_key)
+    specific = getattr(budget, field, None) if field else None
+    return budget.claude_cap_percent if specific is None else specific
 
 
 @dataclass
@@ -148,7 +162,9 @@ max_concurrent = 3        # agent runs at once (a chat with the human always get
 max_runs_per_hour = 40    # autonomous runs per rolling hour (chat is exempt)
 max_usd_per_day = 0       # claude-reported cost cap per rolling 24h; 0 = unlimited
 max_task_attempts = 4     # builder sessions on one task before it's marked blocked
-claude_cap_percent = 50   # pause new autonomous claude runs at/above this 5h/7d utilization; 0 = off
+claude_cap_percent = 50   # fallback cap for whichever of the two below is left unset
+# claude_cap_5h_percent = 80  # pause new autonomous claude runs at/above this 5h utilization; 0 = off
+# claude_cap_7d_percent = 50  # same, for the 7d utilization; unset = claude_cap_percent applies
 
 [backends]
 claude_command = "claude"

@@ -1,9 +1,20 @@
-"""REQ-BE-016: MVP usage cap — pause new autonomous claude runs at/above claude_cap_percent."""
+"""REQ-BE-016: MVP usage cap — pause new autonomous claude runs at/above a per-window cap
+(claude_cap_5h_percent/claude_cap_7d_percent, each falling back to claude_cap_percent when unset)."""
 from troupe.engine import Engine, Wake
 
 
 def _ratelimit(pct: float, reset_at: float, window="five_hour"):
     return {"at": 1_000_000.0, "unifiedWindows": {window: {"utilization": pct / 100, "resetsAt": reset_at}}}
+
+
+def _two_windows(pct_5h: float, reset_5h: float, pct_7d: float, reset_7d: float):
+    return {
+        "at": 1_000_000.0,
+        "unifiedWindows": {
+            "five_hour": {"utilization": pct_5h / 100, "resetsAt": reset_5h},
+            "seven_day": {"utilization": pct_7d / 100, "resetsAt": reset_7d},
+        },
+    }
 
 
 def test_cap_off_by_default_zero_does_not_gate(project):
@@ -61,6 +72,60 @@ def test_cap_checks_the_worse_of_5h_and_7d_windows(project, monkeypatch):
 
     assert engine.backend_limited("claude")
     assert store.kv_get("limit.claude") == 1_500_000.0  # the 7d window's reset, since it's the one over
+
+
+def test_5h_cap_trips_independently_with_7d_under_its_own_cap(project, monkeypatch):
+    cfg, store = project
+    cfg.budget.claude_cap_5h_percent = 50
+    cfg.budget.claude_cap_7d_percent = 90
+    monkeypatch.setattr("troupe.engine.now", lambda: 1_000_000.0)
+    store.kv_set("claude_ratelimit", _two_windows(60, 1_003_600.0, 30, 1_500_000.0))
+    engine = Engine(cfg)
+
+    engine.check_claude_cap()
+
+    assert engine.backend_limited("claude")
+    assert store.kv_get("limit.claude") == 1_003_600.0  # the 5h window's own reset
+
+
+def test_7d_cap_trips_independently_with_5h_under_its_own_cap(project, monkeypatch):
+    cfg, store = project
+    cfg.budget.claude_cap_5h_percent = 90
+    cfg.budget.claude_cap_7d_percent = 50
+    monkeypatch.setattr("troupe.engine.now", lambda: 1_000_000.0)
+    store.kv_set("claude_ratelimit", _two_windows(30, 1_003_600.0, 60, 1_500_000.0))
+    engine = Engine(cfg)
+
+    engine.check_claude_cap()
+
+    assert engine.backend_limited("claude")
+    assert store.kv_get("limit.claude") == 1_500_000.0  # the 7d window's own reset
+
+
+def test_unset_window_cap_falls_back_to_the_shared_claude_cap_percent(project, monkeypatch):
+    cfg, store = project
+    cfg.budget.claude_cap_percent = 50  # claude_cap_5h_percent/7d left unset
+    monkeypatch.setattr("troupe.engine.now", lambda: 1_000_000.0)
+    store.kv_set("claude_ratelimit", _ratelimit(60, 1_003_600.0))
+    engine = Engine(cfg)
+
+    engine.check_claude_cap()
+
+    assert engine.backend_limited("claude")
+    assert engine.limit_reason("claude") == "cap"
+
+
+def test_a_window_cap_of_zero_is_off_even_when_the_shared_cap_is_set(project, monkeypatch):
+    cfg, store = project
+    cfg.budget.claude_cap_percent = 50
+    cfg.budget.claude_cap_5h_percent = 0  # explicitly off for 5h, regardless of the fallback
+    monkeypatch.setattr("troupe.engine.now", lambda: 1_000_000.0)
+    store.kv_set("claude_ratelimit", _ratelimit(95, 1_003_600.0))  # way over the fallback, but 5h is off
+    engine = Engine(cfg)
+
+    engine.check_claude_cap()
+
+    assert not engine.backend_limited("claude")
 
 
 def test_cap_does_not_affect_other_backends(project, monkeypatch):

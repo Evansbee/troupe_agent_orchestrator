@@ -129,11 +129,13 @@ Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: boo
            version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
            (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
-           throttled: str?, providers: [{provider, limited_until: ts?, capped: bool, cap_percent: float?,
-           plan_type: str?, observed_at: ts?, source: str?, windows: [{name: "five_hour"|"seven_day"|
-           "window_<minutes>", window_minutes: int, used_pct: float, cap_pct: float?, resets_at: ts?}]}]
-           (window names per REQ-BE-011; `capped`/`cap_percent` are REQ-BE-016's MVP cap — `capped` is
-           true only when `limited_until` is set *because* of the cap, not a real provider rate limit)
+           throttled: str?, providers: [{provider, limited_until: ts?, capped: bool, plan_type: str?,
+           observed_at: ts?, source: str?, windows: [{name: "five_hour"|"seven_day"|"window_<minutes>",
+           window_minutes: int, used_pct: float, cap_pct: float?, resets_at: ts?}]}]
+           (window names per REQ-BE-011; `capped` and each window's `cap_pct` are REQ-BE-016's MVP cap —
+           `capped` is true only when `limited_until` is set *because* of the cap, not a real provider
+           rate limit; `cap_pct` is that window's own claude_cap_5h_percent/claude_cap_7d_percent,
+           falling back to claude_cap_percent when unset)
 Seen       human_last_seen: ts?, decisions_seen_at: ts?
 ```
 
