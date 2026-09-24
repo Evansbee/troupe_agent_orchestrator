@@ -3,6 +3,8 @@ Shows a clear offline state instead of hanging when the engine is disconnected o
 other half of REQ-TUI-002's "no hanging" alongside client.py's hard call timeouts."""
 from __future__ import annotations
 
+import time
+
 from rich.text import Text
 
 from .. import colors as C
@@ -21,8 +23,7 @@ def usage_bar(pct: float, cap_pct: float | None) -> Text:
     color = C.RED if pct >= 90 else C.ORANGE if pct >= 70 else C.GREEN
     label = f"{pct:.0f}%"
     if cap_pct is not None and pct >= cap_pct:
-        label += " capped"
-        color = C.RED
+        color = C.RED  # over the cap threshold — the "capped until HH:MM" badge gives the detail
     return Text(label, style=color)
 
 
@@ -74,4 +75,8 @@ class HeaderPane(Pane):
                 text.append("  ·  ")
                 text.append(f"claude {window['name']} ", style=C.TEXT_DIM)
                 text.append_text(usage_bar(window["used_pct"], window.get("cap_pct")))
+            if claude and claude.get("capped") and claude.get("limited_until"):
+                text.append("  ·  ")
+                until = time.strftime("%H:%M", time.localtime(claude["limited_until"]))
+                text.append(f"capped until {until}", style="bold " + C.RED)
         self.update(text)
