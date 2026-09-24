@@ -103,6 +103,14 @@ class ChatPane(Widget):
         self._working_text = ""
         self._seen_ids: set[int] = set()
         self._sending = False
+        # Every message ever mounted, oldest-first (#104): a compact<->wide layout transition tears
+        # down and rebuilds every pane's DOM (TroupeApp._layout_body's remove_children()+mount()), so
+        # ChatPane.compose() runs again and hands back a brand new, empty #chat-thread. `load()` only
+        # fetches and mounts history once; without a local copy, a resize left the thread permanently
+        # empty even though every message was still in the store. `on_mount` below replays this list
+        # into whatever #chat-thread it's handed, so it works the same on the very first mount (where
+        # this is still empty — load() fills both the thread and this together) and on every remount.
+        self._history: list[dict] = []
         self._coalescer = ReloadCoalescer(self._attempt_load)
         self._retrier = AutoRetrier(self.load)
 
@@ -113,6 +121,21 @@ class ChatPane(Widget):
             id="chat-composer", tab_behavior="focus", soft_wrap=True, show_line_numbers=False,
             placeholder=f"Message {self.pm_name}…  Enter to send · Shift+Enter for a new line",
         )
+
+    async def on_mount(self) -> None:
+        """(#104) Fires after every `compose()`, including a compact<->wide remount, not just the
+        very first mount. On the very first mount `self._history` is still empty (`load()` hasn't
+        run yet — it's awaited separately, after the initial layout, by TroupeApp), so this is a
+        no-op then and `load()` populates the thread as before. On a remount, `self._history` is
+        already populated from the *previous* mount's `load()`/live messages, so this replays it
+        into the fresh (otherwise permanently empty) #chat-thread `compose()` just handed back."""
+        if not self._history:
+            return
+        thread = self.query_one("#chat-thread", VerticalScroll)
+        self._seen_ids = set()  # the new thread is genuinely empty; forget the old one's dedup state
+        for m in self._history:
+            await self._mount_message(thread, m)
+        self._scroll_to_end(thread)
 
     # ── shared pane interface ────────────────────────────────────────────
     async def load(self) -> None:
@@ -143,6 +166,7 @@ class ChatPane(Widget):
             thread = self.query_one("#chat-thread", VerticalScroll)
             for m in reversed(result.get("items", [])):
                 await self._mount_message(thread, m)
+                self._history.append(m)
                 self._last_sender = m.get("sender")
             self._scroll_to_end(thread)
             self._pm_running = pm.get("state") == "running"
@@ -179,6 +203,8 @@ class ChatPane(Widget):
         thread = self.query_one("#chat-thread", VerticalScroll)
         was_at_bottom = thread.is_vertical_scroll_end
         mounted = await self._mount_message(thread, m)
+        if mounted:
+            self._history.append(m)
         if mounted and was_at_bottom:
             self._scroll_to_end(thread)
         self._last_sender = m.get("sender")
@@ -196,14 +222,37 @@ class ChatPane(Widget):
         # never caught up once layout did land, since nothing rescrolled after this worker exited).
         # Polling on a real clock instead gives the compositor's own paint cycle room to actually
         # run between checks, which is what a passing live repro needed in practice.
-        last = None
-        for i in range(30):  # ~600ms worst case; converges in a handful of iterations in practice
+        #
+        # Two things had to be true at once, not just one (#104 merge-gate flake, found by direct
+        # instrumentation): (1) layout can grow in more than one wave — max_scroll_y can hold still
+        # long enough to look converged and then grow *again* later (observed live: 103 -> 105,
+        # pause, -> 107) — a single scroll_end() call after declaring victory once just missed the
+        # second wave, since nothing was watching anymore once this worker had already exited; (2)
+        # scroll_end()'s effect on scroll_y isn't instant either. So this now re-snaps to the
+        # bottom on *every* poll, for as long as it keeps polling, and only stops once max_scroll_y
+        # has stopped changing *and* the thread is actually sitting at the bottom right now, both
+        # true continuously for the whole stability window — any later growth wave un-sticks the
+        # window and starts it over, so it can't be fooled by an early plateau the way a one-shot
+        # "call scroll_end() once, after N stable samples" could be. This is a background worker
+        # with no user-facing latency cost either way — the rest of the UI stays responsive
+        # throughout — so a generous ceiling here is free.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 8.0  # generous ceiling even under heavy contention; converges in well under this normally
+        last_max: int | None = None
+        stable_since: float | None = None
+        while loop.time() < deadline:
             await asyncio.sleep(0.02)
-            current = thread.max_scroll_y
-            if current == last and i >= 3:
+            thread.scroll_end(animate=False)
+            now = loop.time()
+            current_max = thread.max_scroll_y
+            settled = current_max == last_max and thread.is_vertical_scroll_end
+            last_max = current_max
+            if not settled:
+                stable_since = None
+            elif stable_since is None:
+                stable_since = now
+            elif now - stable_since >= 0.3:
                 break
-            last = current
-        thread.scroll_end(animate=False)
 
     async def _mount_message(self, thread: VerticalScroll, m: dict) -> bool:
         mid = m.get("id")

@@ -77,7 +77,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     - a second TUI attaches, and its `q` doesn't stop the engine.
 - **REQ-TUI-002 [x]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
   subscribe (REQ-API-010/020/060).
-  - [ ] (#108; QA: the TUI died at launch on a realistically sized project.)
+  - [x] (#108; QA: the TUI died at launch on a realistically sized project.)
     - **Size:** the client accepts any response line up to the server's `MAX_LINE`, imported from api.py so
       the two can't drift.
     - **Isolation:** a pane whose load fails shows "couldn't load: <reason> (r to retry)" inline, and the rest
@@ -170,6 +170,10 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     message, rendered markdown, sticky-to-bottom (REQ-GUI-017 semantics), a bordered "CHAT — pm_1" pane. Native
     terminal selection isn't blocked by any custom mouse handling (REQ-TUI-012's other half — OSC 52 `y` — is
     global and not part of this slice).
+  - [ ] (#116) Sticky-to-bottom never overrides the human. If they scroll up while a message or a history replay
+    is still settling, the view stays where they put it, and re-snapping resumes only once they're back at the
+    bottom. Test: a live message arrives and the human scrolls up 50 ms later; one second on, the view hasn't
+    moved.
 
 ## Verification
 - **REQ-TUI-030 [x]** Snapshot mode: `TROUPE_SHOT=/path.svg troupe tui` renders once data has loaded (via Textual's
@@ -205,3 +209,4 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   non-zero. TUI-010 (#109): safety approval cards pinned first in Needs you.
 - 2026-09-24 — TUI-010 pinning aligned with design/system.md (concern > safety > crash_loop/crash; safety oldest-first;
   "Pinned" label). TUI-011 → [~]: resizing across 80×24 preserves every pane and the chat draft (#104, #111).
+- 2026-09-24 — TUI-002's #108 item shipped [x]. TUI-021: sticky-to-bottom never undoes a human scroll-up (#116).
