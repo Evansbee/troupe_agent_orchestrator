@@ -174,6 +174,16 @@ otherwise — animations must stay legible at both.
 - **Card** — no single `ui.card()`; task cards (`views._task_card`) and memory cards
   (`views.memory_view`) share the pattern: `PANEL2`→`PANEL3` on hover, `BORDER`→`BORDER_HI`, a 3px
   colored accent bar on the left edge when status/kind matters.
+- **Question card** (`views._q_layout`) — the "Needs you" panel's base unit: avatar + asker name,
+  question/idea text, option buttons, a free-text reply input, dismiss control. Everything the human
+  is asked to weigh in on that isn't a full task/decision reuses this shell rather than inventing a
+  new one.
+- **Approval card** (REQ-SAFE-020/021, `#42`) — a question-card variant for protected-path diff
+  approval: same shell (avatar/title/dismiss position), with the free-text reply and option buttons
+  replaced by a diff summary (protected files, +/− counts), an "Open full diff" link, and Approve /
+  Reject-with-note in place of generic options. Reusing the question-card shell here is deliberate,
+  not incidental — a safety-critical approval should look like the same kind of thing the human
+  already knows how to act on, not a novel, unfamiliar control.
 - **Chat bubble** (`views._bubble`) — right-aligned accent-tinted for the human, left-aligned
   `PANEL2` for agents; shrink-wraps to content width for short single-line messages instead of
   filling the max bubble width.
