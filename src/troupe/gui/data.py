@@ -48,6 +48,7 @@ class Data:
         self._max_q = -1
         self.docs: list[Path] = []
         self._docs_at = 0.0
+        self._run_targets: dict[int, str] = {}
         self._runs_cache: dict[str, dict[int, dict]] = {}  # agent_id -> {run_id: row}; merge-only, never evicted
         self._runs_watched: set[str] = set()  # agents whose run history has been viewed; kept fresh by refresh()
         self._runs_exhausted: dict[str, bool] = {}  # agent_id -> True once its oldest run is loaded
@@ -174,6 +175,11 @@ class Data:
         # cache so it never evicts already-paged-in history — this is the only place runs are
         # fetched from the store, matching every other snapshot above; runs_for()/has_more_runs()/
         # load_older_runs() are all pure cache reads or queue writes, safe to call from draw code.
+        for run_id, agent_id in self._run_targets.items():
+            row = s.one("SELECT * FROM runs WHERE id=? AND agent=?", run_id, agent_id)
+            if row:
+                self._runs_cache.setdefault(agent_id, {})[run_id] = row
+        self._run_targets.clear()
         for agent_id in self._runs_watched:
             pending = self._runs_older_pending.pop(agent_id, None)
             if pending is not None:
@@ -229,6 +235,11 @@ class Data:
         cache = self._runs_cache.setdefault(agent_id, {})
         for row in rows[:limit]:  # the +1 was only to detect exhaustion; don't cache past the asked-for depth
             cache[row["id"]] = row
+
+    def request_run(self, agent_id: str, run_id: int) -> None:
+        """Queue an exact navigation target; refresh owns all database reads."""
+        self._runs_watched.add(agent_id)
+        self._run_targets[run_id] = agent_id
 
     def runs_for(self, agent_id: str) -> list[dict]:
         """Cached run history for an agent, newest first — a pure cache read with no store access,

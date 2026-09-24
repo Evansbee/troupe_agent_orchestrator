@@ -241,3 +241,43 @@ def test_forced_stop_marks_runs_and_requeues_checkpoint(project):
     assert s.runs()[0]["status"] == "interrupted"
     assert s.one("SELECT read_at FROM messages WHERE id=?", mid)["read_at"] is None
     assert not (cfg.state_dir / "engine.pid").exists()
+
+
+@pytest.mark.parametrize('newer_runs', [1, 205])
+def test_catchup_navigation_survives_agent_view_initialization(project, monkeypatch, newer_runs):
+    from unittest.mock import MagicMock
+    from troupe.gui.app import App
+    from troupe.gui import views
+    from troupe.gui.core import Rect
+    cfg = project
+    s = Store(cfg.db_path)
+    s.sync_agents(cfg.agents)
+    rid = s.start_run('builder-1','task',None,str(cfg.root),False,prompt='FAILED TARGET PROMPT')
+    s.end_run(rid,'failed',0,0,'failed')
+    for _ in range(newer_runs):
+        latest=s.start_run('builder-1','task',None,str(cfg.root),False,prompt='NEWER SUCCESS PROMPT')
+        s.end_run(latest,'ok',0,0,'ok')
+    app=App(cfg)
+    app.ui=MagicMock()
+    app.ui.button_w.return_value=70
+    app.ui.text_fit.return_value=20
+    app.ui.measure.return_value=20
+    app.ui.pill.return_value=30
+    app.ui.button.return_value=False
+    app.ui.chip.return_value=(False,30)
+    app.data.refresh(force=True)
+    app.run_view='Prompt'
+    rendered=[]
+    monkeypatch.setattr(views,'_run_selector',lambda *a:None)
+    monkeypatch.setattr(views,'_agent_side',lambda *a:None)
+    monkeypatch.setattr(views,'_prompt_view',lambda app,run,r:rendered.append(run))
+    app.navigate_run('builder-1',rid)
+    # Exercise the actual view initialization before and after lazy history loading.
+    views.agent_view(app,Rect(0,0,1200,800))
+    app.data.refresh(force=True)
+    views.agent_view(app,Rect(0,0,1200,800))
+    app.data.refresh(force=True)
+    views.agent_view(app,Rect(0,0,1200,800))
+    assert app.sel_run==rid
+    assert rendered[-1]['prompt']=='FAILED TARGET PROMPT'
+    assert rendered[-1]['id']==rid

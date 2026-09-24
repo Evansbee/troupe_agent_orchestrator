@@ -283,6 +283,12 @@ class App:
             self.new_task_open = True
             ui.focus = "nt_title"
 
+    def navigate_run(self, agent_id: str, run_id: int) -> None:
+        self.tab = "Agent"
+        self.sel_agent = self._runs_agent = agent_id
+        self.sel_run = run_id
+        self.data.request_run(agent_id, run_id)
+
     def draw_service_modal(self) -> None:
         d, ui = self.data, self.ui
         if not d.catchup and not self.confirm_stop:
@@ -323,9 +329,7 @@ class App:
                                 self.sel_task = int(ident)
                                 d.dismiss_catchup()
                             elif kind == 'run':
-                                self.tab = 'Agent'
-                                self.sel_agent = item['agent']
-                                self.sel_run = int(ident)
+                                self.navigate_run(item['agent'], int(ident))
                                 d.dismiss_catchup()
                             else:
                                 d.catchup_detail = item
