@@ -129,7 +129,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     invalid file keeps the old config.
   - Ids: new agents use `<role>_<N>` ids (the handle's local part, REQ-COM-005). If `id` is omitted it is derived
     from role + the next free N. Legacy ids (`builder-1`, `spec`) stay valid and are never rewritten in the DB.
-- **REQ-ENG-041 [ ]** (#20; lists #38; architect #36; researcher #41) Default roster, written by `troupe init` and
+- **REQ-ENG-041 [ ]** (#20 ships the mechanism and today's roles; each row notes its task) Default roster, written by `troupe init` and
   adopted for this project once #20 lands. Human: trust codex; reviewers run on a different provider from writers.
   Each cell is a preference list, first = preferred:
   | id | providers (provider · model · level) |
@@ -139,14 +139,15 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   | spec_1 | codex · default · high → claude · opus · high |
   | designer_1 | claude · sonnet · medium → codex · default · medium |
   | builder_1, builder_2 | codex · default · high → claude · sonnet · high → local · detected |
-  | architect_1 | claude · opus · high → codex · default · high |
+  | architect_1 (#36) | claude · opus · high → codex · default · high |
   | qa_1 | claude · opus · high → codex · default · high |
-  | researcher_1 | local · detected → codex · default · medium |
+  | researcher_1 (#41) | local · detected → codex · default · medium |
   | gadfly_1 | local · detected → codex · default · medium |
   - "detected" = the first model the local server reports during `troupe init`. If no local server answers, local
     entries are written commented out, with a note saying how to enable them.
   - Default `provider_limits`: claude `five_hour: 50, seven_day: 50` (the human's example); codex and local uncapped.
-  - `troupe init` writes the architect and researcher, and either can be disabled in team.yaml.
+  - `troupe init` writes the architect and researcher once their roles exist (#36, #41), and either can be disabled
+    in team.yaml.
   - Test: the generated team.yaml validates and matches the table.
 
 ## Prompts
@@ -180,7 +181,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     while both remain in flight. Tasks with empty territories are never flagged.
   - Serializing (holding the second task) is out of scope for now.
   - Test: parsing, prefix rules, notify-once-per-pair.
-- **REQ-ENG-038 [ ]** Worktree setup and cleanup. (#3)
+- **REQ-ENG-038 [x]** Worktree setup and cleanup. (#3)
   - Config `[git] setup = "uv sync"` (default empty = none) runs once in each newly created worktree, before the
     builder's first run. Output is appended to that run's log; a non-zero exit adds a note to the task and the
     builder is still started (told that setup failed and why).

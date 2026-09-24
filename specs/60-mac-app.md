@@ -192,8 +192,8 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
   speeds.
   - A unit test parses design/system.md's color tables and fails if `Theme` disagrees, so either the doc or the
     code gets fixed (the system.md rule).
-  - A role color the API reports for a role missing from the table (for example Architect or Researcher) takes
-    precedence. The designer is asked to add that role to system.md.
+  - Role colors come from design/system.md, which now includes Architect (bronze) and Researcher (orchid). A role
+    color the API reports takes precedence only for a role missing from the table.
 
 ## Milestones
 - **REQ-MAC-070 [ ]** The app ships in stages. Each milestone ends with its REQs `[x]` here and QA's approval.

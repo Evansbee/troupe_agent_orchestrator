@@ -125,6 +125,25 @@ class Engine:
         s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
+        self.cleanup_worktrees()
+
+    def cleanup_worktrees(self) -> None:
+        try:
+            for task_id, path in gitops.task_worktrees(self.cfg.root, self.cfg.worktrees_dir):
+                task = self.store.task(task_id)
+                if task and task["status"] not in ("done", "cancelled"):
+                    continue
+                # An open task may point to a tree with a different legacy name/id.
+                if self.store.scalar("SELECT 1 FROM tasks WHERE worktree=? AND status NOT IN ('done','cancelled')",
+                                     str(path)):
+                    continue
+                try:
+                    gitops.remove_worktree(self.cfg.root, path)
+                except gitops.GitError as e:
+                    self.store.event("system", "error", str(e), significant=False)
+            gitops.prune_worktrees(self.cfg.root)
+        except gitops.GitError as e:
+            self.store.event("system", "error", f"Worktree cleanup failed: {e}", significant=False)
 
     async def main(self) -> None:
         self.recover()
@@ -245,8 +264,11 @@ class Engine:
         fields: dict = {"status": "in_progress"}
         if role.works_in_task_tree and not t["worktree"]:
             try:
+                existed = (self.cfg.worktrees_dir / f"t{t['id']}").exists()
                 branch, path = gitops.create_worktree(self.cfg.root, self.cfg.worktrees_dir, t["id"], t["title"])
                 fields.update(branch=branch, worktree=str(path))
+                if not existed and self.cfg.git.setup:
+                    self.store.kv_set(f"setup.{path}", {"status": "pending", "command": self.cfg.git.setup})
             except gitops.GitError as e:
                 self.store.event("system", "error", f"worktree for #{t['id']} failed: {e}", significant=False)
         self.store.update_task(t["id"], actor=a.id, event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
@@ -260,8 +282,12 @@ class Engine:
                 continue
             ok, out = gitops.merge_branch(self.cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
-                if t["worktree"]:
-                    gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                try:
+                    if t["worktree"]:
+                        gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                    gitops.delete_branch(self.cfg.root, t["branch"])
+                except gitops.GitError as e:
+                    s.event("system", "error", f"Merged #{t['id']}, but cleanup failed: {e}", significant=False)
                 s.update_task(t["id"], actor="system", status="done", worktree=None,
                               event_text=f"Merged #{t['id']} {t['title']} into main")
                 if t["assignee"]:
@@ -374,6 +400,46 @@ class Engine:
         atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task, self._session_versions.get(a.id, 0)))
         self.running[a.id] = (runner, atask, w)
 
+    async def setup_worktree(self, runner: Runner, spec: RunSpec, task: dict | None, run_id: int) -> None:
+        if not task or spec.cwd == self.cfg.root or runner.cancelled:
+            return
+        key = f"setup.{spec.cwd}"
+        setup = self.store.kv_get(key, {})
+        if setup.get("status") == "pending":
+            setup.update(status="started", error="Worktree setup was interrupted before it finished.")
+            self.store.kv_set(key, setup)
+            spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.store.set_agent(spec.agent.id, activity="Setting up worktree…")
+            try:
+                with spec.log_path.open("a") as log:
+                    log.write(json.dumps({"setup_command": setup["command"]}) + "\n")
+                    runner.proc = await asyncio.create_subprocess_shell(
+                        setup["command"], cwd=spec.cwd, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                    if runner.cancelled:
+                        runner.kill()
+                    assert runner.proc.stdout
+                    tail = ""
+                    while chunk := await runner.proc.stdout.read(65536):
+                        text = chunk.decode(errors="replace")
+                        log.write(json.dumps({"setup_output": text}) + "\n")
+                        log.flush()
+                        tail = (tail + text)[-2000:]
+                    code = await runner.proc.wait()
+                    log.write(json.dumps({"setup_exit": code}) + "\n")
+                    setup["error"] = f"Worktree setup failed (exit {code}):\n{tail}" if code else ""
+            except OSError as e:
+                setup["error"] = f"Worktree setup failed: {e}"
+            setup["status"] = "finished"
+            self.store.kv_set(key, setup)
+            if setup["error"]:
+                self.store.task_note(task["id"], "system", setup["error"])
+                self.store.run_line(run_id, "error", setup["error"])
+        if setup.get("error"):
+            footer = "\n\nPrinciple 0 applies: the human comes first."
+            spec.prompt = (spec.prompt.removesuffix(footer) + "\n\n## Worktree setup\n" + setup["error"]
+                           + "\nContinue the task; fix setup if needed." + footer)
+
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
                    task: dict | None, session_version: int = 0) -> None:
         a, s = spec.agent, self.store
@@ -397,7 +463,12 @@ class Engine:
                 s.set_agent(a.id, activity=" ".join(text.split())[:160])
 
         try:
-            res = await runner.run(spec, emit)
+            await self.setup_worktree(runner, spec, task, run_id)
+            if runner.cancelled:
+                from .runners import RunResult
+                res = RunResult(ok=False, error="stopped during setup")
+            else:
+                res = await runner.run(spec, emit)
         except Exception as e:
             from .runners import RunResult
             res = RunResult(ok=False, error=repr(e))

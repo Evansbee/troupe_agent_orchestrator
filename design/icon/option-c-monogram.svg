@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="38%" cy="28%" r="85%">
+      <stop offset="0%" stop-color="#242b3e"/>
+      <stop offset="60%" stop-color="#12141d"/>
+      <stop offset="100%" stop-color="#090b10"/>
+    </radialGradient>
+    <linearGradient id="glyph" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9aa6ff"/>
+      <stop offset="55%" stop-color="#7c8cff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="glowSm" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="210" fill="url(#bg)"/>
+  <rect x="33" y="33" width="958" height="958" rx="209" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="2"/>
+
+  <!-- t monogram: crossbar + stem, rounded pill geometry -->
+  <rect x="322" y="308" width="380" height="112" rx="56" fill="url(#glyph)"/>
+  <rect x="457" y="308" width="110" height="470" rx="55" fill="url(#glyph)"/>
+  <ellipse cx="400" cy="345" rx="55" ry="24" fill="#ffffff" opacity="0.28"/>
+
+  <!-- spark accent -->
+  <circle cx="712" cy="300" r="58" fill="#f472b6" filter="url(#glowSm)" opacity="0.55"/>
+  <circle cx="712" cy="300" r="38" fill="#f9a8d4"/>
+</svg>

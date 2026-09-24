@@ -63,6 +63,22 @@ should be able to move to codex or even local models as defined in the setup yam
     - the Continuity section appears on the first run after a switch;
     - reviewer diversity.
 
+- **REQ-BE-014 [ ]** (#52; human: "you really need to dig in on how to get the codex usage numbers") Codex usage.
+  - The source to verify first: the `token_count` events' `rate_limits` object in Codex's session rollout files
+    (`~/.codex/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl`, for the thread ids troupe stores as codex sessions).
+    It has `primary` and `secondary` windows, each with `used_percent`, `window_minutes` and `resets_at`, plus
+    `plan_type` and `rate_limit_reached_type`.
+  - Other sources to check: CLI status commands, newer `--json` event types, and the app-server protocol. The builder
+    records which sources exist, which one is used, why, and the fallback, in `docs/codex-usage.md` and in this REQ.
+  - `src/troupe/usage.py` reads it after each codex run and on a timer (at most once a minute). It stores kv
+    `usage:codex` in the same shape as Claude's usage (used % per window, window length, reset time, plan), which
+    feeds BE-011 caps.
+  - The top bar shows Codex meters next to Claude's, reading kv only.
+  - `rate_limit_reached_type` set, or `used_percent ≥ 100`, marks codex limited until `resets_at` (REQ-ENG-016).
+  - Privacy (Principle 0): only the `rate_limits` and `token_count` fields are read. Conversation content in `~/.codex`
+    is never copied (a test asserts it).
+  - Test: fixture rollout files for primary only, primary + secondary, a missing file, and malformed lines.
+
 ## Web tools for the local backend (#41)
 - **REQ-BE-013 [ ]** The local tool loop gains `web_search(query, n=8)` → title/url/snippet list and
   `web_fetch(url, max_chars)` → readable text.
@@ -81,7 +97,8 @@ should be able to move to codex or even local models as defined in the setup yam
 - 2026-09-23 — BE-010 level mapping (claude --effort, codex model_reasoning_effort, local ignored).
 - 2026-09-23 — BE-011/012 provider caps and ordered fallback (human; #38), absorbing BE-007. BE-013 local web tools
   (researcher, #41).
+- 2026-09-23 — BE-014 Codex usage from rollout `rate_limits` (#52, human request).
 
 ## Open questions
-- Does `codex exec --json` report a used percent per window? (The #38 builder checks. Until then codex counts as
-  uncapped, per BE-011.)
+- Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52
+  verifies this; BE-014). Until #52 ships, codex counts as uncapped, per BE-011.
