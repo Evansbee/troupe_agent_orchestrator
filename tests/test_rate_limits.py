@@ -117,3 +117,62 @@ def test_gui_snapshot_label_expires(project, monkeypatch):
     assert not data.limit_label("codex")
     monkeypatch.setattr("troupe.gui.data.time.time", lambda: 2000000000)
     assert not data.limit_label("claude")
+
+
+@pytest.mark.parametrize("resets,expected", [
+    ([None, 1120], 1120),
+    ([1120, None], 1120),
+    ([None, 1900, 1120], 1900),  # explicit reset equal to fallback is still authoritative
+    ([1120, 1200, None, 1150], 1200),
+])
+def test_event_order_persists_authoritative_expiry(project, monkeypatch, resets, expected):
+    cfg, store = project
+    a = cfg.agent("builder-2")
+    a.backend = "codex"
+    clock = [1000]
+    monkeypatch.setattr("troupe.engine.now", lambda: clock[0])
+    monkeypatch.setattr("troupe.runners.time.time", lambda: clock[0])
+    runner = CodexRunner()
+    async def stream(args, spec, prompt, callback):
+        for reset in resets:
+            error = {"message": "Usage limit reached"}
+            if reset is not None:
+                error["reset_at"] = reset
+            callback({"type": "error", **error} if reset is None else
+                     {"type": "turn.failed", "error": error})
+        # The persisted fallback must already be replaced before the run completes.
+        assert store.kv_get("limit.codex") == expected
+        return 1, "Usage limit reached"
+    monkeypatch.setattr(runner, "_stream", stream)
+    monkeypatch.setattr("troupe.engine.make_runner", lambda _: runner)
+    engine = Engine(cfg)
+    store.send("human", a.id, "hello", kind="chat")
+    store.x("UPDATE messages SET ts=990")
+    async def run():
+        await engine.launch(Wake(0, a, "chat"))
+        await engine.running[a.id][1]
+    asyncio.run(run())
+    assert store.kv_get("limit.codex") == expected
+    assert store.kv_get("limit_meta.codex") == {"until": expected, "reported": True}
+    restarted = Engine(cfg)
+    assert restarted.backend_limited("codex")
+    clock[0] = expected
+    assert not restarted.backend_limited("codex")
+    assert a.id in [w.agent.id for w in restarted.candidates(True)]
+
+
+def test_persisted_provenance_across_restart_and_independent_reports(project, monkeypatch):
+    cfg, store = project
+    clock = [1000]
+    monkeypatch.setattr("troupe.engine.now", lambda: clock[0])
+    Engine(cfg).record_limit("codex", 1900, reported=False)
+    Engine(cfg).record_limit("codex", 1120, reported=True)
+    assert store.kv_get("limit.codex") == 1120
+    Engine(cfg).record_limit("codex", 1200, reported=True)
+    Engine(cfg).record_limit("codex", 1900, reported=False)
+    Engine(cfg).record_limit("codex", 1150, reported=True)
+    assert store.kv_get("limit.codex") == 1200
+    clock[0] = 1200
+    Engine(cfg).record_limit("codex", 2100, reported=False)
+    assert store.kv_get("limit.codex") == 2100
+    assert store.kv_get("limit_meta.codex")["reported"] is False

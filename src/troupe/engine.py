@@ -13,7 +13,7 @@ from pathlib import Path
 from . import gitops
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
-from .runners import RunSpec, make_runner, Runner, usage_limit, limit_reset
+from .runners import RunSpec, make_runner, Runner, usage_limit, reported_reset
 from .store import OPEN_STATUSES, Store, now
 from .team import ago, fmt_message, fmt_task_full, fmt_task_line
 
@@ -227,9 +227,19 @@ class Engine:
     def backend_limited(self, backend: str) -> bool:
         return (self.store.kv_get(f"limit.{backend}", 0) or 0) > now()
 
-    def record_limit(self, backend: str, until: float) -> None:
+    def record_limit(self, backend: str, until: float, reported: bool = True) -> None:
         key = f"limit.{backend}"
-        self.store.kv_set(key, max(self.store.kv_get(key, 0) or 0, until))
+        previous = self.store.kv_get(key, 0) or 0
+        meta = self.store.kv_get(f"limit_meta.{backend}", {})
+        # Older timestamps lack provenance; preserve them as reported limits.
+        was_reported = meta.get("reported", True) if meta.get("until") == previous else True
+        if previous > now():
+            if was_reported and not reported:
+                return
+            if was_reported == reported:
+                until = max(previous, until)
+        self.store.kv_set(key, until)
+        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported})
 
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:
@@ -317,7 +327,8 @@ class Engine:
             nonlocal limited
             if kind == "backend_limit":
                 limited = True
-                self.record_limit(a.backend, json.loads(text)["until"])
+                info = json.loads(text)
+                self.record_limit(a.backend, info["until"], info.get("reported", True))
                 return
             if kind == "ratelimit":
                 try:
@@ -339,10 +350,11 @@ class Engine:
             self.running.pop(a.id, None)
         if res.extra.get("limit_until"):
             limited = True
-            self.record_limit(a.backend, res.extra["limit_until"])
+            self.record_limit(a.backend, res.extra["limit_until"], res.extra.get("limit_reported", True))
         elif not limited and not res.ok and a.backend in ("claude", "codex") and usage_limit(res.error):
             limited = True
-            self.record_limit(a.backend, limit_reset({"message": res.error}, now()))
+            reset = reported_reset({"message": res.error}, now())
+            self.record_limit(a.backend, now() + 900 if reset is None else reset, reset is not None)
         status = "limited" if limited else "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])

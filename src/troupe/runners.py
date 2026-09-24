@@ -51,6 +51,12 @@ class RunResult:
 
 def limit_reset(info: dict, at: float) -> float:
     """Normalize provider reset timestamps, falling back to fifteen minutes."""
+    reset = reported_reset(info, at)
+    return at + 900 if reset is None else reset
+
+
+def reported_reset(info: dict, at: float) -> float | None:
+    """Return a provider reset without conflating it with the fallback."""
     for key in ("resetsAt", "reset_at", "resetAt", "resets_at", "reset_time"):
         value = info.get(key)
         if value is None:
@@ -75,8 +81,8 @@ def limit_reset(info: dict, at: float) -> float:
             pass
     for value in info.values():
         if isinstance(value, dict):
-            reset = limit_reset(value, at)
-            if reset != at + 900:
+            reset = reported_reset(value, at)
+            if reset is not None:
                 return reset
     text = " ".join(str(v) for v in info.values() if isinstance(v, str))
     iso = re.search(r"(?:reset\w*|try again)(?: at| on| in)?[: ]+(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)", text, re.I)
@@ -108,7 +114,7 @@ def limit_reset(info: dict, at: float) -> float:
             return reset.timestamp()
         except (ValueError, ZoneInfoNotFoundError):
             pass
-    return at + 900
+    return None
 
 
 def usage_limit(error: object) -> bool:
@@ -119,11 +125,19 @@ def usage_limit(error: object) -> bool:
 
 def report_limit(state: dict, info: dict, emit: Emit) -> None:
     at = time.time()
-    reset = limit_reset(info, at)
-    if reset == at + 900 and state.get("limit_until"):
-        return  # a generic error must not replace an already reported reset
-    state["limit_until"] = max(state.get("limit_until", 0), reset)
-    emit("backend_limit", json.dumps({"until": state["limit_until"]}))
+    reset = reported_reset(info, at)
+    reported = reset is not None
+    until = at + 900 if reset is None else reset
+    previous = state.get("limit_until", 0)
+    was_reported = state.get("limit_reported", False)
+    if previous > at:
+        if was_reported and not reported:
+            return
+        if was_reported == reported:
+            until = max(previous, until)
+    state["limit_until"] = until
+    state["limit_reported"] = reported
+    emit("backend_limit", json.dumps({"until": until, "reported": reported}))
 
 
 def child_env(cfg: Config, agent_id: str) -> dict[str, str]:
@@ -298,7 +312,8 @@ class ClaudeRunner(Runner):
             emit("error", short(err, 400))
         return RunResult(ok=ok, final_text=state["final"], session_id=state["sid"], cost=state["cost"],
                          tokens=state["tokens"], error="" if ok else (err.strip()[-400:] or "claude failed"),
-                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until")})
+                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until"),
+                                "limit_reported": state.get("limit_reported", False)})
 
 
 # ── Codex ────────────────────────────────────────────────────────────────────
@@ -380,7 +395,8 @@ class CodexRunner(Runner):
             emit("error", short(err, 400))
         return RunResult(ok=ok, final_text=state["final"], session_id=state["sid"], tokens=state["tokens"],
                          error="" if ok else (err.strip()[-400:] or "codex failed"),
-                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until")})
+                         extra={"had_output": state["had_output"], "limit_until": state.get("limit_until"),
+                                "limit_reported": state.get("limit_reported", False)})
 
 
 # ── Local OpenAI-compatible model with a native tool loop ────────────────────
