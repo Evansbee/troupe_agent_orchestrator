@@ -34,6 +34,13 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   `team`, or `human`. Every message is an event in the activity feed and wakes the recipient.
 - **REQ-COM-011 [x]** Messages are marked read when delivered in a wake prompt (or via `check_inbox`).
 - **REQ-COM-012 [ ]** Threads: group messages by `reply_to` chains in the Mail view.
+- **REQ-COM-013 [ ]** (#46) FYI mail: `send_message(..., fyi=True)` (additive column).
+  - FYI mail never triggers a wake. It's delivered in the recipient's next natural wake under "FYI since last time".
+  - The engine ignores the flag, and the mail wakes as normal, for mail from the human, mail about the recipient's
+    own active task or review, and blocking questions.
+  - Charter rule: mark mail `fyi=True` unless you need the recipient to act or reply. Until this ships, the team
+    convention is "FYI" in the subject and no replies to FYIs (lead, 2026-09-23).
+  - Test: an FYI doesn't wake the recipient and appears in its next prompt; exempt mail still wakes.
 
 ## The human
 - **REQ-COM-020 [x]** Live chat: the human can talk to any agent; replies arrive as the agent's final text.
@@ -186,3 +193,4 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   request via pm.
 - 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
 - 2026-09-23 — COM-026 resolve questions answered in chat (#37; human request; charter line human-approved).
+- 2026-09-24 — COM-013 FYI mail (#46).
