@@ -30,8 +30,6 @@ OUTPUT_LIMIT = 32 * 1024 * 1024
 STAGED = {
     "room_message": ("REQ-COM-024", 4),
     "reload": ("REQ-ENG-009", 28),
-    "update_memory": ("REQ-COM-033", 8),
-    "delete_memory": ("REQ-COM-033", 8),
     "comment_decision": ("REQ-COM-035", 27),
     "update_config": ("REQ-ENG-019", 5),
 }
@@ -343,10 +341,10 @@ class Data:
     def memory(row):
         return dict(
             row,
-            major=False,
-            pinned=False,
-            superseded_by=None,
-            status="active",
+            major=False,  # REQ-COM-034, not yet implemented (#27)
+            pinned=bool(row["pinned"]),
+            superseded_by=row["superseded_by"],
+            status="superseded" if row["superseded_by"] else "active",
             comments_open=0,
         )
 
@@ -527,16 +525,18 @@ class Data:
             kind = p.get("kind", "")
             if kind not in ("", "decision", "note", "fact", "idea", "preference"):
                 raise APIError("bad_request", "invalid kind")
-            if p.get("status", "active") not in ("active", "superseded", "reverted"):
+            status = p.get("status", "active")
+            if status not in ("active", "superseded", "reverted"):
                 raise APIError("bad_request", "invalid status")
             if "major" in p:
                 boolean(p, "major")
-            rows = s.memories(kind=kind, limit=integer(p, "limit", 400, 1, 1000))
-            return dict(
-                items=[self.memory(r) for r in rows]
-                if not p.get("major") and p.get("status", "active") == "active"
-                else []
-            )
+            if p.get("major") or status == "reverted":
+                return dict(items=[])  # REQ-COM-034/036, not yet implemented (#27)
+            rows = s.memories(kind=kind, limit=integer(p, "limit", 400, 1, 1000),
+                              include_superseded=status == "superseded")
+            if status == "superseded":
+                rows = [r for r in rows if r["superseded_by"]]
+            return dict(items=[self.memory(r) for r in rows])
         if method == "run_lines":
             rid = integer(p, "run_id", minimum=1)
             run = self.require("runs", rid)
@@ -806,6 +806,24 @@ class Data:
                 )
             n = s.task_notes(tid)[-1]
             return dict(note=dict(id=n["id"], ts=n["ts"], author="human", text=text))
+        if method in ("update_memory", "delete_memory"):
+            mid = integer(p, "id", minimum=1)
+            self.require("memories", mid)
+            if method == "delete_memory":
+                s.delete_memory(mid, actor="human")
+                return dict(deleted=True)
+            if "major" in p:
+                unavailable("REQ-COM-034", 27)
+            fields = {k: v for k, v in p.items() if k != "id"}
+            if "pinned" in fields:
+                boolean(fields, "pinned")
+            for key in ("title", "content", "rationale"):
+                if key in fields:
+                    string(fields, key)
+            if not fields:
+                raise APIError("bad_request", "no fields to update")
+            s.update_memory(mid, actor="human", **fields)
+            return dict(memory=self.memory(self.require("memories", mid)))
         if method == "mark_seen":
             key = p.get("key")
             if key not in ("human_last_seen", "decisions_seen_at"):
