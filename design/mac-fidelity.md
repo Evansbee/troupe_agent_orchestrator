@@ -8,6 +8,12 @@ missing is motion and the four information layers pulse.md defines, not detail p
 P0 = must fix before the human sees it (reads as broken, or as if the four things they explicitly
 asked Pulse to show aren't there at all). P1 = needed for full fidelity, doesn't block a first look.
 
+**Approved by pm (msg #353), with 3 promotions to P0** beyond my original 5: waiting tethers and
+mail pips (items 6/7 below — "the human explicitly asked for Pulse to show 'who's waiting' and
+'mail backlog'... those are their requests, run to the ground, not polish"), and native materials/
+SF Symbols (item 8 below — "if it doesn't feel more native than raylib, the switch hasn't paid
+off"). Renumbered below to reflect the full 8-item P0 set.
+
 ## P0 — must fix first
 
 **1. Header shows the literal template string `"[project] Demo"`.**
