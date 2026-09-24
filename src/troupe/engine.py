@@ -266,7 +266,7 @@ class Engine:
                 continue
 
             def load(a: AgentCfg) -> int:
-                return sum(1 for x in open_tasks if x["assignee"] == a.id and x["status"] in ("ready", "in_progress", "blocked", "review", "approved"))
+                return sum(1 for x in open_tasks if x["assignee"] == a.id and x["status"] in ("ready", "in_progress", "blocked"))
 
             best = min(pool, key=lambda a: (load(a), a.id in self.running))
             if load(best) > 0 and get_role(t["role"]).works_in_task_tree:

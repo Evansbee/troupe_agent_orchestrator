@@ -6,7 +6,7 @@ import pytest
 from troupe.engine import Engine, Wake
 
 
-@pytest.mark.parametrize('status', ['ready', 'in_progress', 'blocked', 'review', 'approved'])
+@pytest.mark.parametrize('status', ['ready', 'in_progress', 'blocked'])
 def test_single_builder_cap_includes_existing_work(project, status):
     cfg, store = project
     cfg.agents = [a for a in cfg.agents if a.id != 'builder-2']
@@ -27,18 +27,20 @@ def test_single_builder_gets_only_one_of_two_ready_tasks(project):
     assert sum(t['assignee'] == 'builder-1' for t in store.tasks()) == 1
 
 
-@pytest.mark.parametrize('status', ['backlog', 'done', 'cancelled'])
+@pytest.mark.parametrize('status', ['backlog', 'review', 'approved', 'done', 'cancelled'])
 def test_inactive_assignments_do_not_block_dispatch(project, status):
     cfg, store = project
+    cfg.agents = [a for a in cfg.agents if a.id != 'builder-2']
+    store.sync_agents(cfg.agents)
     store.add_task('Old', assignee='builder-1', status=status)
     tid = store.add_task('New', status='ready')
     Engine(cfg).dispatch()
     assert store.task(tid)['assignee'] == 'builder-1'
 
 
-def test_idle_builder_gets_work_while_other_in_review(project):
+def test_idle_builder_gets_work_while_other_blocked(project):
     cfg, store = project
-    store.add_task('Reviewing', assignee='builder-1', status='review')
+    store.add_task('Blocked', assignee='builder-1', status='blocked')
     tid = store.add_task('Next', status='ready')
     Engine(cfg).dispatch()
     assert store.task(tid)['assignee'] == 'builder-2'

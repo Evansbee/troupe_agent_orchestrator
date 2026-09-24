@@ -168,8 +168,9 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - **REQ-ENG-030 [x]** Tasks created by the Lead or human start `ready`; by anyone else `backlog` (Lead triages).
 - **REQ-ENG-031 [x]** Dispatch: unassigned `ready` tasks go to the least-loaded enabled agent of the task's
   role; worktree roles (including builders) hold at most one active task, even with a single-agent roster.
-  `ready`, `in_progress`, `blocked`, `review` and `approved` assignments count toward that cap; backlog,
-  done and cancelled do not. `depends_on` must be done first.
+  `ready`, `in_progress` and `blocked` assignments count toward that cap; backlog, review, approved,
+  done and cancelled do not. Explicit lead assignments bypass dispatch, and a rejected task may return
+  while another is active; current-task selection retains its existing priority order. `depends_on` must be done first.
 - **REQ-ENG-032 [x]** Builder tasks get a git worktree `.troupe/worktrees/t<id>` on branch `troupe/t<id>-<slug>`.
 - **REQ-ENG-033 [x]** `complete_task` on a code task commits the worktree and moves it to `review`; QA is woken
   inside the same worktree; `approve` → engine merges `--no-ff` into main and removes the worktree;
