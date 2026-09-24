@@ -80,13 +80,20 @@ class TroupeApp(App):
         yield Container(id="body")
         yield Footer()
 
-    def _is_compact(self) -> bool:
-        return self.size.width <= COMPACT_WIDTH or self.size.height <= COMPACT_HEIGHT
+    def _is_compact(self, size=None) -> bool:
+        size = size if size is not None else self.size
+        return size.width <= COMPACT_WIDTH or size.height <= COMPACT_HEIGHT
 
-    async def _layout_body(self) -> None:
+    async def _layout_body(self, size=None) -> None:
         """REQ-TUI-011: side-by-side panes normally, tabs at 80x24. Same pane instances (and
-        their loaded state) move between layouts — nothing gets re-fetched on a resize."""
-        compact = self._is_compact()
+        their loaded state) move between layouts — nothing gets re-fetched on a resize.
+
+        `size` is the terminal size to lay out for. On a live resize, `self.size` during the
+        `Resize` event still holds the *previous* size (Textual updates it after dispatching the
+        event), so on_resize passes `event.size` explicitly instead of trusting `self.size` — the
+        one place besides on_mount that calls this without an explicit size, where `self.size`
+        is already current."""
+        compact = self._is_compact(size)
         if compact == self._compact:
             return
         self._compact = compact
@@ -103,7 +110,7 @@ class TroupeApp(App):
             await body.mount(Horizontal(left, right, id="body-row"))
 
     async def on_resize(self, event) -> None:
-        await self._layout_body()
+        await self._layout_body(event.size)
 
     async def on_mount(self) -> None:
         self._install_signal_handlers()
