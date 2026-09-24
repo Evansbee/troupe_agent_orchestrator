@@ -180,6 +180,19 @@ SUGGESTIONS = {
 }
 
 
+def chat_entered(app: "App", agent_id: str) -> bool:
+    """True the first time this frame sees `agent_id` as the open chat partner since the last
+    genuine arrival — a switch to a different partner, or returning to Chat after another tab
+    (draw_modals clears the tracked agent whenever app.tab != "Chat"). A fresh ScrollState already
+    defaults to at_bottom=True, but that only covers the very first time an agent's chat is ever
+    viewed — its ScrollState persists in ui.scrolls after that, so revisiting a previously-viewed
+    partner needs this explicit signal to re-stick (QA's #33 repro: A -> B -> A left A unstuck)."""
+    if getattr(app, "_chat_open_agent", None) == agent_id:
+        return False
+    app._chat_open_agent = agent_id
+    return True
+
+
 def chat_view(app: "App", r: Rect) -> None:
     ui, d = app.ui, app.data
     left, main = r.cut_left(222)
@@ -213,6 +226,9 @@ def chat_view(app: "App", r: Rect) -> None:
     a = d.agent_by_id.get(agent_id)
     if not a:
         return
+    # re-stick on arrival (REQ-GUI-017) — see chat_entered()'s docstring.
+    if chat_entered(app, agent_id):
+        ui.scroll_to_bottom(f"chat-scroll:{agent_id}")
     d.mark_chat_read(agent_id)
     col = d.color_of(agent_id)
     head, rest = main.cut_top(62)
@@ -814,6 +830,18 @@ _run_picker_runs: list[dict] = []  # this frame's full run list for the open pic
 _RUN_STATUS_COLOR = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}
 
 
+def transcript_entered(app: "App", rsel: int) -> bool:
+    """True the first time this frame sees `rsel` as the open run since the last genuine arrival —
+    selecting a different run, or returning to the Agent tab after another one (draw_modals clears
+    the tracked run whenever app.tab != "Agent"). Same reasoning as chat_entered(): a run's
+    ScrollState persists in ui.scrolls once created, so revisiting the same run needs this explicit
+    signal to re-stick, not just a fresh-ScrollState default that only ever fires once per run."""
+    if getattr(app, "_transcript_open_run", None) == rsel:
+        return False
+    app._transcript_open_run = rsel
+    return True
+
+
 def _run_lines(app: "App", run_id: int, live: bool) -> list[dict]:
     rows = _lines_cache.setdefault(run_id, [])
     if live or not rows:
@@ -888,6 +916,9 @@ def agent_view(app: "App", r: Rect) -> None:
         app._runs_agent = a["id"]
         app.sel_run = None
     rsel = app.sel_run or (runs[0]["id"] if runs else None)
+    # re-stick on arrival (REQ-GUI-017) — see transcript_entered()'s docstring.
+    if rsel and transcript_entered(app, rsel):
+        ui.scroll_to_bottom(f"tr:{rsel}")
     strip, tr = left.cut_top(46)
     # Sized to the actual chip widths (not a flat guess) so the run selector keeps as much of the
     # strip as it can spare — at the 1120px minimum window width, a flat reservation left the
@@ -1140,6 +1171,14 @@ def _scrim(app: "App", key: str) -> None:
 def draw_modals(app: "App") -> None:
     ui = app.ui
     global _run_picker_agent
+    # REQ-GUI-017: chat_view/agent_view only see "did the agent/run id change" — leaving the tab and
+    # returning to the *same* agent/run needs its own signal, since neither view function runs while
+    # the tab is elsewhere. draw_modals already runs unconditionally every frame for exactly this
+    # kind of cross-tab cleanup (the run-picker sticky-modal fix below does the same thing).
+    if app.tab != "Chat":
+        app._chat_open_agent = None
+    if app.tab != "Agent":
+        app._transcript_open_run = None
     picker_live = (_run_picker_agent is not None and app.tab == "Agent" and app.sel_agent == _run_picker_agent
                   and _run_picker_anchor is not None)
     if app.sel_task is not None:

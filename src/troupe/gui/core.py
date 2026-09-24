@@ -163,7 +163,12 @@ def _re_stick(sc: ScrollState) -> None:
     """Explicit re-stick: sending a message, switching chat partners (a fresh ScrollState already
     defaults at_bottom=True), or clicking the "New messages" pill."""
     sc.at_bottom = True
-    sc.target = sc.seen = max(0.0, sc.content - sc.view)
+    sc.target = max(0.0, sc.content - sc.view)
+    # seen tracks *content* height (matching _scroll_commit_content's convention below), not
+    # max_off — setting it to max_off here was off by `view` pixels, which could make the pill
+    # reappear immediately (falsely claiming "new" content) the moment the user next scrolled away,
+    # even with nothing actually new since this re-stick.
+    sc.seen = sc.content
 
 
 def alpha(c: tuple, a: float) -> tuple:
