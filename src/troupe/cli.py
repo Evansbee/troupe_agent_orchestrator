@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
-import signal
 import sys
-import time
 from pathlib import Path
 
 import httpx
@@ -31,15 +28,8 @@ def engine_pid_path(cfg: config_mod.Config) -> Path:
 
 
 def engine_alive(cfg: config_mod.Config) -> int | None:
-    p = engine_pid_path(cfg)
-    if not p.exists():
-        return None
-    try:
-        pid = int(p.read_text().strip())
-        os.kill(pid, 0)
-        return pid
-    except (ValueError, ProcessLookupError, PermissionError):
-        return None
+    from .service import service_status
+    return service_status(cfg.root).get("pid")
 
 
 def require_root() -> Path:
@@ -52,6 +42,8 @@ def require_root() -> Path:
 def cmd_init(args: argparse.Namespace) -> Path:
     root = Path(args.dir).resolve() if getattr(args, "dir", None) else Path.cwd().resolve()
     root.mkdir(parents=True, exist_ok=True)
+    from .service import register_project
+    register_project(root, getattr(args, "name", None) or root.name)
     cfgfile = root / config_mod.STATE_DIR / config_mod.CONFIG_FILE
     if cfgfile.exists():
         config_mod.load(root)  # migrate a legacy roster even when init is repeated
@@ -78,51 +70,41 @@ def detect_local_model() -> str | None:
         return None
 
 
-def start_engine(cfg: config_mod.Config):
-    from .engine import Engine
-
-    if pid := engine_alive(cfg):
-        print(f"Engine already running (pid {pid}); attaching.")
-        return None
-    engine_pid_path(cfg).write_text(str(os.getpid()))
-    eng = Engine(cfg)
-    eng.start_thread()
-    return eng
-
-
 def cmd_up(args: argparse.Namespace) -> None:
+    from .service import start_service
     root = config_mod.find_root() or cmd_init(args)
     cfg = config_mod.load(root)
-    eng = start_engine(cfg)
-    try:
-        from .gui.app import run_gui
-        run_gui(cfg)
-    finally:
-        if eng:
-            eng.stop()
-            time.sleep(0.8)
-            engine_pid_path(cfg).unlink(missing_ok=True)
+    start_service(cfg)
+    from .gui.app import run_gui
+    run_gui(cfg)
 
 
 def cmd_engine(args: argparse.Namespace) -> None:
-    cfg = config_mod.load(require_root())
-    eng = start_engine(cfg)
-    if not eng:
-        return
-    print(f"troupe engine running for {cfg.project} — Ctrl-C to stop")
-    stop = False
+    from .service import run_foreground
+    if not run_foreground(config_mod.load(require_root())):
+        print("Engine already running; no second engine started.")
 
-    def handler(*_):
-        nonlocal stop
-        stop = True
 
-    signal.signal(signal.SIGINT, handler)
-    signal.signal(signal.SIGTERM, handler)
-    while not stop:
-        time.sleep(0.5)
-    eng.stop()
-    time.sleep(1.0)
-    engine_pid_path(cfg).unlink(missing_ok=True)
+def cmd_start(args: argparse.Namespace) -> None:
+    from .service import start_service
+    status = start_service(config_mod.load(require_root()))
+    print(f"Engine running (pid {status['pid']})")
+
+
+def cmd_stop(args: argparse.Namespace) -> None:
+    from .service import stop_service
+    print("Engine stopped" if stop_service(config_mod.load(require_root())) else "not running")
+
+
+def cmd_restart(args: argparse.Namespace) -> None:
+    cmd_stop(args)
+    cmd_start(args)
+
+
+def cmd_projects(args: argparse.Namespace) -> None:
+    from .service import projects
+    for project in projects():
+        print(f"{project['name']} — {project['state']} — {project['path']}")
 
 
 def cmd_gui(args: argparse.Namespace) -> None:
@@ -138,6 +120,10 @@ def cmd_status(args: argparse.Namespace) -> None:
     s = Store(cfg.db_path)
     pid = engine_alive(cfg)
     names = HandleBook(cfg.project, cfg.agents)
+    from .service import service_status
+    state = service_status(cfg.root)
+    print(f"Service {state['state']} · pid {state.get('pid')} · version {state.get('version', '-')} · "
+          f"uptime {state.get('uptime', 0):.0f}s · heartbeat age {state.get('heartbeat_age')}")
     print(f"{cfg.project} — engine {'running (pid %d)' % pid if pid else 'stopped'}"
           f"{' · PAUSED' if s.kv_get('paused') else ''}")
     for a in s.agents():
@@ -151,6 +137,9 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"\n{len(qs)} questions for you:")
         for q in qs:
             print(f"  #{q['id']} ({names.name(q['asker'])}) {q['question'][:100]}")
+
+    if not pid:
+        raise SystemExit(1)
 
 
 def cmd_say(args: argparse.Namespace) -> None:
@@ -196,6 +185,8 @@ def main() -> None:
     p = sub.add_parser("up", help="start the engine + GUI (initializes if needed)")
     p.add_argument("--name")
     sub.add_parser("engine", help="run the engine headless")
+    for command in ("start", "stop", "restart", "projects", "ps"):
+        sub.add_parser(command)
     sub.add_parser("gui", help="open the GUI against a running engine")
     sub.add_parser("status", help="print team / board / questions")
     p = sub.add_parser("say", help="chat to an agent from the terminal")
@@ -207,5 +198,10 @@ def main() -> None:
     sub.add_parser("doctor", help="check backends are available")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui, "status": cmd_status,
-                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api}
+                "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
+                "projects": cmd_projects, "ps": cmd_projects}
     handlers.get(args.cmd or "up", cmd_up)(args)
+
+
+if __name__ == "__main__":
+    main()

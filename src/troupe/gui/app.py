@@ -41,6 +41,7 @@ class App:
         self.expanded: set[str] = set()
         self.toasts: list[tuple[float, str, tuple]] = []
         self.new_task_open = False
+        self.confirm_stop = False
         self.shot_requested: str | None = None
         from .views import PulseState
 
@@ -69,6 +70,7 @@ class App:
             self.sel_task = int(os.environ["TROUPE_TASK"])
         while not rl.window_should_close():
             self.data.refresh()
+            self.data.focus_changed(rl.is_window_focused())
             self.handle_notifications()
             n = len(self.data.questions)
             if n != title_n:  # REQ-GUI-027: "(N) " prefix, live as questions arrive/get answered
@@ -93,10 +95,14 @@ class App:
             if auto_shot and frames == int(os.environ.get("TROUPE_SHOT_FRAME", "90")):
                 screenshot(auto_shot)
                 break
+        self.data.human_seen()
         rl.close_window()
 
     def handle_notifications(self) -> None:
         d = self.data
+        if d.service_error:
+            self.toast(d.service_error, T.RED)
+            d.service_error = ""
         from .views import on_new_messages
 
         if d.new_messages:
@@ -134,6 +140,8 @@ class App:
     def frame(self) -> None:
         ui = self.ui
         self.shortcuts()
+        if self.data.catchup or self.confirm_stop:
+            ui.modal = "catchup"
         full = Rect(0, 0, ui.w, ui.h)
         top, rest = full.cut_top(T.TOP_H)
         body = rest.inset(T.GAP, 0)
@@ -148,6 +156,7 @@ class App:
         from .views import draw_modals
 
         draw_modals(self)
+        self.draw_service_modal()
 
     def shortcuts(self) -> None:
         ui = self.ui
@@ -165,6 +174,10 @@ class App:
         if ui.cmd and rl.is_key_pressed(rl.KeyboardKey.KEY_P) and ui.focus is None:
             self.data.set_paused(not self.data.paused)
         if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
+            if self.data.catchup or self.confirm_stop:
+                self.data.dismiss_catchup()
+                self.confirm_stop = False
+                return
             if self.sel_task is not None:
                 self.sel_task = None
             elif self.new_task_open:
@@ -187,6 +200,11 @@ class App:
         x = r.x + 48
         x += ui.text(x, r.cy - 11, "troupe", 19, T.TEXT, "bold") + 12
         x += ui.text(x, r.cy - 8, self.cfg.project, 14, T.TEXT_DIM, "med") + 22
+        control_label = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
+        controls_width = ui.button_w(control_label) + 16 + ui.button_w("+ Task")
+        if d.engine_alive:
+            controls_width += ui.button_w("Stop team") + 8
+        metrics_right = r.r - T.GAP - controls_width - 16
         # engine state pill
         if not d.engine_alive:
             label, col = "Engine offline", T.RED
@@ -222,6 +240,8 @@ class App:
         open_n = sum(1 for t in d.tasks if t["status"] not in ("done", "cancelled"))
         stats.append((str(open_n), "open tasks"))
         for val, lab in stats:
+            if x + ui.measure(val, 15, "bold") + ui.measure(lab, 12) + 23 > metrics_right:
+                break
             x += ui.text(x, r.cy - 9, val, 15, T.TEXT, "bold") + 5
             x += ui.text(x, r.cy - 7, lab, 12, T.TEXT_FAINT) + 18
         rlim = d.kv.get("claude_ratelimit") or {}
@@ -230,6 +250,8 @@ class App:
             w = wins.get(key)
             if not w:
                 continue
+            if x + ui.measure(f"claude {lab}", 11) + 76 > metrics_right:
+                break
             u = float(w.get("utilization") or 0)
             ui.text(x, r.cy - 7, f"claude {lab}", 11, T.TEXT_FAINT)
             bx = x + ui.measure(f"claude {lab}", 11) + 6
@@ -241,17 +263,79 @@ class App:
             x = bar.r + 16
         # right buttons
         bx = r.r - T.GAP
-        lbl = "Resume" if d.paused else "Pause"
+        lbl = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
         bw = ui.button_w(lbl) + 8
         bx -= bw
         if ui.button("pause", Rect(bx, r.cy - 16, bw, 32), lbl, "primary" if d.paused else "default",
                      tip="Pause autonomous work (chat still answered)  ⌘P"):
-            d.set_paused(not d.paused)
+            if not d.engine_alive:
+                d.start_team()
+            else:
+                d.set_paused(not d.paused)
+        if d.engine_alive:
+            bw = ui.button_w("Stop team")
+            bx -= bw + 8
+            if ui.button("stopteam", Rect(bx, r.cy - 16, bw, 32), "Stop team"):
+                self.confirm_stop = True
         bw = ui.button_w("+ Task")
         bx -= bw + 8
         if ui.button("newtask", Rect(bx, r.cy - 16, bw, 32), "+ Task", tip="Add a task to the board"):
             self.new_task_open = True
             ui.focus = "nt_title"
+
+    def draw_service_modal(self) -> None:
+        d, ui = self.data, self.ui
+        if not d.catchup and not self.confirm_stop:
+            return
+        ui.modal = ui.layer = "catchup"
+        ui.rect(Rect(0, 0, ui.w, ui.h), (0, 0, 0, 165))
+        r = Rect((ui.w - min(720, ui.w - 80)) / 2, 65, min(720, ui.w - 80), min(650, ui.h - 130))
+        ui.panel(r, T.PANEL, 14, T.BORDER_HI)
+        ui.text(r.x + 24, r.y + 22, "Stop the team?" if self.confirm_stop else "While you were away", 22, T.TEXT, "bold")
+        if self.confirm_stop:
+            ui.text_block(r.x + 24, r.y + 72, "Running agents will be interrupted. You can start the team again later.", r.w - 48, 15, T.TEXT_DIM)
+            if ui.button("confirmstop", Rect(r.x + 24, r.b - 56, 130, 34), "Stop team", "primary"):
+                d.command("stop_team")
+                self.confirm_stop = False
+            if ui.button("cancelstop", Rect(r.r - 134, r.b - 56, 110, 34), "Cancel"):
+                self.confirm_stop = False
+        else:
+            ui.text(r.x + 24, r.y + 56, f"${d.catchup_cost:.2f} spent since your last visit", 13, T.TEXT_DIM)
+            body = Rect(r.x + 24, r.y + 92, r.w - 48, r.h - 170)
+            sc = ui.scroll_begin("catchupitems", body)
+            y = body.y - sc.offset
+            if d.catchup_detail:
+                item = d.catchup_detail
+                y += ui.text_block(body.x, y, item['label'], body.w, 17, T.TEXT, 'bold') + 16
+                y += ui.text_block(body.x, y, item['body'] or 'No additional details.', body.w, 14, T.TEXT_DIM)
+            else:
+                for group, items in list(d.catchup.items()):
+                    ui.text(body.x, y, f"{group} ({len(items)})", 14, T.ACCENT, "bold")
+                    y += 30
+                    for item in items:
+                        row = Rect(body.x, y, body.w, 32)
+                        ui.text_fit(row.x + 8, row.y + 8, item['label'], row.w - 16, 13, T.TEXT)
+                        if ui.click(row):
+                            kind, _, ident = item['ref'].partition(':')
+                            if kind == 'task':
+                                self.tab = 'Board'
+                                self.sel_task = int(ident)
+                                d.dismiss_catchup()
+                            elif kind == 'run':
+                                self.tab = 'Agent'
+                                self.sel_agent = item['agent']
+                                self.sel_run = int(ident)
+                                d.dismiss_catchup()
+                            else:
+                                d.catchup_detail = item
+                        y += 36
+                    y += 12
+            ui.scroll_end(sc, y + sc.offset - body.y)
+            if ui.button("catchupdone", Rect(r.r - 134, r.b - 56, 110, 34), "Got it", "primary"):
+                d.dismiss_catchup()
+            if d.catchup_detail and ui.button("catchupback", Rect(r.x + 24, r.b - 56, 110, 34), "Back"):
+                d.catchup_detail = None
+        ui.layer = None
 
     # ── team sidebar ──────────────────────────────────────────────────────
     def draw_sidebar(self, r: Rect) -> None:
