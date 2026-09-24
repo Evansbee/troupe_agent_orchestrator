@@ -49,5 +49,7 @@ class TasksPane(Pane):
             assignee = Text(t.get("assignee") or "", style=C.TEXT_DIM)
             table.add_row(Text(glyph, style=color), Text(f"#{t['id']}", style=C.TEXT_FAINT), title, assignee)
         if not ordered:
-            table.add_row(Text("nothing in flight", style=C.TEXT_FAINT))
+            table.add_row("", "", Text("nothing in flight", style=C.TEXT_FAINT), "")
+        self._table = table  # kept for tests: Static wraps whatever update() is given, so this is
+        # the one place the actual Table (and its column layout) stays inspectable.
         self.update(table)
