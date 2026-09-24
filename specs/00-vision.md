@@ -46,6 +46,7 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
 | **Spec Writer** | Writes/maintains `specs/`: numbered, testable requirements. Talks detail with the human. |
 | **Designer** | HOW it looks and flows: `design/` system + screens. |
 | **Builder(s)** | Write code, one task at a time, each in its own worktree. |
+| **Architect** | Keeps the codebase sustainable: owns `docs/architecture.md` + ADRs, reviews risky changes (schema, deps, contracts, new modules), runs health checks and files tech-debt tasks. |
 | **QA** | Verifies things work and meet spec; approves or rejects every task before merge. |
 | **Gadfly** | The pesky one: "the spec says X — does that mean Y? what about Z?" — to the human and the agents. |
 
@@ -73,3 +74,4 @@ territories for parallel builders, reviewers on a different runtime than writers
   treated as peers (human feedback).
 - 2026-09-23 — engine runs as a service (GUI attaches/detaches, "while you were away" catch-up); agent
   handles `role_N@project_name` (human).
+- 2026-09-23 — added the Architect role (human): sustainability owner; gates only risky changes.
