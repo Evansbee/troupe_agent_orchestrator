@@ -416,7 +416,9 @@ class Engine:
                      + ("\n".join(fmt_task_line(t) for t in open_tasks[:60]) or "(empty board)"))
         pending_q = s.q("SELECT * FROM questions WHERE asker=? AND status='open'", a.id)
         if pending_q:
-            p.append("\n## Your questions still awaiting the human (don't re-ask)\n"
+            heading = ("Your open questions (did the human just answer one? if so, resolve_question)"
+                       if w.chat else "Your questions still awaiting the human (don't re-ask)")
+            p.append(f"\n## {heading}\n"
                      + "\n".join(f"- #{q['id']}: {q['question']}" for q in pending_q))
         decisions = s.memories(kind="decision", limit=10, include_private_of=a.id)
         if decisions:
@@ -450,7 +452,10 @@ class Engine:
                     "Your FINAL message text in this session is shown to them as your chat reply — write it "
                     "conversationally in markdown, concise, ending with the most useful next question if you "
                     "need input. Act on what they said with your tools first (update docs, brief teammates, "
-                    "record decisions with remember). Don't also send_message the human the same content."
+                    "record decisions with remember). Check your open questions against what the human just said; "
+                    "if they answered one, call resolve_question with their answer, then remember the decision. "
+                    "File any new decision question with ask_human (with options) as well as asking in chat. "
+                    "Don't also send_message the human the same content."
                     + extra)
         if w.reason == "review" and task:
             stat = gitops.diffstat(self.cfg.root, task["branch"]) if task.get("branch") else ""

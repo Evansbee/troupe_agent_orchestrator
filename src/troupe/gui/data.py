@@ -31,6 +31,8 @@ class Data:
         self.runs_1h = 0
         self.new_messages: list[dict] = []
         self.new_questions: list[dict] = []
+        self.new_chat_answers: list[dict] = []
+        self._answer_event = None
         self._max_msg = -1
         self._max_q = -1
         self.docs: list[Path] = []
@@ -77,6 +79,13 @@ class Data:
         self.tasks = s.tasks(limit=800)
         self.questions = s.questions("open")
         self.events = s.events(limit=300)
+        answer_event = s.max_event_id()
+        if self._answer_event is not None:
+            self.new_chat_answers += s.q(
+                "SELECT q.* FROM events e JOIN questions q ON e.ref='q:' || q.id "
+                "WHERE e.id>? AND e.id<=? AND e.kind='answer' AND q.answered_via='chat' ORDER BY e.id",
+                self._answer_event, answer_event)
+        self._answer_event = answer_event
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
         self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit")}

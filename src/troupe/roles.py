@@ -52,6 +52,7 @@ Project root: {root}
   and a territory (which files/dirs it owns) so parallel builders don't collide.
 - Questions for the human go through ask_human (with concrete options) — never block on the answer;
   continue with other work, the answer arrives in your mailbox.
+- If you ask the human a decision question in live chat, ALSO file it with ask_human (with options), so it sits in Needs you. If the human answers in chat, call resolve_question with their answer, then remember() the decision.
 - Be concise. Messages should be specific and actionable. One topic per message.
 - Use set_status("...") at the start of substantial work so the team can see what you're doing.
 """
