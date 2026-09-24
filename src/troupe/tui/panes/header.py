@@ -42,7 +42,7 @@ class HeaderPane(Pane):
     def on_mount(self) -> None:
         self._paint()  # widgets can't update() before they're mounted
 
-    async def load(self) -> None:
+    async def _load(self) -> None:
         self._engine = await self.client.call("engine")
         self._usage = await self.client.call("usage")
         self._milestones = (await self.client.call("milestones"))["items"]
