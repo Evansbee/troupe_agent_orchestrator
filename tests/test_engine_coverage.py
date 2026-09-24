@@ -37,7 +37,7 @@ def test_cli_starts_detached_and_attaches(project, monkeypatch):
     cfg, _ = project
     actions = []
     monkeypatch.setattr(cli.config_mod, "find_root", lambda: cfg.root)
-    monkeypatch.setattr(service, "start_service", lambda cfg: actions.append("start"))
+    monkeypatch.setattr(service, "start_service", lambda cfg, owner=None: actions.append("start"))
     monkeypatch.setattr(app, "run_gui", lambda cfg: actions.append("attach"))
     cli.cmd_up(argparse.Namespace())
     assert actions == ["start", "attach"]
