@@ -113,14 +113,14 @@ the Mac app.
   and the dock badge comes with the Mac app, REQ-MAC.)
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered.
-- **REQ-GUI-028 [ ]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+- **REQ-GUI-028 [x]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
     rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions
     that arrived (still open ones first). Each group shows a count; each item is clickable and navigates to it.
   - "Got it" or Esc closes the panel and advances `human_last_seen`. Nothing notable → no panel.
   - Test: selecting catch-up items from a fixture DB for a given `last_seen` is a pure function with unit tests.
-- **REQ-GUI-029 [ ]** Service states in the engine pill:
+- **REQ-GUI-029 [~]** Service states in the engine pill:
   - (#24) "Engine offline" with **Start team** (REQ-ENG-001).
   - (#28) "Reloading… 2 runs draining" during a reload (REQ-ENG-009) and "Restarting…" after a crash (REQ-ENG-042).
   - (#28) "Crashed — see engine.log" with **Start team** after a crash loop.
