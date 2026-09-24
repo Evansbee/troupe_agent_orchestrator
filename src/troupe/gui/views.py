@@ -699,8 +699,22 @@ def mail_view(app: "App", r: Rect) -> None:
 KIND_COLORS = {"decision": T.ACCENT, "note": T.TEXT_DIM, "fact": T.CYAN, "idea": T.PINK, "preference": T.YELLOW}
 
 
+def _struck_block(ui, x: float, y: float, s: str, width: float, size: float, color: tuple,
+                  face: str = "ui", lh: float = 1.45) -> float:
+    """Like ui.text_block(), but with a line drawn through every wrapped line — used for superseded titles."""
+    lines = ui.wrap(s, width, size, face)
+    step = size * lh
+    for i, line in enumerate(lines):
+        ly = y + i * step
+        ui.text(x, ly, line, size, color, face)
+        ui.rect(Rect(x, ly + size * 0.58, ui.measure(line, size, face), 1.4), color)
+    return len(lines) * step
+
+
 def memory_view(app: "App", r: Rect) -> None:
     ui, d = app.ui, app.data
+    if app.mem_confirm_delete is not None and not any(m["id"] == app.mem_confirm_delete for m in d.memories):
+        app.mem_confirm_delete = None
     bar, body = r.cut_top(48)
     x = bar.x + 16
     for key, label in [(None, "All"), ("decision", "Decisions"), ("preference", "Preferences"), ("fact", "Facts"),
@@ -712,14 +726,19 @@ def memory_view(app: "App", r: Rect) -> None:
         x += w + 6
     ui.hline(r.x, bar.b, r.w, T.BORDER)
     mems = [m for m in d.memories if app.mem_filter is None or m["kind"] == app.mem_filter]
+    by_id = {m["id"]: m for m in d.memories}
     sc = ui.scroll_begin("memory", body)
     y = body.y + 10 - sc.offset
     w = body.w - 32
     for m in mems:
+        struck = bool(m["superseded_by"])
+        succ = by_id.get(m["superseded_by"]) if struck else None
+        succ_label = f"→ superseded by #{m['superseded_by']}" + (f": {succ['title']}" if succ else "") if struck else ""
+        succ_h = ui.text_height(succ_label, w - 32, 11.5) if succ_label else 0
         content_h = ui.md_layout(m["content"], w - 32, 13.5)[1] if m["content"] else 0
         why_h = ui.text_height("Why: " + m["rationale"], w - 32, 12.5) if m["rationale"] else 0
-        h = 16 + 24 + ui.text_height(m["title"], w - 32, 14.5, "bold") + (content_h + 6 if content_h else 0) \
-            + (why_h + 6 if why_h else 0) + 14
+        h = 16 + 24 + ui.text_height(m["title"], w - 32, 14.5, "bold") + (4 + succ_h if succ_h else 0) \
+            + (content_h + 6 if content_h else 0) + (why_h + 6 if why_h else 0) + 14
         rr = Rect(body.x + 16, y, w, h)
         if rr.b > body.y - 10 and rr.y < body.b + 10:
             hov = ui.hover(rr)
@@ -730,18 +749,51 @@ def memory_view(app: "App", r: Rect) -> None:
             px += ui.pill(px, rr.y + 12, m["kind"], kc, 10.5) + 8
             if m["scope"] == "private":
                 px += ui.pill(px, rr.y + 12, "private", T.TEXT_FAINT, 10.5) + 8
+            if m["pinned"]:
+                px += ui.pill(px, rr.y + 12, "pinned", T.YELLOW, 10.5) + 8
+            if struck:
+                px += ui.pill(px, rr.y + 12, "superseded", T.TEXT_FAINT, 10.5) + 8
             col = d.color_of(m["agent"])
             px += ui.text(px, rr.y + 14, d.name_of(m["agent"]), 12, col, "med") + 8
             ui.text(px, rr.y + 15, ago(m["ts"]), 11, T.TEXT_FAINT)
-            if ui.copy_button(Rect(rr.r - 54, rr.y + 8, 46, 20), hov, "Copy memory"):
-                parts = [m["title"]]
-                if m["content"]:
-                    parts.append(m["content"])
-                if m["rationale"]:
-                    parts.append("Why: " + m["rationale"])
-                _copy(app, "\n\n".join(parts))
+            if app.mem_confirm_delete == m["id"]:
+                yes_x = rr.r - 8 - 60
+                no_x = yes_x - 6 - 60
+                if ui.button(f"mem:delyes:{m['id']}", Rect(yes_x, rr.y + 8, 60, 20), "Delete", "danger", 10.5):
+                    d.delete_memory(m["id"])
+                    app.mem_confirm_delete = None
+                    app.toast("Memory deleted", T.RED)
+                if ui.button(f"mem:delno:{m['id']}", Rect(no_x, rr.y + 8, 60, 20), "Cancel", "ghost", 10.5):
+                    app.mem_confirm_delete = None
+            else:
+                copy_x = rr.r - 54
+                del_x = copy_x - 6 - 50
+                edit_x = del_x - 6 - 46
+                pin_x = edit_x - 6 - 56
+                if ui.button(f"mem:pin:{m['id']}", Rect(pin_x, rr.y + 8, 56, 20),
+                            "Unpin" if m["pinned"] else "Pin", "ghost", 10.5):
+                    d.set_memory(m["id"], pinned=not m["pinned"])
+                if ui.button(f"mem:edit:{m['id']}", Rect(edit_x, rr.y + 8, 46, 20), "Edit", "ghost", 10.5):
+                    ui.set_input(f"memedit_title:{m['id']}", m["title"])
+                    ui.set_input(f"memedit_content:{m['id']}", m["content"])
+                    ui.set_input(f"memedit_rationale:{m['id']}", m["rationale"])
+                    app.mem_editing = m["id"]
+                if ui.button(f"mem:del:{m['id']}", Rect(del_x, rr.y + 8, 50, 20), "Delete", "ghost", 10.5):
+                    app.mem_confirm_delete = m["id"]
+                if ui.copy_button(Rect(copy_x, rr.y + 8, 46, 20), hov, "Copy memory"):
+                    parts = [m["title"]]
+                    if m["content"]:
+                        parts.append(m["content"])
+                    if m["rationale"]:
+                        parts.append("Why: " + m["rationale"])
+                    _copy(app, "\n\n".join(parts))
             yy = rr.y + 40
-            yy += ui.text_block(rr.x + 16, yy, m["title"], w - 32, 14.5, T.TEXT, "bold")
+            if struck:
+                yy += _struck_block(ui, rr.x + 16, yy, m["title"], w - 32, 14.5, T.TEXT_FAINT, "bold")
+                yy += 4
+                yy += ui.text_block(rr.x + 16, yy, succ_label, w - 32, 11.5, T.TEXT_FAINT)
+            else:
+                yy += ui.text_block(rr.x + 16, yy, m["title"], w - 32, 14.5, T.TEXT, "bold")
             if m["content"]:
                 yy += 6
                 yy += ui.markdown(rr.x + 16, yy, m["content"], w - 32, 13.5, T.TEXT_DIM)
@@ -1204,6 +1256,11 @@ def draw_modals(app: "App") -> None:
         _scrim(app, "newtask")
         _new_task_modal(app)
         ui.layer = None
+    elif app.mem_editing is not None:
+        ui.modal = ui.layer = "memedit"
+        _scrim(app, "memedit")
+        _edit_memory_modal(app)
+        ui.layer = None
     elif picker_live:
         ui.modal = ui.layer = "runpicker"
         _run_picker_popover(app)
@@ -1375,3 +1432,40 @@ def _new_task_modal(app: "App") -> None:
         ui.set_input("nt_desc", "")
         app.new_task_open = False
         app.toast(f"Created task #{tid}", T.GREEN)
+
+
+def _edit_memory_modal(app: "App") -> None:
+    ui, d = app.ui, app.data
+    m = next((x for x in d.memories if x["id"] == app.mem_editing), None)
+    if not m:
+        app.mem_editing = None
+        return
+    tid, cid, rid = f"memedit_title:{m['id']}", f"memedit_content:{m['id']}", f"memedit_rationale:{m['id']}"
+    w = min(680, ui.w - 120)
+    iw = w - 48
+    content_h = ui.input_height(cid, iw, 13.5, 6, 10)
+    h = min(ui.h - 100, 56 + 76 + 18 + content_h + 16 + 76 + 70)
+    r = Rect((ui.w - w) / 2, (ui.h - h) / 2, w, h)
+    ui.panel(r, T.PANEL, 14, T.BORDER_HI)
+    if ui.clicked and not r.contains(ui.mouse):
+        app.mem_editing = None
+        ui.click_consumed = True
+        return
+    x = r.x + 24
+    ui.text(x, r.y + 22, f"Edit memory #{m['id']}", 18, T.TEXT, "bold")
+    y = r.y + 56
+    ui.text(x, y, "TITLE", 10.5, T.TEXT_FAINT, "bold")
+    ui.text_input(tid, Rect(x, y + 18, iw, 42), "Title", 14, multiline=False)
+    y += 76
+    ui.text(x, y, "CONTENT", 10.5, T.TEXT_FAINT, "bold")
+    ui.text_input(cid, Rect(x, y + 18, iw, content_h), "Content", 13.5, submit_on_enter=False)
+    y += 18 + content_h + 16
+    ui.text(x, y, "WHY (RATIONALE)", 10.5, T.TEXT_FAINT, "bold")
+    ui.text_input(rid, Rect(x, y + 18, iw, 42), "Why", 13.5, multiline=False)
+    title = ui.input_text(tid).strip()
+    if ui.button("memedit:cancel", Rect(r.r - 24 - 200, r.b - 54, 90, 36), "Cancel", "ghost"):
+        app.mem_editing = None
+    if ui.button("memedit:save", Rect(r.r - 24 - 100, r.b - 54, 100, 36), "Save", "primary", disabled=not title):
+        d.set_memory(m["id"], title=title, content=ui.input_text(cid).strip(), rationale=ui.input_text(rid).strip())
+        app.mem_editing = None
+        app.toast(f"Updated memory #{m['id']}", T.GREEN)

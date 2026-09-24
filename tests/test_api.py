@@ -138,6 +138,37 @@ def test_every_read_and_shapes(api):
             error(c, method, p, "bad_request")
 
 
+def test_update_and_delete_memory(api):
+    server, s = api
+    mid = s.remember("builder-1", "Decision", content="body", rationale="why")
+    with client(api) as c:
+        result = c.call("update_memory", dict(id=mid, pinned=True))
+        assert result["memory"]["pinned"] is True
+        result = c.call("update_memory", dict(id=mid, title="Edited", content="new body"))
+        assert result["memory"]["title"] == "Edited"
+        assert result["memory"]["content"] == "new body"
+        assert result["memory"]["rationale"] == "why"
+        error(c, "update_memory", dict(id=mid, major=True), "unavailable")
+        error(c, "update_memory", dict(id=999, title="x"), "not_found")
+        error(c, "update_memory", dict(id=mid), "bad_request")
+        assert c.call("delete_memory", dict(id=mid)) == {"deleted": True}
+        error(c, "delete_memory", dict(id=mid), "not_found")
+
+
+def test_memories_status_filter_excludes_superseded_by_default(api):
+    server, s = api
+    old = s.remember("builder-1", "Old")
+    new = s.remember("builder-1", "New", supersedes=old)
+    with client(api) as c:
+        active = c.call("memories")["items"]
+        assert [m["id"] for m in active] == [new]
+        superseded = c.call("memories", dict(status="superseded"))["items"]
+        assert [m["id"] for m in superseded] == [old]
+        assert superseded[0]["superseded_by"] == new
+        assert superseded[0]["status"] == "superseded"
+        assert c.call("memories", dict(status="reverted"))["items"] == []
+
+
 def test_commands_and_idempotency(api):
     server, s = api
     with client(api) as c:

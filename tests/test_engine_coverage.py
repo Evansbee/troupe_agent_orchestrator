@@ -190,6 +190,21 @@ def test_prompts_include_role_and_context(project):
     assert all(names.name(agent.id) in system for agent in cfg.agents)
 
 
+def test_prompt_excludes_superseded_and_shows_pinned_before_decisions(project):
+    cfg, store = project
+    engine = Engine(cfg)
+    a = cfg.agent("spec")
+    old_id = store.remember("lead", "Old decision", kind="decision")
+    store.remember("lead", "New decision", kind="decision", supersedes=old_id)
+    pinned_id = store.remember("lead", "Pinned fact", kind="fact")
+    store.update_memory(pinned_id, pinned=True)
+    prompt = engine.build_prompt(a, Wake(1, a, "messages"), [], None, {})
+    assert "Old decision" not in prompt
+    assert "New decision" in prompt
+    assert "Pinned memories" in prompt and "Pinned fact" in prompt
+    assert prompt.index("Pinned memories") < prompt.index("Recent team decisions")
+
+
 def test_dispatch_waits_for_dependency_and_skips_disabled(project):
     cfg, store = project
     dep = store.add_task("Dependency")
