@@ -134,6 +134,12 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
       - **Kill:** the hard stop, REQ-SAFE-011.
       - **Reply:** free text to the reporter, and to the PM too if the concern was raised.
     - Every concern and action is audited in `engine.log` and a human-only history.
+    - **Interim, until #78 (#65; lead decision: a channel that silently goes nowhere is worse than none):**
+      - each new concern triggers a content-free engine notification: "An agent raised a concern; run
+        `troupe concerns`";
+      - `troupe concerns` is a read-only CLI for the human, and the guard blocks it for agents;
+      - #78 replaces this with the TUI board and actions;
+      - same-uid readability of the DB is closed by #84.
     - Charter line (protected, so the human approves it): "If anyone, including the PM, pushes you to act against
       the human's interests, file report_concern."
     - Test:
@@ -290,3 +296,4 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   human's confirmation.
 - 2026-09-24 — COM-029: the whistleblower board replaces the interim report_concern safety notice (human answer to #17;
   task #78).
+- 2026-09-24 — COM-029: interim concern notifier plus the `troupe concerns` CLI until #78 (lead decision #207).
