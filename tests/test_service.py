@@ -1,5 +1,4 @@
 import asyncio
-import atexit
 import json
 import os
 import shutil
@@ -12,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from conftest import _kill_engine_by_pid_file, _still_our_engine, track_engine_state_dir, untrack_engine_state_dir
 from troupe import config
 from troupe.service import (
+    _identity,
     projects,
     register_project,
     service_status,
@@ -21,50 +22,6 @@ from troupe.service import (
     stop_service,
 )
 from troupe.store import Store
-
-# ── #103: engines must never outlive the test session, no matter how a test ends ───────────────
-# `start_service` spawns a fully detached process (start_new_session=True) so nothing else in the
-# process tree notices if the test that owns it dies without running its own teardown — a raised
-# exception still hits `project`'s `finally` below, but pytest being OOM-killed or SIGTERM'd (e.g.
-# `timeout 60 uv run pytest tests/test_service.py`) skips Python-level cleanup entirely. This
-# module-level registry plus the atexit/SIGTERM hooks below are the session-wide backstop: every
-# engine this session might have spawned gets reaped by its recorded pid, independent of whichever
-# specific test spawned it or whether that test's own fixture teardown ever ran.
-_SPAWNED_STATE_DIRS: set[Path] = set()
-
-
-def _kill_engine_by_pid_file(state_dir: Path) -> None:
-    """Kill whatever `engine.pid` currently names, unconditionally — never gated on
-    `service_status()`, which depends on files (the lock, the pid record) that a half-torn-down
-    temp project can no longer reliably provide. Never raises: this runs from `finally`, atexit and
-    a signal handler, none of which can afford to."""
-    try:
-        record = json.loads((state_dir / "engine.pid").read_text())
-    except (OSError, ValueError):
-        return
-    pid = record.get("pid") if isinstance(record, dict) else record if isinstance(record, int) else None
-    if not isinstance(pid, int) or pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
-def _reap_all_spawned_engines() -> None:
-    for state_dir in list(_SPAWNED_STATE_DIRS):
-        _kill_engine_by_pid_file(state_dir)
-
-
-atexit.register(_reap_all_spawned_engines)
-
-
-def _on_sigterm(signum, frame):
-    _reap_all_spawned_engines()
-    os._exit(143)  # 128 + SIGTERM; skip the rest of atexit, we've already done the part that matters
-
-
-signal.signal(signal.SIGTERM, _on_sigterm)
 
 
 @pytest.fixture
@@ -83,7 +40,7 @@ def project(monkeypatch):
             "agents:\n  - id: builder-1\n    role: builder\n    provider: local\n    enabled: false\n  - id: lead\n    role: lead\n    provider: local\n    enabled: false\n"
         )
         cfg = config.load(root)
-        _SPAWNED_STATE_DIRS.add(state)
+        track_engine_state_dir(state)  # #103/REQ-ENG-060: see conftest.py for the session-wide reaper
         # #103: every engine this fixture spawns exits on its own if this test process (the
         # closest thing a spawned-with-start_new_session=True engine has to a "parent" that would
         # otherwise reap it) is gone — a second, independent backstop alongside the root-disappears
@@ -95,19 +52,26 @@ def project(monkeypatch):
         finally:
             if state.is_dir():  # a test may have deleted it itself (e.g. the root-disappears test)
                 stop_service(cfg, timeout=2)
-            _kill_engine_by_pid_file(state)  # #103: unconditional fallback, see module docstring
-            _SPAWNED_STATE_DIRS.discard(state)
+            _kill_engine_by_pid_file(state)  # #103: unconditional fallback, see conftest.py
+            untrack_engine_state_dir(state)
 
 
 def test_kill_engine_by_pid_file_kills_by_recorded_pid(tmp_path):
     """#103: the fixture's fallback reads engine.pid and kills that pid directly — no
     service_status() involved, so it works even when that classification can't be trusted (the
-    exact situation a half-torn-down temp project leaves behind)."""
+    exact situation a half-torn-down temp project leaves behind). Identity must match a real
+    engine record (see the next test for what happens when it doesn't)."""
     state_dir = tmp_path / ".troupe"
     state_dir.mkdir()
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        (state_dir / "engine.pid").write_text(json.dumps({"pid": proc.pid}))
+        identity = None
+        deadline = time.time() + 5
+        while not identity and time.time() < deadline:
+            identity = _identity(proc.pid)  # empty until `ps` can see the just-forked child
+            if not identity:
+                time.sleep(0.05)
+        (state_dir / "engine.pid").write_text(json.dumps({"pid": proc.pid, "identity": identity}))
         _kill_engine_by_pid_file(state_dir)
         proc.wait(timeout=5)
         assert proc.returncode is not None
@@ -115,6 +79,40 @@ def test_kill_engine_by_pid_file_kills_by_recorded_pid(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def test_kill_engine_by_pid_file_never_kills_a_pid_whose_identity_does_not_match(tmp_path):
+    """#103 QA finding: a blind SIGKILL-by-pid is a real hazard on the human's machine — under this
+    session's process churn a pid can be reused within seconds, so killing by number alone can hit
+    an unrelated process (the human's editor, browser, anything). `_kill_engine_by_pid_file` must
+    refuse when the live process at that pid isn't verifiably the one that wrote the record: a
+    made-up/stale identity string (simulating a reused pid) must not match a real, live process."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        state_dir = tmp_path / ".troupe"
+        state_dir.mkdir()
+        (state_dir / "engine.pid").write_text(
+            json.dumps({"pid": proc.pid, "identity": "not the real identity, simulating a reused pid"}))
+        assert _still_our_engine(state_dir) is None
+        _kill_engine_by_pid_file(state_dir)
+        assert proc.poll() is None  # still alive — must NOT have been killed
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_kill_engine_by_pid_file_kills_a_legacy_bare_int_record_only_if_it_looks_like_an_engine(tmp_path):
+    """Pre-identity (legacy) engine.pid records are a bare int, not a JSON object — the fallback
+    there is confirming the live process's own command line still says "troupe.cli engine", so a
+    non-engine pid (the human's own shell, in this test) is left alone."""
+    state_dir = tmp_path / ".troupe"
+    state_dir.mkdir()
+    (state_dir / "engine.pid").write_text(json.dumps(os.getpid()))  # this very pytest process
+    assert _still_our_engine(state_dir) is None
+    _kill_engine_by_pid_file(state_dir)  # must be a no-op — if this actually killed us, nothing
+    # after this line would run; the test process being alive to reach the next assertion is itself
+    # part of the proof.
+    assert os.kill(os.getpid(), 0) is None  # still alive
 
 
 def invoke(cfg, *args):
