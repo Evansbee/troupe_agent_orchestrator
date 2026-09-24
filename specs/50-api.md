@@ -54,7 +54,7 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
     | method / data | owning REQ → task |
     |---|---|
     | `room_message`, `room` field | COM-024 → #4 |
-    | `stop_team`, `mark_seen human_last_seen` catch-up, `troupe start` | ENG-006, GUI-028 → #24 |
+    | `stop_team` (live), `mark_seen human_last_seen` catch-up, `troupe start` (live) | ENG-006, GUI-028 → #24 |
     | `reload`, `service.json`, Engine `reloading` | ENG-009/042, API-074 → #28 |
     | `stop_now`, approval questions (`decision`) | SAFE-010/020 → #42 (wire in #48 if #42 has merged first) |
     | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
