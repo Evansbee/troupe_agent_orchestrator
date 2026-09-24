@@ -5,7 +5,7 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 
 ## Process model
 - **REQ-ENG-001 [~]** The engine runs as a background **service** per project, and the GUI is a window that
-  attaches to it. (Human: "run you as a service then have the UI be able to break in and see what's going on".)
+  attaches to it. (#24) (Human: "run you as a service then have the UI be able to break in and see what's going on".)
   Today `troupe up` runs the engine in the GUI process and stops it on close; the new behavior is:
   - `troupe up` starts a detached service (`troupe engine` in its own session, surviving the terminal) if none is
     running for this project, waits until its heartbeat appears (≤10 s, else prints the tail of `engine.log`),
@@ -15,14 +15,14 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     With no service running, it shows "Engine offline" with a **Start team** button.
 - **REQ-ENG-002 [x]** All shared state lives in `.troupe/troupe.db` (SQLite, WAL). Engine, GUI, and every
   agent's MCP server are separate readers/writers of it. GUI→engine control goes through the `commands` table.
-- **REQ-ENG-003 [~]** Only one engine per project; a second `troupe up` attaches to it.
+- **REQ-ENG-003 [~]** Only one engine per project; a second `troupe up` attaches to it. (#24)
   - Exclusivity uses a lock on `.troupe/engine.lock` held for the service's lifetime, so two simultaneous `troupe up`
     still yield exactly one engine. `.troupe/engine.pid` records the pid, start time and troupe version.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
 - **REQ-ENG-005 [x]** Engine heartbeat (`kv.heartbeat`) every tick; GUI shows "Engine offline" when stale >5s.
-- **REQ-ENG-006 [ ]** Service control from the CLI.
+- **REQ-ENG-006 [ ]** Service control from the CLI. (#24)
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
@@ -32,9 +32,9 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - `troupe up` and `troupe status` warn when the running service's version differs from the installed CLI's
     ("service is 0.1.0, installed 0.2.0 — run `troupe restart`").
   - The GUI has a **Stop team** action (with confirmation) that goes through the `commands` table.
-- **REQ-ENG-007 [ ]** The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
+- **REQ-ENG-007 [ ]** (#24) The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
   rotated at 10 MB and keeping 3 files. Log lines identify agents by handle (REQ-COM-005).
-- **REQ-ENG-008 [ ]** Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
+- **REQ-ENG-008 [ ]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
 - Out of scope: auto-start at login (launchd) and one machine-wide service for all projects.
@@ -98,7 +98,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     invalid file keeps the old config.
   - Ids: new agents use `<role>_<N>` ids (the handle's local part, REQ-COM-005). If `id` is omitted it is derived
     from role + the next free N. Legacy ids (`builder-1`, `spec`) stay valid and are never rewritten in the DB.
-- **REQ-ENG-041 [ ]** Default roster, written by `troupe init` and adopted for this project once #20 lands (human:
+- **REQ-ENG-041 [ ]** (#20) Default roster, written by `troupe init` and adopted for this project once #20 lands (human:
   trust codex; QA on a different provider from the builders):
   | id | provider | model | level |
   |---|---|---|---|
@@ -177,7 +177,8 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
-- One service per project (current spec) vs one machine-wide service: pm is confirming with the human.
+- One service per project (the current default, decided by pm when the human didn't answer) vs one machine-wide
+  service. The human can still choose.
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
@@ -187,3 +188,4 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-23 — ENG-019 rewritten: agents move to `.troupe/team.yaml` (provider/model/level), hot-reloaded (#20).
 - 2026-09-23 — service process model: ENG-001/003 rewritten, new ENG-006/007/008. Default roster: ENG-041 (the
   roster open question is resolved).
+- 2026-09-23 — tagged: service → #24, roster → #20.

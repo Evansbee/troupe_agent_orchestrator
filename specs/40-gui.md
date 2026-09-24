@@ -26,7 +26,8 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
 - **REQ-GUI-012 [x]** Board: Backlog / Ready / In progress (+blocked) / Review (+approved) / Done; cards show
   id, priority, role, title, assignee, age. Click → task modal (details, notes, actions, add note → mail).
 - **REQ-GUI-013 [x]** Mail: all agent mail with per-agent filters; click to expand full markdown.
-- **REQ-GUI-014 [x]** Memory: decisions / preferences / facts / ideas / notes with rationale.
+- **REQ-GUI-014 [x]** Memory: decisions / preferences / facts / ideas / notes with rationale. (Decisions move to their
+  own tab with REQ-GUI-041; Memory keeps facts, notes, ideas and preferences.)
 - **REQ-GUI-015 [x]** Docs: README + specs/ + design/ + docs/ rendered as markdown, live-reloading.
 - **REQ-GUI-016 [x]** Agent: header with controls (Chat, Wake now, Stop, Enable/Disable, New session), run
   history chips, live transcript (text, tool calls, results, errors), tasks, memory, recent mail.
@@ -66,17 +67,32 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
 - **REQ-GUI-027 [ ]** App icon + window title with needs-you count; dock badge.
   - Window title is `troupe — <project>`, prefixed with `(N) ` when N questions are open; it updates within a
     second of a question arriving or being answered. (Title part: #12. Icon and dock badge: not yet tasked.)
-- **REQ-GUI-028 [ ]** "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
+- **REQ-GUI-028 [ ]** (#24) "While you were away": the GUI records when the human was last looking (`kv.human_last_seen`,
   updated about every 10 s while a window is focused, and on close).
   - On open or refocus after ≥10 min away, if anything notable happened since, a catch-up panel lists: merges,
     rejected tasks, failed runs, failed checks (REQ-ENG-040), newly blocked tasks, new decisions, and questions
     that arrived (still open ones first). Each group shows a count; each item is clickable and navigates to it.
   - "Got it" or Esc closes the panel and advances `human_last_seen`. Nothing notable → no panel.
   - Test: selecting catch-up items from a fixture DB for a given `last_seen` is a pure function with unit tests.
-- **REQ-GUI-029 [ ]** Offline and version states: with no service running, the top bar pill says "Engine offline"
+- **REQ-GUI-029 [ ]** (#24) Offline and version states: with no service running, the top bar pill says "Engine offline"
   and offers **Start team** (REQ-ENG-001). With a version mismatch (REQ-ENG-006), the pill shows "Restart needed".
 - **REQ-GUI-040 [ ]** Project switcher: lists projects from the registry (REQ-ENG-008) with each one's service state;
   choosing one re-opens the GUI on that project. (Not yet tasked.)
+- **REQ-GUI-041 [ ]** Decisions tab: the human reviews major decisions and comments on them. (#27; design
+  `design/decisions.md`, #26. Human: "a tab should be for major decisions that were made with comments that the
+  lead/manager can review in case I have comments.")
+  - Lists team decisions newest first: title, rationale, author handle (full `role_N@project`), time, and outcome
+    badge. `#<n>`, `REQ-XXX-nnn` and `specs/…` in the text become links to the task, spec requirement or doc.
+  - Major decisions (REQ-COM-034) are shown by default. A filter shows all, and superseded and reverted ones are
+    struck through with a link to the successor.
+  - **New since you looked:** decisions, agent replies and outcomes newer than `kv.decisions_seen_at` are
+    highlighted, and the tab label shows their count. The highlights stay for the visit; leaving the tab or
+    clicking "Mark all reviewed" advances `decisions_seen_at`.
+  - Each decision has a comment thread (REQ-COM-035) with a composer for the human. Replies and outcomes appear in
+    the thread in time order.
+  - Pin, edit and delete (REQ-COM-033) are available here for decisions.
+  - Verified: unit tests for the unread selection and link parsing, plus a TROUPE_SHOT screenshot of
+    `TROUPE_TAB=Decisions`.
 
 ## Stage — ambient full-screen view of the team at work (#22; design: `design/stage.md`, #21)
 Human request: "a compelling background visualization so I can just watch you guys work". Stage is for watching,
@@ -124,3 +140,4 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-23 — GUI-021: agents are edited in team.yaml, budget in troupe.toml.
 - 2026-09-23 — Stage REQ-GUI-030..037 (human request via pm; #22, design #21).
 - 2026-09-23 — GUI-028 "While you were away", GUI-029 offline/restart states, GUI-040 project switcher (service model).
+- 2026-09-23 — GUI-041 Decisions tab (human request via pm; #27, design #26). Decisions leave the Memory tab.
