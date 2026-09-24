@@ -20,7 +20,7 @@ class TeamPane(Pane):
         super().__init__(client, **kwargs)
         self._agents: list[dict] = []
 
-    async def load(self) -> None:
+    async def _load(self) -> None:
         result = await self.client.call("agents")
         self._agents = result["items"]
         self._paint()

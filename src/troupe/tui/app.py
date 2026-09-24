@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -350,3 +351,10 @@ class TroupeApp(App):
 def run_tui(cfg: config_mod.Config, *, owns_engine: bool) -> None:
     app = TroupeApp(cfg, owns_engine=owns_engine)
     app.run()
+    # #108: Textual's own crash handling (App.panic/_fatal_error) catches an unhandled exception
+    # from a message handler, prints the traceback, and returns normally from run() -- it does not
+    # raise or exit non-zero on its own (its return_code docstring's own example is `sys.exit(
+    # app.return_code)`, i.e. that's the caller's job). Without this, an app that crashed on
+    # startup looked exactly like a clean exit to anything checking the process exit code.
+    if app.return_code:
+        sys.exit(app.return_code)

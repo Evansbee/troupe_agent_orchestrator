@@ -18,6 +18,7 @@ from textual.widget import Widget
 from textual.widgets import Markdown, Static, TextArea
 
 from .. import colors as C
+from . import AutoRetrier, ReloadCoalescer
 
 HUMAN_COLOR = C.ACCENT
 DIM_COLOR = C.TEXT_DIM
@@ -110,6 +111,8 @@ class ChatPane(Widget):
         # into whatever #chat-thread it's handed, so it works the same on the very first mount (where
         # this is still empty — load() fills both the thread and this together) and on every remount.
         self._history: list[dict] = []
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-thread")
@@ -135,29 +138,44 @@ class ChatPane(Widget):
         self._scroll_to_end(thread)
 
     # ── shared pane interface ────────────────────────────────────────────
-    # load() lets client errors (offline engine, timeout) propagate — the orchestrator awaits every
-    # pane's load() together and is better placed to show one "Engine offline" state than five panes
-    # each reporting it separately. _send() below is a fire-and-forget user action with nowhere else
-    # to surface a failure, so it catches and notifies locally instead.
     async def load(self) -> None:
-        agents = await self.client.call("agents", timeout=5.0)
-        pm = next((a for a in agents.get("items", []) if a.get("role") == "pm"), None)
-        if pm is None:
+        # #108: coalesced (at most one in-flight reload plus one trailing) and auto-retried with
+        # backoff on failure -- see panes/__init__.py's Pane.load(). A failure here only ever
+        # touches the small #chat-working line, never the mounted #chat-thread history, so there's
+        # nothing to preserve/replace the way Tasks/Team's single-Static render needed.
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
+        # #108: a load failure here (an oversized response, a timeout under load, a dropped
+        # connection) must not propagate -- app.py gathers every pane's load() together, so one
+        # uncaught exception used to take the whole TUI down with it. This used to deliberately let
+        # errors propagate on the theory that the orchestrator was better placed to show one
+        # unified "Engine offline" state, but the orchestrator never actually caught anything past
+        # the initial connect() -- an error from here (or any other pane) reached the app itself.
+        try:
+            agents = await self.client.call("agents", timeout=5.0)
+            pm = next((a for a in agents.get("items", []) if a.get("role") == "pm"), None)
+            if pm is None:
+                return
+            self.pm_id = pm["id"]
+            self.pm_name = pm.get("name") or pm["id"]
+            self.border_title = f"CHAT — {self.pm_id}"
+            composer = self.query_one("#chat-composer", Composer)
+            composer.placeholder = f"Message {self.pm_name}…  Enter to send · Shift+Enter for a new line"
+            result = await self.client.call("messages", timeout=5.0, chat_with=self.pm_id, limit=100)
+            thread = self.query_one("#chat-thread", VerticalScroll)
+            for m in reversed(result.get("items", [])):
+                await self._mount_message(thread, m)
+                self._history.append(m)
+                self._last_sender = m.get("sender")
+            self._scroll_to_end(thread)
+            self._pm_running = pm.get("state") == "running"
+            self._pm_activity = pm.get("activity") or ""
+        except Exception as e:
+            self.query_one("#chat-working", Static).update(f"couldn't load: {str(e) or type(e).__name__}")
+            self._retrier.schedule()
             return
-        self.pm_id = pm["id"]
-        self.pm_name = pm.get("name") or pm["id"]
-        self.border_title = f"CHAT — {self.pm_id}"
-        composer = self.query_one("#chat-composer", Composer)
-        composer.placeholder = f"Message {self.pm_name}…  Enter to send · Shift+Enter for a new line"
-        result = await self.client.call("messages", timeout=5.0, chat_with=self.pm_id, limit=100)
-        thread = self.query_one("#chat-thread", VerticalScroll)
-        for m in reversed(result.get("items", [])):
-            await self._mount_message(thread, m)
-            self._history.append(m)
-            self._last_sender = m.get("sender")
-        self._scroll_to_end(thread)
-        self._pm_running = pm.get("state") == "running"
-        self._pm_activity = pm.get("activity") or ""
+        self._retrier.reset()
         self._refresh_working()
 
     def on_troupe_event(self, event: dict) -> None:
