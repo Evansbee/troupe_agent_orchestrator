@@ -4,7 +4,8 @@ Code: `src/troupe/team.py` (tool API), `mcp_server.py` (MCP exposure), `store.py
 
 ## Tools every agent has (MCP server `troupe`, one stdio process per agent run)
 `send_message, check_inbox, ask_human, propose_idea, create_task, update_task, list_tasks, get_task,
-complete_task, review_task, remember, recall, set_status, team` (+ `update_decision`, REQ-COM-034..036).
+complete_task, review_task, remember, recall, set_status, team` (+ `update_decision` REQ-COM-034..036, `save_skill` REQ-COM-041, `share_memory`/`propose_global`
+REQ-COM-045/046, `milestone` REQ-ENG-045).
 - **REQ-COM-001 [x]** Identity comes from `TROUPE_AGENT`; the same API is used natively by local models.
 - **REQ-COM-002 [x]** Tool results are short plain text written for an LLM; errors start with `ERROR:` and say
   what to do instead.
@@ -54,6 +55,26 @@ complete_task, review_task, remember, recall, set_status, team` (+ `update_decis
   - Keys 1–9 pick that option on the hovered question card, or the top card if none is hovered.
   - Ignored whenever a text input has focus (typing "3" in a reply never answers a question).
   - The answered card gets the same feedback as a click (toast + card leaves).
+- **REQ-COM-026 [x]** (#37) Decision questions asked in live chat also live in "Needs you", and answering them in chat
+  closes the card. (Human: "that should be in a needs you box, if I answer in chat, you should close the needs you
+  box with the decision.")
+  - Charter rule, human-approved verbatim (question #7): "If you ask the human a decision question in live chat, ALSO
+    file it with ask_human (with options), so it sits in Needs you. If the human answers in chat, call
+    resolve_question with their answer, then remember() the decision."
+  - `resolve_question(question_id, answer, via="chat")`:
+    - The asker, or the lead or pm, marks an **open** question answered.
+    - The answer is stored exactly like an inbox answer and `recall()` finds it. A new additive column
+      `answered_via` = `chat | inbox` records how it was answered.
+    - No duplicate answer mail goes to the asker.
+    - The card leaves Needs you with an "Answered in chat ✓" toast.
+    - Resolving another agent's question (unless you're the lead or pm), an answered, dismissed or unknown question
+      returns `ERROR:` with guidance.
+  - When human chat arrives and the agent has open questions, the chat wake prompt lists them under "Your open
+    questions (did the human just answer one? if so, resolve_question)".
+  - Nice-to-have: a card filed during a live-chat run shows "also asked in chat".
+  - The API exposes `answered_via` on questions (specs/50-api.md), so the Mac app inherits this.
+  - Test: ask → resolve via chat (card closed, `answered_via=chat`, recall finds it, no duplicate mail); the error
+    cases; open questions in the chat wake prompt; the charter line present verbatim.
 
 ## Memory
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
@@ -97,6 +118,62 @@ complete_task, review_task, remember, recall, set_status, team` (+ `update_decis
   - Test: routing (author, lead, pm, dedup, owner fallback), outcome permissions, the auto-superseded outcome, and
     open-comment prompt inclusion and removal.
 
+## Skills (#39; human: "if an agent learns to do something it should create a skill md file… agents should be able to share skills")
+- **REQ-COM-040 [ ]** Skills follow the Agent Skills standard.
+  - Each skill is a directory `.agents/skills/<name>/SKILL.md` in the project repo: git-tracked and present in every
+    worktree.
+  - YAML frontmatter holds `name` and `description` (when to use it and when not to), plus troupe's fields: `author`
+    (full handle), `created`, `updated`, `source_task`, and optional `roles`. The body is markdown, and supporting
+    files may sit alongside.
+  - `.claude/skills` is a symlink to `.agents/skills`, so Claude and Codex load the same set natively (progressive
+    disclosure: only name + description sit in context until a skill is used).
+  - Whether claude loads project skills with `--strict-mcp-config` and inside worktrees is verified and written down
+    in the task summary.
+- **REQ-COM-041 [ ]** `save_skill(name, description, body, roles=[])` creates or updates a skill.
+  - `name` is slugged. The frontmatter is validated. Updating keeps one directory and bumps `updated`.
+  - The body is secret-scanned (REQ-SAFE-031).
+  - Builders write into their worktree, so the skill merges with the task and QA reviews it with the diff.
+    Non-builders write in main and it's auto-committed.
+  - A feed event records each create or update.
+- **REQ-COM-042 [ ]** The local backend gets `list_skills()` (names + descriptions, filtered by `roles`) and
+  `read_skill(name)`. Its system prompt lists the available skills' names and descriptions.
+- **REQ-COM-043 [ ]** The charter tells agents:
+  - Save a skill when you work out a non-obvious, repeatable procedure: it took several attempts, you'd need it again,
+    or another role would.
+  - Keep it short, concrete and command-level.
+  - Update an existing skill rather than duplicating it.
+  - Never put secrets in skills.
+- **REQ-COM-044 [ ]** The Docs tab has a "Skills" group showing each skill with its author and source task
+  (REQ-GUI-015). Stale skills are reviewed by the architect's health check (REQ-ROLE-004).
+  - Test: save/update/validate, the slug, the symlink, the local tools, secret rejection, and worktree vs main writes.
+
+## Sharing memories, and global scope (#40; human: "agents should be able to share skills and memories if required")
+- **REQ-COM-045 [ ]** `share_memory(memory_id, to="team"|<handle>)`: the author makes one of its private memories
+  team-visible, or mails a copy to one agent. `recall` by teammates then finds it. A feed event records it. Only the
+  author can share its own private memory.
+- **REQ-COM-046 [ ]** Global scope for things about the **human or the craft**, not one project (e.g. "trust codex",
+  "decision questions always go in Needs you", skills useful everywhere).
+  - Stored in `~/.troupe/global.db`, with skills in `~/.troupe/skills/`.
+  - Every project's wake prompts include a compact "Global preferences" section, and `recall` searches global items
+    too, labeled as global.
+  - Promotion is human-approved: `propose_global(memory_id | skill_name, why)` creates a Needs-you card (Yes / No).
+    Only Yes copies the item to global scope; No changes nothing.
+  - Global skills are synced into each project's skill set at run time, without writing the user's own `~/.claude`
+    or `~/.agents`. Writing there needs a separate, explicit second confirmation from the human, because it affects
+    their non-troupe use.
+  - The human can view, edit, demote and delete global items in the Memory tab (a "Global" filter; builds on
+    REQ-COM-033). Agents can't edit or delete global items.
+  - Test: with two temp projects, a promoted memory appears in the other project's prompt and recall, a promoted
+    skill is usable there, and nothing is written to `~/.claude` or `~/.agents`.
+- **REQ-COM-047 [ ]** Seed: once #40 ships, the PM proposes the human's existing preferences (trust codex, the
+  Needs-you rule, visual taste) as the first global items. They go through the same Yes/No cards.
+
+- **REQ-COM-048 [ ]** Retiring skills: the lead or architect may retire a **project** skill by moving it to
+  `.agents/skills/_retired/<name>/` with a `retired_reason` (and who and when) in its frontmatter, which logs a feed
+  event. Retired skills aren't loaded by any backend. Only the human can retire or delete **global** items
+  (REQ-COM-046). Test: retire moves the dir and removes the skill from `list_skills` and the synced sets; a non-lead or
+  non-architect gets `ERROR:`.
+
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for COM-024/025/032/033 (from backlog #4,#8,#12). Team room with no @mention
@@ -105,3 +182,7 @@ complete_task, review_task, remember, recall, set_status, team` (+ `update_decis
 - 2026-09-23 — COM-005 tagged #25; full handles wherever communication is shown (human, via pm msg #64).
 - 2026-09-23 — COM-034..037 major decisions, human comment threads and outcomes (human request via pm; #27, after
   #8). New tool `update_decision`.
+- 2026-09-23 — COM-040..044 skills (#39), COM-045..047 memory sharing and human-approved global scope (#40); human
+  request via pm.
+- 2026-09-23 — COM-048 skill retirement (pm's call; closes the open question).
+- 2026-09-23 — COM-026 resolve questions answered in chat (#37; human request; charter line human-approved).

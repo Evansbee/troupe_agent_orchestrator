@@ -31,6 +31,8 @@ class Data:
         self.runs_1h = 0
         self.new_messages: list[dict] = []
         self.new_questions: list[dict] = []
+        self.new_chat_answers: list[dict] = []
+        self._answer_event = None
         self._max_msg = -1
         self._max_q = -1
         self.docs: list[Path] = []
@@ -75,11 +77,25 @@ class Data:
         self.agents = s.agents()
         self.agent_by_id = {a["id"]: a for a in self.agents}
         self.tasks = s.tasks(limit=800)
+        checking = s.kv_get("checking_task")
+        failed = {r["key"] for r in s.q("SELECT key FROM kv WHERE key LIKE 'check_failed.%' AND value='true'")}
+        for task in self.tasks:
+            task["merge_check"] = ("checking…" if task["id"] == checking else
+                                   "checks failed" if f"check_failed.{task['id']}" in failed else "")
         self.questions = s.questions("open")
         self.events = s.events(limit=300)
+        answer_event = s.max_event_id()
+        if self._answer_event is not None:
+            self.new_chat_answers += s.q(
+                "SELECT q.* FROM events e JOIN questions q ON e.ref='q:' || q.id "
+                "WHERE e.id>? AND e.id<=? AND e.kind='answer' AND q.answered_via='chat' ORDER BY e.id",
+                self._answer_event, answer_event)
+        self._answer_event = answer_event
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
-        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit")}
+        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
+                                                       "limit.claude", "limit.codex", "limit.local",
+                                                       "config_error.team.yaml", "config_error.troupe.toml")}
         self.cost_24h = s.scalar("SELECT SUM(cost) FROM runs WHERE started>?", now - 86400, default=0.0)
         self.runs_1h = s.scalar("SELECT COUNT(*) FROM runs WHERE started>? AND chat=0", now - 3600, default=0)
         self.chat_unread = {r["sender"]: r["n"] for r in s.q(
@@ -97,6 +113,13 @@ class Data:
             self.docs = self.scan_docs()
 
     # ── derived ───────────────────────────────────────────────────────────
+    def limit_label(self, backend: str) -> str:
+        until = self.kv.get(f"limit.{backend}") or 0
+        if until <= time.time():
+            return ""
+        reset = time.strftime("%H:%M", time.localtime(until))
+        return f"{backend.title()} limited until {reset}"
+
     @property
     def engine_alive(self) -> bool:
         hb = self.kv.get("heartbeat") or 0

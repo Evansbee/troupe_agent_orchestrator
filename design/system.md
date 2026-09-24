@@ -64,6 +64,16 @@ pills, graph nodes, sidebar). `data.color_of(agent_id)` resolves an agent to its
 | Builder | `(52,211,153)` green |
 | QA / Tester | `(251,146,60)` orange |
 | Gadfly | `(248,113,113)` red |
+| Architect | `(191,148,82)` bronze | *(proposed — not yet in `roles.py`; see below)* |
+| Researcher | `(192,106,224)` orchid | *(proposed — not yet in `roles.py`; see below)* |
+
+**Architect and Researcher** (spec msg #192): `roles.py` doesn't define these roles yet, so nothing
+assigns them a color — the Mac spec falls back to whatever the API reports until one exists. Proposing
+bronze and orchid here now so both docs and the API have a real value to build against: bronze sits
+apart from Lead's amber (deeper, more muted, not mistakable for it at a glance) and reads as
+"structural/foundational," fitting the Architect's gatekeeping role; orchid fills the actual gap in the
+wheel between PM's pink and Designer's violet rather than crowding either. Neither collides with an
+existing role, `ACCENT`, or `ACCENT2`. Once these roles land in `roles.py`, use these values verbatim.
 
 Role colors and semantic colors share hues (green = builder *and* success, orange = QA *and*
 throttled, red = gadfly *and* error). This is intentional economy, not collision — the two systems
@@ -80,7 +90,11 @@ Faces (`core.py FACES`, loaded via `ui.font(face, size)`):
 
 Sizes in use today are ad hoc (anywhere from 10 to 21px, in ~0.5px steps, chosen per call site).
 There is no `theme.py` type-scale constant yet — see polish task below. Until that lands, match the
-nearest existing usage rather than picking a new number:
+nearest existing usage rather than picking a new number.
+
+Since #23, every size below is the **logical, un-zoomed baseline** — a global zoom factor (default
+115%, ⌘=/⌘-/⌘0) scales everything from these numbers at draw time. Design against this table as-is;
+don't hand-adjust a size to compensate for zoom, that's exactly what the global factor is for.
 
 | Role | ~Size | Face | Example |
 |---|---|---|---|
@@ -247,6 +261,34 @@ components/primitives — no new visual language.
 - `@mentions` inside room message text render as `ACCENT`-colored inline text (treat as an implicit
   markdown span, styled like the `link` inline style in `ui._spans`) — including unknown mentions,
   which still render colored even though they're inert.
+
+### REQ-GUI-029 — engine pill service states
+Extends the existing top-bar engine-state pill (today: Live / Paused / Throttled / Engine offline)
+with the states the service model adds. Same shape throughout — `alpha(color, 0.14)` fill, colored dot,
+label — only the color/label/action change:
+
+| State | Color | Label | Action |
+|---|---|---|---|
+| Engine offline | `RED` | "Engine offline" | **Start team** button inline in the pill |
+| Reloading | `YELLOW` | "Reloading… 2 runs draining" (live count) | — |
+| Restarting (after a crash) | `YELLOW` | "Restarting…" | — |
+| Crashed (crash loop) | `RED` | "Crashed — see engine.log" | **Start team** button inline in the pill |
+| Stopped (kill switch, REQ-SAFE-010) | `RED`, no pulse — deliberately inert, not "alarm-flashing" | "Stopped" | **Resume** button inline in the pill, human-only |
+
+Reloading/Restarting are transient and non-actionable (the engine is already handling it) — no button,
+just a status label, same as today's "Throttled" pill. Offline, Crashed, and Stopped all need a way
+back in, so each carries an inline primary-button treatment in the pill (matches `design/projects.md`'s
+rail "Start" action for the same states, applied here to the *current* project's own pill).
+
+**Stopped takes precedence over every other state** (REQ-GUI-029) — if the kill switch has fired, the
+pill shows Stopped regardless of what else might be true underneath (reloading, throttled, etc.), since
+nothing else matters until the human resumes.
+
+**Stop everything** (REQ-SAFE-010, ⌘⇧.) is a separate, always-visible top-bar control — not a pill
+state, a permanent button (small, `danger`-kind ghost button, far right of the top bar, always present
+regardless of engine state) that fires the kill switch for the active project. Deliberately not hidden
+inside a menu: this is a safety control, and safety controls that require hunting for them are safety
+controls that don't get used in time.
 
 ### REQ-ENG-016 — rate-limited backend pill
 - Reuses the existing top-bar engine-state pill component (`app.draw_top`'s Live/Paused/Throttled

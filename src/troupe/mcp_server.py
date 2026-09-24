@@ -7,13 +7,13 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from .config import load
+from .config import load_runtime
 from .store import Store
 from .team import TeamAPI
 
 
 def build_server(root: Path, agent_id: str) -> tuple[MCPServer, TeamAPI]:
-    cfg = load(root)
+    cfg = load_runtime(root)
     api = TeamAPI(cfg, Store(cfg.db_path), agent_id)
     server = MCPServer(
         "troupe",

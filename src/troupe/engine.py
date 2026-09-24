@@ -8,12 +8,13 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
+from collections import deque
 from pathlib import Path
 
-from . import gitops
+from . import gitops, config as config_mod
 from .config import AgentCfg, Config
 from .roles import CHARTER, get_role
-from .runners import RunSpec, make_runner, Runner
+from .runners import RunSpec, make_runner, Runner, usage_limit, reported_reset
 from .store import OPEN_STATUSES, Store, now
 from .team import ago, fmt_message, fmt_task_full, fmt_task_line
 
@@ -53,6 +54,65 @@ class Engine:
         self.pokes: set[str] = set()
         self._stop = threading.Event()
         self.thread: threading.Thread | None = None
+        self._merge_task: asyncio.Task | None = None
+        self._merge_lock = threading.Lock()
+        self._config_stamps = self.config_stamps()
+        self._session_versions: dict[str, int] = {}
+        self.save_config_snapshot()
+
+    def save_config_snapshot(self) -> None:
+        self.store.kv_set("config.last_good", {"toml": self.cfg.toml_data, "team": self.cfg.team_data})
+
+    def config_stamps(self) -> dict[str, tuple[int, int] | None]:
+        stamps = {}
+        for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
+            try:
+                stat = (self.cfg.state_dir / name).stat()
+                stamps[name] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamps[name] = None
+        return stamps
+
+    def reload_config(self) -> None:
+        for name, stamp in self.config_stamps().items():
+            if stamp == self._config_stamps.get(name):
+                continue
+            self._config_stamps[name] = stamp
+            try:
+                team = config_mod.read_team(self.cfg.root) if name == config_mod.TEAM_FILE else self.cfg.team_data
+                raw = config_mod.read_toml(self.cfg.root) if name == config_mod.CONFIG_FILE else self.cfg.toml_data
+                updated = config_mod.load(self.cfg.root, team_data=team, toml_data=raw)
+            except (ValueError, TypeError, KeyError) as e:
+                message = f"{name} invalid: {e}"
+                self.store.kv_set(f"config_error.{name}", message)
+                self.store.event("system", "error", message, significant=False)
+                lead = next(a.id for a in self.cfg.agents if a.role == "lead")
+                self.store.send("system", lead, message, subject=f"{name} invalid", kind="system")
+                continue
+            self.sync_config_agents(updated)
+            self.cfg = updated
+            self.save_config_snapshot()
+            self.store.kv_set(f"config_error.{name}", "")
+            self.store.event("system", "config", f"Reloaded {name}", significant=False)
+
+    def sync_config_agents(self, updated: Config) -> None:
+        for old in self.store.agents():
+            aid = old["id"]
+            new = updated.agent(aid)
+            if not new or old["role"] != new.role:
+                tasks = self.store.q("SELECT * FROM tasks WHERE status NOT IN ('done','cancelled') "
+                                     "AND (assignee=? OR reviewer=?)", aid, aid)
+                for task in tasks:
+                    self.store.update_task(task["id"], actor="system", status="ready", assignee=None,
+                                           reviewer=None, next_attempt_at=0,
+                                           event_text=f"#{task['id']} returned to ready after {aid} changed")
+            if not new or old["backend"] != new.backend:
+                self._session_versions[aid] = self._session_versions.get(aid, 0) + 1
+                self.store.set_agent(aid, session_id=None, session_runs=0)
+                self.store.kv_set(f"local_history:{aid}", [])
+        self.store.sync_agents(updated.agents)
+        for a in updated.agents:
+            self.store.set_agent(a.id, enabled=int(a.enabled))
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start_thread(self) -> threading.Thread:
@@ -65,11 +125,33 @@ class Engine:
 
     def recover(self) -> None:
         s = self.store
-        s.sync_agents(self.cfg.agents)
+        self.sync_config_agents(self.cfg)
+        for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
+            s.kv_set(f"config_error.{name}", "")
         s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
         s.x("UPDATE agents SET state='idle', current_run=NULL, activity='' WHERE state='running'")
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
+        s.kv_set("checking_task", None)
+        self.cleanup_worktrees()
+
+    def cleanup_worktrees(self) -> None:
+        try:
+            for task_id, path in gitops.task_worktrees(self.cfg.root, self.cfg.worktrees_dir):
+                task = self.store.task(task_id)
+                if task and task["status"] not in ("done", "cancelled"):
+                    continue
+                # An open task may point to a tree with a different legacy name/id.
+                if self.store.scalar("SELECT 1 FROM tasks WHERE worktree=? AND status NOT IN ('done','cancelled')",
+                                     str(path)):
+                    continue
+                try:
+                    gitops.remove_worktree(self.cfg.root, path)
+                except gitops.GitError as e:
+                    self.store.event("system", "error", str(e), significant=False)
+            gitops.prune_worktrees(self.cfg.root)
+        except gitops.GitError as e:
+            self.store.event("system", "error", f"Worktree cleanup failed: {e}", significant=False)
 
     async def main(self) -> None:
         self.recover()
@@ -84,13 +166,23 @@ class Engine:
         for runner, _task, _w in list(self.running.values()):
             runner.kill()
         await asyncio.sleep(0.5)
+        if self._merge_task is not None:
+            await self._merge_task
 
     # ── the loop ──────────────────────────────────────────────────────────
     async def tick(self) -> None:
         s = self.store
         s.kv_set("heartbeat", now())
+        self.reload_config()
         self.handle_commands()
-        await asyncio.to_thread(self.process_approved)
+        if self._merge_task is not None and self._merge_task.done():
+            try:
+                self._merge_task.result()
+            except Exception as e:
+                s.event("system", "error", f"Merge worker failed: {e}", significant=False)
+            self._merge_task = None
+        if self._merge_task is None:
+            self._merge_task = asyncio.create_task(asyncio.to_thread(self.process_approved))
         paused = bool(s.kv_get("paused", False))
         if not paused:
             self.dispatch()
@@ -189,23 +281,88 @@ class Engine:
         fields: dict = {"status": "in_progress"}
         if role.works_in_task_tree and not t["worktree"]:
             try:
+                existed = (self.cfg.worktrees_dir / f"t{t['id']}").exists()
                 branch, path = gitops.create_worktree(self.cfg.root, self.cfg.worktrees_dir, t["id"], t["title"])
                 fields.update(branch=branch, worktree=str(path))
+                if not existed and self.cfg.git.setup:
+                    self.store.kv_set(f"setup.{path}", {"status": "pending", "command": self.cfg.git.setup})
             except gitops.GitError as e:
                 self.store.event("system", "error", f"worktree for #{t['id']} failed: {e}", significant=False)
         self.store.update_task(t["id"], actor=a.id, event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
         return self.store.task(t["id"]) or t
 
     def process_approved(self) -> None:
+        if not self._merge_lock.acquire(blocking=False):
+            return
+        try:
+            self._process_approved()
+        finally:
+            self.store.kv_set("checking_task", None)
+            self._merge_lock.release()
+
+    def check_failed(self, task: dict, output: str) -> None:
+        note = f"Checks failed on #{task['id']}:\n{output}"
+        self.store.update_task(task["id"], actor="system", status="in_progress", next_attempt_at=0,
+                               review_notes=note, event_text=f"Checks failed on #{task['id']}")
+        self.store.kv_set(f"check_failed.{task['id']}", True)
+        if task["assignee"]:
+            self.store.send("system", task["assignee"], note + "\nFix the failure and call complete_task for QA review.",
+                            subject=f"#{task['id']} checks failed", task_id=task["id"], kind="system")
+
+    def _process_approved(self) -> None:
         s = self.store
         for t in s.tasks(("approved",)):
+            if self._stop.is_set():
+                return
+            if any(w.task and w.task["id"] == t["id"] for _, _, w in list(self.running.values())):
+                continue
             if not t["branch"]:
                 s.update_task(t["id"], actor="system", status="done", event_text=f"#{t['id']} done")
                 continue
-            ok, out = gitops.merge_branch(self.cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
+            cfg = self.cfg
+            if cfg.git.check:
+                s.kv_set("checking_task", t["id"])
+                tree = Path(t["worktree"]) if t["worktree"] else None
+                try:
+                    if tree is None or not tree.exists():
+                        self.check_failed(t, "Task worktree is missing; restore it and resubmit.")
+                        continue
+                    main_head, task_head = gitops.prepare_check(cfg.root, tree, t["branch"])
+                    log_path = cfg.state_dir / "checks" / f"t{t['id']}.log"
+                    passed, outcome = gitops.run_check(tree, cfg.git.check, cfg.git.check_timeout, log_path, self._stop)
+                    current = s.task(t["id"])
+                    if self._stop.is_set() or not current or current["status"] != "approved":
+                        continue
+                    if not passed:
+                        with log_path.open(errors="replace") as log:
+                            tail = "".join(deque(log, maxlen=50))[-12000:]
+                        self.check_failed(t, tail or outcome)
+                        continue
+                    ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
+                                                   f"Merge #{t['id']}: {t['title']}", self._stop)
+                    if self._stop.is_set():
+                        continue
+                    if not ok and out.startswith("Repository changed"):
+                        with log_path.open("a") as log:
+                            log.write(out + "\n")
+                        self.check_failed(t, out)
+                        continue
+                except gitops.GitError as e:
+                    ok, out = False, str(e)
+                except OSError as e:
+                    self.check_failed(t, f"Could not run checks: {e}")
+                    continue
+                finally:
+                    s.kv_set("checking_task", None)
+            else:
+                ok, out = gitops.merge_branch(cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
-                if t["worktree"]:
-                    gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                try:
+                    if t["worktree"]:
+                        gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))
+                    gitops.delete_branch(self.cfg.root, t["branch"])
+                except gitops.GitError as e:
+                    s.event("system", "error", f"Merged #{t['id']}, but cleanup failed: {e}", significant=False)
                 s.update_task(t["id"], actor="system", status="done", worktree=None,
                               event_text=f"Merged #{t['id']} {t['title']} into main")
                 if t["assignee"]:
@@ -224,6 +381,23 @@ class Engine:
                            f"complete_task again.\n\n{out[-1200:]}",
                            subject=f"#{t['id']} merge conflict", task_id=t["id"], kind="system")
 
+    def backend_limited(self, backend: str) -> bool:
+        return (self.store.kv_get(f"limit.{backend}", 0) or 0) > now()
+
+    def record_limit(self, backend: str, until: float, reported: bool = True) -> None:
+        key = f"limit.{backend}"
+        previous = self.store.kv_get(key, 0) or 0
+        meta = self.store.kv_get(f"limit_meta.{backend}", {})
+        # Older timestamps lack provenance; preserve them as reported limits.
+        was_reported = meta.get("reported", True) if meta.get("until") == previous else True
+        if previous > now():
+            if was_reported and not reported:
+                return
+            if was_reported == reported:
+                until = max(previous, until)
+        self.store.kv_set(key, until)
+        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported})
+
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:
         s = self.store
@@ -233,7 +407,7 @@ class Engine:
         review_queue = [t for t in s.tasks(("review",))]
         for a in self.cfg.agents:
             row = db_agents.get(a.id)
-            if a.id in self.running or not row or not row["enabled"]:
+            if a.id in self.running or not row or not row["enabled"] or self.backend_limited(a.backend):
                 continue
             fails, retry_after = self.failures.get(a.id, (0, 0))
             if t_now < retry_after:
@@ -270,6 +444,8 @@ class Engine:
     # ── running an agent ──────────────────────────────────────────────────
     async def launch(self, w: Wake) -> None:
         a, s = w.agent, self.store
+        if self.backend_limited(a.backend):
+            return
         self.pokes.discard(a.id)
         task = w.task
         role = get_role(a.role)
@@ -289,21 +465,70 @@ class Engine:
         row = s.agent(a.id) or {}
         seen = s.max_event_id()
         prompt = self.build_prompt(a, w, msgs, task, row)
-        run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat)
+        system = self.system_prompt(a)
+        run_id = s.start_run(a.id, w.reason, task["id"] if task else None, str(cwd), w.chat,
+                             prompt=prompt, system=system)
         s.set_agent(a.id, state="running", current_run=run_id, activity=REASONS[w.reason], last_run_at=now(),
                     last_event_seen=seen)
         s.event(a.id, "run", f"{a.id} woke up: {REASONS[w.reason]}", ref=f"run:{run_id}", significant=False)
         runner = make_runner(a.backend)
-        spec = RunSpec(cfg=self.cfg, agent=a, system=self.system_prompt(a), prompt=prompt, cwd=cwd,
+        spec = RunSpec(cfg=self.cfg, agent=a, system=system, prompt=prompt, cwd=cwd,
                        session_id=row.get("session_id"), log_path=self.cfg.runs_dir / f"{run_id:06d}-{a.id}.jsonl")
-        atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task))
+        atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task, self._session_versions.get(a.id, 0)))
         self.running[a.id] = (runner, atask, w)
 
+    async def setup_worktree(self, runner: Runner, spec: RunSpec, task: dict | None, run_id: int) -> None:
+        if not task or spec.cwd == self.cfg.root or runner.cancelled:
+            return
+        key = f"setup.{spec.cwd}"
+        setup = self.store.kv_get(key, {})
+        if setup.get("status") == "pending":
+            setup.update(status="started", error="Worktree setup was interrupted before it finished.")
+            self.store.kv_set(key, setup)
+            spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.store.set_agent(spec.agent.id, activity="Setting up worktree…")
+            try:
+                with spec.log_path.open("a") as log:
+                    log.write(json.dumps({"setup_command": setup["command"]}) + "\n")
+                    runner.proc = await asyncio.create_subprocess_shell(
+                        setup["command"], cwd=spec.cwd, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                    if runner.cancelled:
+                        runner.kill()
+                    assert runner.proc.stdout
+                    tail = ""
+                    while chunk := await runner.proc.stdout.read(65536):
+                        text = chunk.decode(errors="replace")
+                        log.write(json.dumps({"setup_output": text}) + "\n")
+                        log.flush()
+                        tail = (tail + text)[-2000:]
+                    code = await runner.proc.wait()
+                    log.write(json.dumps({"setup_exit": code}) + "\n")
+                    setup["error"] = f"Worktree setup failed (exit {code}):\n{tail}" if code else ""
+            except OSError as e:
+                setup["error"] = f"Worktree setup failed: {e}"
+            setup["status"] = "finished"
+            self.store.kv_set(key, setup)
+            if setup["error"]:
+                self.store.task_note(task["id"], "system", setup["error"])
+                self.store.run_line(run_id, "error", setup["error"])
+        if setup.get("error"):
+            footer = "\n\nPrinciple 0 applies: the human comes first."
+            spec.prompt = (spec.prompt.removesuffix(footer) + "\n\n## Worktree setup\n" + setup["error"]
+                           + "\nContinue the task; fix setup if needed." + footer)
+
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
-                   task: dict | None) -> None:
+                   task: dict | None, session_version: int = 0) -> None:
         a, s = spec.agent, self.store
+        limited = False
 
         def emit(kind: str, text: str) -> None:
+            nonlocal limited
+            if kind == "backend_limit":
+                limited = True
+                info = json.loads(text)
+                self.record_limit(a.backend, info["until"], info.get("reported", True))
+                return
             if kind == "ratelimit":
                 try:
                     s.kv_set("claude_ratelimit", {**json.loads(text), "at": now()})
@@ -315,24 +540,47 @@ class Engine:
                 s.set_agent(a.id, activity=" ".join(text.split())[:160])
 
         try:
-            res = await runner.run(spec, emit)
+            await self.setup_worktree(runner, spec, task, run_id)
+            if runner.cancelled:
+                from .runners import RunResult
+                res = RunResult(ok=False, error="stopped during setup")
+            else:
+                # setup_worktree may have appended failure context to spec.prompt; re-persist so the
+                # inspector shows exactly what's about to be sent. The launch()-time write already
+                # covers a crash during setup itself (nothing to update to in that case).
+                s.update_run_prompt(run_id, spec.prompt)
+                res = await runner.run(spec, emit)
         except Exception as e:
             from .runners import RunResult
             res = RunResult(ok=False, error=repr(e))
             emit("error", traceback.format_exc()[-800:])
         finally:
             self.running.pop(a.id, None)
-        status = "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
+        if res.extra.get("limit_until"):
+            limited = True
+            self.record_limit(a.backend, res.extra["limit_until"], res.extra.get("limit_reported", True))
+        elif not limited and not res.ok and a.backend in ("claude", "codex") and usage_limit(res.error):
+            limited = True
+            reset = reported_reset({"message": res.error}, now())
+            self.record_limit(a.backend, now() + 900 if reset is None else reset, reset is not None)
+        status = "limited" if limited else "ok" if res.ok else ("stopped" if runner.cancelled else "failed")
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])
         row = s.agent(a.id) or {}
         fields = dict(state="idle", current_run=None, activity="", runs=(row.get("runs") or 0) + 1,
                       cost=(row.get("cost") or 0) + res.cost, tokens=(row.get("tokens") or 0) + res.tokens)
-        if res.session_id:
+        if session_version != self._session_versions.get(a.id, 0):
+            s.kv_set(f"local_history:{a.id}", [])
+        if res.session_id and self.cfg.agent(a.id) and session_version == self._session_versions.get(a.id, 0):
             fields["session_id"] = res.session_id
             fields["session_runs"] = (row.get("session_runs") or 0) + 1
         s.set_agent(a.id, **fields)
 
+        if limited:
+            s.mark_unread([m["id"] for m in msgs])
+            reset = time.strftime("%H:%M", time.localtime(s.kv_get(f"limit.{a.backend}")))
+            s.event(a.id, "run", f"{a.backend.title()} limited until {reset}", significant=False)
+            return
         if not res.ok and not runner.cancelled:
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
@@ -416,7 +664,9 @@ class Engine:
                      + ("\n".join(fmt_task_line(t) for t in open_tasks[:60]) or "(empty board)"))
         pending_q = s.q("SELECT * FROM questions WHERE asker=? AND status='open'", a.id)
         if pending_q:
-            p.append("\n## Your questions still awaiting the human (don't re-ask)\n"
+            heading = ("Your open questions (did the human just answer one? if so, resolve_question)"
+                       if w.chat else "Your questions still awaiting the human (don't re-ask)")
+            p.append(f"\n## {heading}\n"
                      + "\n".join(f"- #{q['id']}: {q['question']}" for q in pending_q))
         decisions = s.memories(kind="decision", limit=10, include_private_of=a.id)
         if decisions:
@@ -436,6 +686,7 @@ class Engine:
                 p.append("\n## What happened since you last looked\n"
                          + "\n".join(f"- {ago(e['ts'])}: {e['text']}" for e in evs[-25:]))
         p.append("\n## Now\n" + self.instruction(a, w, task, bool(msgs)))
+        p.append("\nPrinciple 0 applies: the human comes first.")
         return "\n".join(p)
 
     def instruction(self, a: AgentCfg, w: Wake, task: dict | None, has_msgs: bool) -> str:
@@ -449,7 +700,10 @@ class Engine:
                     "Your FINAL message text in this session is shown to them as your chat reply — write it "
                     "conversationally in markdown, concise, ending with the most useful next question if you "
                     "need input. Act on what they said with your tools first (update docs, brief teammates, "
-                    "record decisions with remember). Don't also send_message the human the same content."
+                    "record decisions with remember). Check your open questions against what the human just said; "
+                    "if they answered one, call resolve_question with their answer, then remember the decision. "
+                    "File any new decision question with ask_human (with options) as well as asking in chat. "
+                    "Don't also send_message the human the same content."
                     + extra)
         if w.reason == "review" and task:
             stat = gitops.diffstat(self.cfg.root, task["branch"]) if task.get("branch") else ""

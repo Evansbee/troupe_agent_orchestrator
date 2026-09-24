@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pyray as rl
+
 from ..roles import get_role
 from ..team import ago
 from . import theme as T
@@ -22,6 +24,24 @@ def clock(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+def _copy(app: "App", text: str) -> None:
+    """Copy `text` and toast. Also used to drain `ui.copied_text` after a `ui.markdown()` call, since
+    a code-block's own copy button is handled inside markdown()'s draw loop, not exposed as a return
+    value — clearing it here (whether we just set it or are draining it) keeps it from being picked
+    up a second time by some other markdown() call later in the same frame."""
+    app.ui.copy(text)
+    app.toast("Copied", T.GREEN)
+    app.ui.copied_text = None
+
+
+def _drain_copy_toast(app: "App") -> None:
+    """Call right after ui.markdown(): shows the toast if its code-block copy button was just clicked
+    (the clipboard write already happened inside markdown()'s own draw loop)."""
+    if app.ui.copied_text:
+        app.toast("Copied", T.GREEN)
+        app.ui.copied_text = None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Question cards (right-hand "Needs you" inbox)
 # ════════════════════════════════════════════════════════════════════════════
@@ -33,6 +53,7 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
     y = (r.y if r else 0) + pad
     col = d.color_of(q["asker"])
     if r:
+        hov = ui.hover(r)
         ui.rect(r, T.PANEL2, 10)
         ui.stroke(r, alpha(col, 0.28), 10)
         ui.rect(Rect(r.x, r.y + 10, 3, r.h - 20), col, 1.5)
@@ -51,6 +72,11 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
         ui.text(xr.x + 4, xr.y + 1, "×", 15, T.TEXT_DIM, "med")
         if ui.click(xr):
             d.dismiss(q["id"])
+        if ui.copy_button(Rect(xr.x - 54, y, 46, 20), hov, "Copy question"):
+            parts = [q["question"]]
+            if q["context"]:
+                parts.append(q["context"])
+            _copy(app, "\n\n".join(parts))
     y += 28
     # question
     qsize = 14
@@ -186,7 +212,8 @@ def chat_view(app: "App", r: Rect) -> None:
         y = _chat_empty(app, a, convo, y)
     for m in thread:
         y = _bubble(app, m, convo, y, maxw) + 14
-    waiting = a["state"] == "running" and (not thread or thread[-1]["sender"] == "human")
+    waiting = (a["state"] == "running" and (not thread or thread[-1]["sender"] == "human")) or (
+        bool(d.limit_label(a["backend"])) and bool(thread) and thread[-1]["sender"] == "human")
     if waiting:
         y = _typing(app, a, convo, y, maxw) + 14
     ui.scroll_end(sc, y + sc.offset - convo.y + 8)
@@ -247,9 +274,14 @@ def _bubble(app: "App", m: dict, area: Rect, y: float, maxw: float) -> float:
     pad = 14
     inner_w = maxw - 2 * pad
     md_h = ui.md_layout(body, inner_w, 14)[1]
+    name = "You" if human else d.name_of(m["sender"])
+    # name + timestamp + the hover copy button, so a short reply from a long-named agent never
+    # shrink-wraps narrower than its own header (which would otherwise collide with the button)
+    header_w = ui.measure(name, 12, "bold") + 8 + ui.measure(clock(m["ts"]), 11) + 16 + 46
     # shrink-wrap short single-line messages
     if "\n" not in body and ui.measure(body, 14) < inner_w - 4:
-        inner_w = max(ui.measure(body, 14) + 2, 160 if subject else 60, ui.measure(subject, 12, "med") if subject else 0)
+        inner_w = max(ui.measure(body, 14) + 2, 160 if subject else 60,
+                      ui.measure(subject, 12, "med") if subject else 0, header_w)
         md_h = ui.md_layout(body, inner_w, 14)[1]
     head_h = 20
     sub_h = 20 if subject else 0
@@ -260,28 +292,34 @@ def _bubble(app: "App", m: dict, area: Rect, y: float, maxw: float) -> float:
     if br.b < area.y - 50 or br.y > area.b + 50:
         return br.b
     col = d.color_of(m["sender"])
+    hov = ui.hover(br)
     if human:
         ui.rect(br, alpha(T.ACCENT, 0.16), 14)
         ui.stroke(br, alpha(T.ACCENT, 0.35), 14)
     else:
         ui.rect(br, T.PANEL2, 14)
         ui.stroke(br, T.BORDER, 14)
-    name = "You" if human else d.name_of(m["sender"])
     nx = br.x + pad
     nx += ui.text(nx, br.y + 10, name, 12, T.TEXT if human else col, "bold") + 8
     ui.text(nx, br.y + 11, clock(m["ts"]), 11, T.TEXT_FAINT)
+    if ui.copy_button(Rect(br.r - 58, br.y + 8, 46, 20), hov, "Copy message"):
+        _copy(app, body)
+    if hov and ui.cmd and rl.is_key_pressed(rl.KeyboardKey.KEY_C):
+        _copy(app, body)
     yy = br.y + 10 + head_h
     if subject:
         ui.text_fit(br.x + pad, yy, subject, inner_w, 12, T.TEXT_DIM, "med")
         yy += sub_h
     ui.markdown(br.x + pad, yy, body, inner_w, 14)
+    _drain_copy_toast(app)
     return br.b
 
 
 def _typing(app: "App", a: dict, area: Rect, y: float, maxw: float) -> float:
     ui, d = app.ui, app.data
     col = d.color_of(a["id"])
-    act = a["activity"] or "thinking…"
+    limit = d.limit_label(a["backend"])
+    act = limit or a["activity"] or "thinking…"
     w = min(maxw, max(200, ui.measure(act, 12) + 80))
     br = Rect(area.x + 24, y, w, 52)
     ui.rect(br, T.PANEL2, 14)
@@ -289,7 +327,7 @@ def _typing(app: "App", a: dict, area: Rect, y: float, maxw: float) -> float:
     for i in range(3):
         ph = ui.t * 5 - i * 0.7
         ui.circle(br.x + 20 + i * 12, br.y + 18 + math.sin(ph) * 2.5, 3.2, alpha(col, 0.5 + 0.5 * max(0, math.sin(ph))))
-    ui.text_fit(br.x + 58, br.y + 10, f"{a['name']} is working", w - 70, 12, col, "med")
+    ui.text_fit(br.x + 58, br.y + 10, f"{a['name']} is waiting" if limit else f"{a['name']} is working", w - 70, 12, col, "med")
     ui.text_fit(br.x + 16, br.y + 30, act, w - 30, 12, T.TEXT_DIM)
     return br.b
 
@@ -457,6 +495,9 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     h = pad + 18
     th = ui.text_height(t["title"], iw, 13, "med", 1.4, 3)
     h += th + 8 + 18 + pad
+    check = t.get("merge_check", "")
+    if check:
+        h += 24
     if not draw:
         return h
     r = Rect(x, y, w, h)
@@ -477,6 +518,9 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     ty = y + pad + 20
     ui.text_block(x + pad, ty, t["title"], iw, 13, T.TEXT, "med", 1.4, 3)
     fy = ty + th + 8
+    if check:
+        ui.pill(x + pad, fy, check, T.ORANGE if check == "checking…" else T.RED, 10, h=18)
+        fy += 24
     who = t["assignee"]
     if who:
         col = d.color_of(who)
@@ -574,8 +618,11 @@ def mail_view(app: "App", r: Rect) -> None:
             ui.text(rr.r - 16 - ui.measure(ts, 11), rr.y + 12, ts, 11, T.TEXT_FAINT)
             if not m["read_at"] and m["recipient"] != "human":
                 ui.pill(rr.r - 80 - ui.measure(ts, 11), rr.y + 9, "unread", T.ACCENT, 10, h=18)
+            if ui.copy_button(Rect(rr.r - 54, rr.y + 6, 46, 20), hov, "Copy message"):
+                _copy(app, (m["subject"] + "\n\n" + m["body"]) if m["subject"] else m["body"])
             if open_:
                 ui.markdown(rr.x + 44, rr.y + 34, m["body"], w - 60, 13.5)
+                _drain_copy_toast(app)
             else:
                 ui.text_block(rr.x + 44, rr.y + 34, m["body"], w - 60, 12.5, T.TEXT_DIM, "ui", 1.45, 2)
             if hov:
@@ -617,6 +664,7 @@ def memory_view(app: "App", r: Rect) -> None:
             + (why_h + 6 if why_h else 0) + 14
         rr = Rect(body.x + 16, y, w, h)
         if rr.b > body.y - 10 and rr.y < body.b + 10:
+            hov = ui.hover(rr)
             ui.rect(rr, T.PANEL2, 10)
             kc = KIND_COLORS.get(m["kind"], T.TEXT_DIM)
             ui.rect(Rect(rr.x, rr.y + 10, 3, rr.h - 20), kc, 1.5)
@@ -627,11 +675,19 @@ def memory_view(app: "App", r: Rect) -> None:
             col = d.color_of(m["agent"])
             px += ui.text(px, rr.y + 14, d.name_of(m["agent"]), 12, col, "med") + 8
             ui.text(px, rr.y + 15, ago(m["ts"]), 11, T.TEXT_FAINT)
+            if ui.copy_button(Rect(rr.r - 54, rr.y + 8, 46, 20), hov, "Copy memory"):
+                parts = [m["title"]]
+                if m["content"]:
+                    parts.append(m["content"])
+                if m["rationale"]:
+                    parts.append("Why: " + m["rationale"])
+                _copy(app, "\n\n".join(parts))
             yy = rr.y + 40
             yy += ui.text_block(rr.x + 16, yy, m["title"], w - 32, 14.5, T.TEXT, "bold")
             if m["content"]:
                 yy += 6
                 yy += ui.markdown(rr.x + 16, yy, m["content"], w - 32, 13.5, T.TEXT_DIM)
+                _drain_copy_toast(app)
             if m["rationale"]:
                 yy += 6
                 ui.text_block(rr.x + 16, yy, "Why: " + m["rationale"], w - 32, 12.5, mix(kc, T.TEXT_DIM, 0.5))
@@ -704,12 +760,18 @@ def docs_view(app: "App", r: Rect) -> None:
     ui.text(head.x + 30 + ui.measure(str(p.relative_to(root)), 14, "bold"), head.y + 19, f"edited {ago(mt)}", 12,
             T.TEXT_FAINT)
     bw = ui.button_w("Open")
-    if ui.button("docopen", Rect(head.r - bw - 16, head.y + 11, bw, 30), "Open", tip="Open in your default editor"):
+    bx = head.r - bw - 16
+    if ui.button("docopen", Rect(bx, head.y + 11, bw, 30), "Open", tip="Open in your default editor"):
         subprocess.Popen(["open", str(p)])
+    cw = ui.button_w("Copy doc")
+    bx -= cw + 8
+    if ui.button("doccopy", Rect(bx, head.y + 11, cw, 30), "Copy doc", tip="Copy the whole document"):
+        _copy(app, text)
     ui.hline(main.x, head.b, main.w, T.BORDER)
     sc = ui.scroll_begin(f"doc:{p}", body)
     width = min(860.0, body.w - 64)
     h = ui.markdown(body.x + (body.w - width) / 2, body.y + 20 - sc.offset, text, width, 14.5)
+    _drain_copy_toast(app)
     ui.scroll_end(sc, h + 60)
 
 
@@ -717,6 +779,10 @@ def docs_view(app: "App", r: Rect) -> None:
 # Agent detail
 # ════════════════════════════════════════════════════════════════════════════
 _lines_cache: dict[int, list[dict]] = {}
+_run_picker_agent: str | None = None  # agent id whose run picker is open, if any
+_run_picker_anchor: Rect | None = None  # this frame's selector-button rect, for the popover to anchor to
+_run_picker_runs: list[dict] = []  # this frame's full run list for the open picker's agent
+_RUN_STATUS_COLOR = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}
 
 
 def _run_lines(app: "App", run_id: int, live: bool) -> list[dict]:
@@ -777,33 +843,142 @@ def agent_view(app: "App", r: Rect) -> None:
     left, right = body.cut_left(body.w * 0.63)
     ui.rect(Rect(left.r, left.y, 1, left.h), T.BORDER)
     # runs strip
-    runs = d.store.runs(a["id"], limit=14) if (ui.t % 1 < 0.05 or not hasattr(app, "_runs")) else app._runs
+    runs = d.store.runs(a["id"], limit=200) if (ui.t % 1 < 0.05 or not hasattr(app, "_runs")) else app._runs
     app._runs = runs
     if runs and a["id"] != getattr(app, "_runs_agent", None):
         app._runs_agent = a["id"]
         app.sel_run = None
     rsel = app.sel_run or (runs[0]["id"] if runs else None)
     strip, tr = left.cut_top(46)
-    x = strip.x + 14
-    for run in runs:
-        label = f"#{run['id']} {run['reason']}"
-        c = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}.get(run["status"], T.TEXT_FAINT)
-        clicked, w = ui.chip(f"run:{run['id']}", x, strip.y + 10, label, run["id"] == rsel, c, 11.5)
-        if ui.hover(Rect(x, strip.y + 10, w, 26)):
-            ui.tip(f"{run['status']} · {ago(run['started'])} · ${run['cost']:.3f}\n{(run['summary'] or '')[:300]}")
+    view_w = 190.0
+    view_toggle, sel_area = strip.cut_right(view_w)
+    _run_selector(app, a, runs, rsel, Rect(sel_area.x + 14, sel_area.y + 8, min(260.0, sel_area.w - 22), 30))
+    vx = view_toggle.x + 8
+    for mode in ("Transcript", "Prompt"):
+        clicked, w = ui.chip(f"runview:{mode}", vx, view_toggle.y + 10, mode, app.run_view == mode,
+                             T.ACCENT, 11.5)
         if clicked:
-            app.sel_run = run["id"]
-        x += w + 6
-        if x > strip.r - 120:
-            break
+            app.run_view = mode
+        vx += w + 6
     ui.hline(left.x, strip.b, left.w, T.BORDER)
-    if rsel:
+    rsel_row = next((run for run in runs if run["id"] == rsel), None)
+    if not rsel:
+        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
+    elif app.run_view == "Prompt":
+        _prompt_view(app, rsel_row, tr)
+    else:
         live = any(run["id"] == rsel and run["status"] == "running" for run in runs)
         lines = _run_lines(app, rsel, live)
         _transcript(app, lines, tr, f"tr:{rsel}")
-    else:
-        ui.text(tr.x + 20, tr.y + 20, "No runs yet.", 13, T.TEXT_FAINT)
     _agent_side(app, a, right)
+
+
+def _run_selector(app: "App", a: dict, runs: list[dict], rsel: int | None, r: Rect) -> None:
+    """Compact "current run" control; click opens a scrollable popover listing every run for this
+    agent, so history stays reachable at any window width (no chip-fitting, no overflow-by-omission).
+    """
+    global _run_picker_agent, _run_picker_anchor, _run_picker_runs
+    ui = app.ui
+    open_ = _run_picker_agent == a["id"]
+    if open_:
+        _run_picker_anchor, _run_picker_runs = r, runs
+    run = next((x for x in runs if x["id"] == rsel), None)
+    col = _RUN_STATUS_COLOR.get(run["status"], T.TEXT_FAINT) if run else T.TEXT_FAINT
+    label = f"#{run['id']} {run['reason']}" if run else "No runs yet"
+    hov = ui.hover(r)
+    ui.rect(r, T.PANEL3 if (hov or open_) else T.PANEL2, 8)
+    if open_:
+        ui.stroke(r, alpha(T.ACCENT, 0.55), 8)
+    if run:
+        ui.dot(r.x + 14, r.cy, col, 4)
+    ui.text_fit(r.x + 24, r.y + (r.h - 12) / 2, label, r.w - 54, 12, T.TEXT, "med")
+    if len(runs) > 1:
+        ui.text(r.r - 16 - ui.measure(str(len(runs)), 10.5), r.y + (r.h - 10.5) / 2, str(len(runs)), 10.5,
+                T.TEXT_FAINT)
+    ui.text(r.r - 30, r.y + (r.h - 11) / 2, "↑" if open_ else "↓", 11, T.TEXT_FAINT, "bold")
+    if hov:
+        ui.hand()
+        if run:
+            ui.tip(f"{run['status']} · {ago(run['started'])} · ${run['cost']:.3f}\n{(run['summary'] or '')[:300]}")
+    if runs and ui.click(r):
+        _run_picker_agent = None if open_ else a["id"]
+        _run_picker_anchor, _run_picker_runs = r, runs
+
+
+def _run_picker_popover(app: "App") -> None:
+    ui = app.ui
+    global _run_picker_agent
+    anchor, runs = _run_picker_anchor, _run_picker_runs
+    w = 300.0
+    h = min(420.0, 44 + len(runs) * 38)
+    x = min(anchor.x, ui.w - w - 16)
+    y = anchor.b + 6
+    if y + h > ui.h - 16:
+        y = max(16.0, anchor.y - h - 6)
+    r = Rect(x, y, w, h)
+    if ui.clicked and not r.contains(ui.mouse) and not anchor.contains(ui.mouse):
+        _run_picker_agent = None
+        ui.click_consumed = True
+        return
+    ui.panel(r, T.PANEL2, 10, T.BORDER_HI)
+    head, body = r.cut_top(32)
+    ui.text(head.x + 14, head.y + 9, f"{len(runs)} run{'s' if len(runs) != 1 else ''}", 11, T.TEXT_FAINT, "bold")
+    sc = ui.scroll_begin(f"runpicker:{_run_picker_agent}", body.inset(4, 4))
+    y2 = body.y + 4 - sc.offset
+    rw = body.w - 8
+    for run in runs:
+        rr = Rect(body.x + 4, y2, rw, 34)
+        if rr.b > body.y - 10 and rr.y < body.b + 10:
+            hov = ui.hover(rr)
+            if run["id"] == app.sel_run:
+                ui.rect(rr, alpha(T.ACCENT, 0.14), 6)
+            elif hov:
+                ui.rect(rr, T.HOVER, 6)
+            if hov:
+                ui.hand()
+            col = _RUN_STATUS_COLOR.get(run["status"], T.TEXT_FAINT)
+            ui.dot(rr.x + 12, rr.cy - 4, col, 4)
+            ui.text(rr.x + 24, rr.y + 3, f"#{run['id']} {run['reason']}", 12.5, T.TEXT, "med")
+            ts = ago(run["started"])
+            ui.text(rr.r - 10 - ui.measure(ts, 11), rr.y + 3, ts, 11, T.TEXT_FAINT)
+            summ = (run["summary"] or "").split("\n")[0]
+            ui.text_fit(rr.x + 24, rr.y + 19, summ, rr.w - 34, 10.5, T.TEXT_FAINT)
+            if ui.click(rr):
+                app.sel_run = run["id"]
+                _run_picker_agent = None
+        y2 += 36
+    ui.scroll_end(sc, y2 + sc.offset - body.y + 4)
+
+
+def _prompt_view(app: "App", run: dict | None, r: Rect) -> None:
+    ui = app.ui
+    sc = ui.scroll_begin(f"prompt:{run['id'] if run else 0}", r)
+    y = r.y + 16 - sc.offset
+    w = r.w - 48
+    if not run:
+        ui.text(r.x + 24, r.y + 16, "No run selected.", 13, T.TEXT_FAINT)
+        ui.scroll_end(sc, 0)
+        return
+    for title, text in (("System prompt", run.get("system") or ""), ("Wake prompt", run.get("prompt") or "")):
+        key = f"promptclosed:{run['id']}:{title}"
+        closed = key in app.expanded
+        hr = Rect(r.x + 24, y, w, 20)
+        ui.text(hr.x, hr.y, "→" if closed else "↓", 12, T.TEXT_FAINT, "bold")
+        ui.text(hr.x + 16, hr.y, title.upper(), 11, T.TEXT_FAINT, "bold")
+        if ui.hover(hr):
+            ui.hand()
+        if ui.click(hr):
+            app.expanded.symmetric_difference_update({key})
+        y += 26
+        if closed:
+            continue
+        if text:
+            y += ui.text_block(r.x + 24, y, text, w, 12.5, T.TEXT, "mono", 1.5)
+        else:
+            ui.text(r.x + 24, y, "(not recorded)", 13, T.TEXT_FAINT)
+            y += 20
+        y += 24
+    ui.scroll_end(sc, y + sc.offset - r.y + 12)
 
 
 def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
@@ -816,7 +991,11 @@ def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
         if k == "text":
             h = ui.md_layout(text, w, 13.5)[1]
             if y + h > r.y - 20 and y < r.b + 20:
-                ui.markdown(r.x + 24, y, text, w, 13.5)
+                block = Rect(r.x + 24, y, w, h)
+                if ui.copy_button(Rect(block.r - 54, block.y - 2, 46, 20), ui.hover(block), "Copy"):
+                    _copy(app, text)
+                ui.markdown(block.x, block.y, text, w, 13.5)
+                _drain_copy_toast(app)
             y += h + 10
         elif k == "tool":
             h = 24
@@ -825,12 +1004,17 @@ def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
                 ui.rect(tr, alpha(T.ACCENT, 0.10), 6)
                 ui.text(tr.x + 8, y + 4, "›", 13, T.ACCENT, "monob")
                 ui.text_fit(tr.x + 22, y + 4, text, w - 30, 12, mix(T.ACCENT, T.TEXT, 0.55), "mono")
+                if ui.copy_button(Rect(tr.r + 6, y, 46, 20), ui.hover(tr), "Copy"):
+                    _copy(app, text)
             y += h + 4
         elif k in ("result", "error", "info"):
             col = {"result": T.TEXT_FAINT, "error": T.RED, "info": T.YELLOW}[k]
             h = ui.text_height(text, w - 16, 11.5, "mono", 1.4, 3)
             if y + h > r.y and y < r.b:
-                ui.text_block(r.x + 36, y, text, w - 16, 11.5, col, "mono", 1.4, 3)
+                block = Rect(r.x + 36, y, w - 16, h)
+                if ui.copy_button(Rect(block.r - 54, block.y - 2, 46, 20), ui.hover(block), "Copy"):
+                    _copy(app, text)
+                ui.text_block(block.x, block.y, text, w - 16, 11.5, col, "mono", 1.4, 3)
             y += h + 8
     if not lines:
         ui.text(r.x + 24, r.y + 16, "Waiting for output…", 13, T.TEXT_FAINT)
@@ -891,6 +1075,9 @@ def _scrim(app: "App", key: str) -> None:
 
 def draw_modals(app: "App") -> None:
     ui = app.ui
+    global _run_picker_agent
+    picker_live = (_run_picker_agent is not None and app.tab == "Agent" and app.sel_agent == _run_picker_agent
+                  and _run_picker_anchor is not None)
     if app.sel_task is not None:
         ui.modal = ui.layer = "task"
         _scrim(app, "task")
@@ -901,8 +1088,13 @@ def draw_modals(app: "App") -> None:
         _scrim(app, "newtask")
         _new_task_modal(app)
         ui.layer = None
+    elif picker_live:
+        ui.modal = ui.layer = "runpicker"
+        _run_picker_popover(app)
+        ui.layer = None
     else:
         ui.modal = None
+        _run_picker_agent = None
 
 
 def _task_modal(app: "App") -> None:
@@ -954,6 +1146,7 @@ def _task_modal(app: "App") -> None:
         ui.text(x, y, title.upper(), 10.5, T.TEXT_FAINT, "bold")
         y += 20
         y += ui.markdown(x, y, md, bw, 13.5, color) + 18
+        _drain_copy_toast(app)
 
     section("Description", t["description"])
     section("Acceptance criteria", t["acceptance"])
@@ -969,6 +1162,7 @@ def _task_modal(app: "App") -> None:
             ui.text(x, y, f"{d.name_of(n['agent'])} · {ago(n['ts'])}", 11.5, d.color_of(n["agent"]), "med")
             y += 18
             y += ui.markdown(x, y, n["text"], bw, 13, T.TEXT_DIM) + 10
+            _drain_copy_toast(app)
     y += 6
     nid = f"tnote:{t['id']}"
     nh = ui.input_height(nid, bw, 13, 5, 10)

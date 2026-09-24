@@ -4,6 +4,11 @@ Code: `src/troupe/gui/` (`core.py` = immediate-mode toolkit on raylib, `app.py` 
 `data.py` = DB snapshots + actions, `theme.py` = colors/metrics). Fonts: Inter + JetBrains Mono (OFL).
 Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smooth easing, crisp HiDPI text.
 
+**Platform move:** the human confirmed a native SwiftUI app (`mac/`, specs/60-mac-app.md) talking to the engine over
+the local API (specs/50-api.md). The REQ-GUI requirements here stay the behavioral source of truth for both clients.
+raylib remains the daily GUI until the Mac app reaches parity (REQ-MAC milestones), and new GUI features are built in
+the Mac app.
+
 ## Shell
 - **REQ-GUI-001 [x]** Top bar: logo, project, engine pill (Live / Paused / Throttled / Engine offline), stats
   (working, runs/h vs cap, 24h cost, open tasks), Claude 5h/7d usage meters, `+ Task`, Pause/Resume (⌘P).
@@ -39,6 +44,9 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
 - **REQ-GUI-014 [x]** Memory: decisions / preferences / facts / ideas / notes with rationale. (Decisions move to their
   own tab with REQ-GUI-041; Memory keeps facts, notes, ideas and preferences.)
 - **REQ-GUI-015 [x]** Docs: README + specs/ + design/ + docs/ rendered as markdown, live-reloading.
+- **REQ-GUI-042 [ ]** Docs gains a "Skills" group (`.agents/skills/*/SKILL.md`, showing author and source task;
+  REQ-COM-044), a "Research" group (`research/`, REQ-ROLE-020) and an "Architecture" group (`docs/architecture.md`,
+  `docs/adr/`).
 - **REQ-GUI-016 [x]** Agent: header with controls (Chat, Wake now, Stop, Enable/Disable, New session), run
   history chips, live transcript (text, tool calls, results, errors), tasks, memory, recent mail.
 
@@ -59,7 +67,7 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
   - Invalid input (a negative number, unknown provider or level, removing the only lead) is rejected inline using
     the same validation as ENG-019, and nothing is written.
   - Verified by unit tests of the YAML and TOML write round-trips and a TROUPE_SHOT screenshot.
-- **REQ-GUI-022 [ ]** Prompt inspector in the Agent view. (#1)
+- **REQ-GUI-022 [x]** Prompt inspector in the Agent view. (#1)
   - A Transcript / Prompt toggle next to the run chips; Prompt shows the selected run's system prompt and wake
     prompt (REQ-ENG-018) as separate, collapsible, monospace sections. The choice persists when switching runs.
 - **REQ-GUI-023 [ ]** Copy text from chat, docs and transcripts. (#7)
@@ -88,14 +96,19 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
   - (#24) "Engine offline" with **Start team** (REQ-ENG-001).
   - (#28) "Reloading… 2 runs draining" during a reload (REQ-ENG-009) and "Restarting…" after a crash (REQ-ENG-042).
   - (#28) "Crashed — see engine.log" with **Start team** after a crash loop.
+  - (#42) "Stopped" with **Resume** after the kill switch (REQ-SAFE-010), taking precedence over every other state.
+    A **Stop everything** button (⌘⇧.) is always visible in the top bar.
 - **REQ-GUI-040 [ ]** (#29; design #31) Multi-project window (human: "the gui can connect to multiple instances that
   are running, we might want you on multiple projects at a time"). One window is attached to every registered project
-  (REQ-ENG-008); each project keeps its own service.
-  - **Project rail:** every registered project with a state dot (working / idle / paused / offline / crashed), the
+  (REQ-ENG-008); each project keeps its own service. Layout: `design/projects.md`.
+  - The rail is hidden while only one project is registered and appears at 2+.
+  - **Project rail:** every registered project with a state dot (working / idle / paused / stopped / reloading /
+    offline / crashed, REQ-GUI-029, plus "missing" when its `.troupe/` is gone), the
     number of working agents, and a needs-you badge. Click or ⌘⌥1–9 switches, and the switched-to project's full UI
     appears on the next frame (from its cached snapshot). Switching shows "While you were away" (GUI-028) for that
     project if it applies.
-  - **Needs you across projects:** the inbox toggles "This project / All". In All, each card is tagged with its
+  - **Needs you across projects:** the inbox toggles "This project / All", defaulting to All while 2+ projects are
+    attached, so a background question is never hidden. In All, each card is tagged with its
     project, and answering it delivers the answer to the right agent in the right project's DB.
     - Notifications for background-project questions name the project; clicking one switches to it.
     - The window title count (GUI-027) is the total across projects.
@@ -124,7 +137,7 @@ Must be **beautiful and crazy useful**: dark "midnight" theme, role colors, smoo
   - Verified: unit tests for the unread selection and link parsing, plus a TROUPE_SHOT screenshot of
     `TROUPE_TAB=Decisions`.
 
-## Stage — ambient full-screen view of the team at work (#22; design: `design/stage.md`, #21)
+## Pulse and Stage — one scene (#22 Stage, #32 Pulse layers; design: `design/stage.md`, `design/pulse.md`)
 Human request: "a compelling background visualization so I can just watch you guys work". Stage is for watching,
 not clicking. These requirements define *what* it shows and *when*. `design/stage.md` defines how it looks.
 - **REQ-GUI-030 [ ]** Entering and leaving Stage.
@@ -137,9 +150,9 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   - `TROUPE_TAB=Stage` (with `TROUPE_SHOT`) renders Stage for screenshots. `TROUPE_STAGE_DEMO=1` seeds synthetic
     comets, task cards and an open question so one screenshot shows every element.
 - **REQ-GUI-031 [ ]** Agents: every enabled agent is a node around a central "YOU" node, in its role color.
-  - Idle, working, parked (owes work, REQ-GUI-002) and throttled or rate-limited (REQ-ENG-016) are visually
-    distinct. A working node shows its current activity (e.g. tool name) as a short label.
-  - Up to 16 agents render without overlapping nodes or labels (above 9, two rings; layout in `design/stage.md`).
+  - Node states follow the legend in REQ-GUI-038 and `design/pulse.md` (which replaces stage.md's old 4-state table).
+    A working node shows its current activity (e.g. tool name) as a short label.
+  - Up to 16 agents render without overlapping nodes or labels (above 9, two rings; layout in `design/pulse.md`).
   - Adding, removing or disabling agents (REQ-ENG-019) adds or removes nodes with an animation, not a jump.
 - **REQ-GUI-032 [ ]** Messages are comets that travel from sender to recipient, labeled with the subject (or the
   first ~40 characters of the body if there is no subject).
@@ -163,10 +176,42 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   scene drifts slowly (burn-in protection for an always-on second monitor). Any new activity restores full
   brightness within 0.5 s.
 - **REQ-GUI-037 [ ]** Performance: 60 fps while anything is animating or an agent is working, 20 fps when quiet
-  (REQ-GUI-006). No blocking I/O in draw code: Stage reads only `gui/data.py` snapshots. The mapping from snapshot
+  (REQ-GUI-006). No blocking I/O in draw code: Stage reads only client snapshots (`gui/data.py`, or the API
+  in the Mac app). The mapping from snapshot
   changes to comets, cards and ticker entries is a pure module, unit-tested without raylib (fan-out split, the
   12-comet cap, the reject bounce and the question glow state).
+- **REQ-GUI-038 [ ]** (#32 design; build follows) Pulse information layers. Human: "pulse should show the message passing,
+  who's waiting, mail backlog and some indication as to what their model is." Pulse and Stage render **one scene**:
+  Pulse is the scene with its information layers on, and Stage is the same scene full-screen with the layers turned
+  down to ambient (`design/pulse.md` / `design/stage.md`). All data comes from the engine (REQ-ENG-046, REQ-BE-012),
+  never inferred in the client.
+  - **Message passing:** comets per REQ-GUI-032, with a visible direction. Edges used in the last 5 min stay warm, so
+    "who's been talking to whom" reads at a glance.
+  - **Who's waiting on whom:** every `waiting_on` kind (human, review, dependency, blocked, providers, rate_limit, slot,
+    parked) has a named node treatment in the `design/pulse.md` legend. `dependency` and `blocked` may share one,
+    distinguished by label and tether target. `providers` (every provider unavailable) must read differently from a
+    single-provider `rate_limit`. Where there's a target, a dashed tether is drawn to it: YOU for
+    human, the reviewer, the dependency's assignee, or a provider badge. Each tether shows the age since `since`.
+    Rate-limit and providers waits show a reset countdown, and slot waits show the queue position.
+  - Idle, working and waiting must be distinguishable at a glance from across the room (design legend).
+  - **Mail backlog:** per agent, `mail_queued` (waiting) and `mail_reading` (in the current run) are shown
+    differently, with a number above 5.
+  - **Model:** each node has a chip showing the provider (a distinct glyph/accent for claude, codex and local), the
+    model and the level (1–4 pips). It's marked "fallback" when not on the first choice, and it updates live when
+    team.yaml or the provider changes.
+  - Verified: a TROUPE_SHOT of Pulse with `TROUPE_STAGE_DEMO=1` seeding every waiting kind, and unit tests of the
+    scene model for tether targets and ages.
+- **REQ-GUI-039 [ ]** Pulse **Work panel**: what the team is busy *with* and how close the goal is.
+  - A milestone header with a progress bar (REQ-ENG-045) for each active milestone.
+  - One row per in-flight task that is P0/P1 or in an active milestone: id, title, assignee handle, a stage track
+    (building → review → checks → merged, with the current stage highlighted, plus "blocked" or "awaiting human" when
+    true), time in the current stage, and the assignee's `waiting_on` if any.
+  - Hovering or selecting a row highlights its assignee's node, and hovering a node highlights its rows. Clicking a
+    row opens the task.
+  - Stage shows a ticker variant instead: milestone progress plus the current top rows, rotating slowly.
+  - Test: row selection (priority/milestone filter, stage mapping) is a pure function with unit tests.
 
+## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for GUI-020/021/022/023/024/027 (from backlog #1,#5,#6,#7,#11,#12).
 - 2026-09-23 — GUI-021: agents are edited in team.yaml, budget in troupe.toml.
@@ -175,3 +220,8 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-23 — GUI-041 Decisions tab (human request via pm; #27, design #26). Decisions leave the Memory tab.
 - 2026-09-23 — GUI-040 rewritten as the multi-project window (#29), replacing the single-project switcher. GUI-029 gains
   reload/crash states (#28). Stage: ready-queue tray origin and a 16-agent layout bound (from design/stage.md).
+- 2026-09-23 — platform move to the Mac app noted (REQs stay behavioral). GUI-038 Pulse information layers and GUI-039
+  Work panel (#32, human). GUI-042 Docs groups for skills, research and architecture. GUI-040 adopts design/projects.md
+  (rail hidden with one project, All inbox by default). Restored the missing Changelog heading.
+- 2026-09-23 — GUI-031/038 point to design/pulse.md's legend (#32 design done). dependency/blocked may share a
+  treatment, and `providers` must be distinct from `rate_limit`.

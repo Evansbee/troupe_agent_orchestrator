@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, started REAL, ended REAL, reason TEXT,
   status TEXT DEFAULT 'running', cost REAL DEFAULT 0, tokens INTEGER DEFAULT 0,
-  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0
+  task_id INTEGER, cwd TEXT, summary TEXT DEFAULT '', chat INTEGER DEFAULT 0,
+  prompt TEXT DEFAULT '', system TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS run_lines(
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, ts REAL, kind TEXT, text TEXT
@@ -75,6 +76,16 @@ class Store:
         self.path = str(path)
         self._local = threading.local()
         self.conn.executescript(SCHEMA)
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
+            if "answered_via" not in columns:
+                self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
+            run_columns = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
+            if "prompt" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
+            if "system" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -205,6 +216,8 @@ class Store:
 
     def update_task(self, task_id: int, actor: str = "", event_text: str = "", significant: bool = True,
                     **fields: Any) -> None:
+        if fields.get("status") == "review":
+            self.kv_set(f"check_failed.{task_id}", False)
         if "depends_on" in fields and not isinstance(fields["depends_on"], str):
             fields["depends_on"] = json.dumps(fields["depends_on"])
         fields["updated"] = now()
@@ -237,16 +250,23 @@ class Store:
             r["options"] = json.loads(r["options"] or "[]")
         return rows
 
-    def answer(self, qid: int, answer: str, status: str = "answered") -> None:
+    def answer(self, qid: int, answer: str, status: str = "answered", *,
+               via: str = "inbox", notify: bool = True) -> bool:
         qn = self.one("SELECT * FROM questions WHERE id=?", qid)
         if not qn or qn["status"] != "open":
-            return
-        self.x("UPDATE questions SET status=?, answer=?, answered_at=? WHERE id=?", status, answer, now(), qid)
+            return False
+        changed = self.conn.execute(
+            "UPDATE questions SET status=?, answer=?, answered_at=?, answered_via=? WHERE id=? AND status='open'",
+            (status, answer, now(), via, qid)).rowcount
+        if not changed:
+            return False
         label = "Idea" if qn["kind"] == "idea" else "Question"
         verb = "dismissed" if status == "dismissed" else "answered"
         body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
-        self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
+        if notify:
+            self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
         self.event("human", "answer", f"You {verb} {qn['asker']}'s {label.lower()}: {answer[:100]}", ref=f"q:{qid}")
+        return True
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",
@@ -278,9 +298,16 @@ class Store:
         return self.q(sql, *args)
 
     # ── runs ──────────────────────────────────────────────────────────────
-    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool) -> int:
-        return self.x("INSERT INTO runs(agent,started,reason,task_id,cwd,chat) VALUES(?,?,?,?,?,?)",
-                      agent, now(), reason, task_id, cwd, int(chat))
+    def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool,
+                 prompt: str = "", system: str = "") -> int:
+        return self.x("""INSERT INTO runs(agent,started,reason,task_id,cwd,chat,prompt,system)
+                         VALUES(?,?,?,?,?,?,?,?)""",
+                      agent, now(), reason, task_id, cwd, int(chat), prompt, system)
+
+    def update_run_prompt(self, run_id: int, prompt: str) -> None:
+        """Re-persist the wake prompt after it's mutated post-launch (e.g. worktree setup appending
+        failure context in Engine._run), so the inspector matches what the backend actually received."""
+        self.x("UPDATE runs SET prompt=? WHERE id=?", prompt, run_id)
 
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",

@@ -1,9 +1,8 @@
 # Multi-project rail: one window, every running troupe
 
-Behavior basis: REQ-ENG-008 (project registry), REQ-GUI-040 (project switcher — being superseded by
-#29's REQs; spec hasn't written those yet, so this design uses ENG-008/GUI-040's shape as the floor —
-flagged to spec below). Human request via pm msg #68: "the GUI connects to all running projects at
-once."
+Behavior: `specs/40-gui.md` REQ-GUI-040 (finalized — supersedes the earlier single-project switcher),
+built on REQ-ENG-008 (project registry). Human request via pm msg #68: "the gui can connect to multiple
+instances that are running, we might want you on multiple projects at a time."
 
 **A portability note up front:** pm has a proposed (unconfirmed) plan to move the GUI to a native
 SwiftUI client (decision #37), which would retarget #29 away from the raylib toolkit. This doc is
@@ -38,15 +37,18 @@ sidebar — the two are different things and shouldn't merge: the team sidebar l
 as "an agent" at a glance (agents/avatars are always circles throughout the app):
 - A neutral-filled square (`T.PANEL3`) holding a 1–2 letter monogram of the project name, `TEXT` bold.
 - A status dot at the bottom-right corner (see states below).
+- A small working-agent count, bottom-left, plain `TEXT_FAINT` numeral (no badge shape — this is
+  secondary to the dot and the needs-you badge, present only when >0, absent when idle so a quiet
+  project's tile stays visually quiet too).
 - A needs-you count badge at the top-right corner when that project has open questions — same
   `ui.badge`-shape component used everywhere else (pill/circle, `T.PINK`), just anchored to a tile
   instead of a label or avatar.
 - The active project's tile gets the same "selected" treatment the tab bar and sidebar already use:
   tinted background + a thin colored side accent (use `T.ACCENT`, the app's general "this is the
   selected thing" color — not a project-specific color, see "No per-project color palette" below).
-- Hover reveals the tile's name as a tooltip (`ui.tip`) plus (for non-active projects) start/stop
-  controls — see below.
-- Below the last tile, a **"+"** tile of the same shape, `TEXT_FAINT`, for attaching another project.
+- Hover reveals the tile's full project name as a tooltip (`ui.tip`, also carrying the full state
+  detail — see table below) plus, for offline projects, a **Start** control — see below.
+- Below the last tile, a **"+"** tile of the same shape, `TEXT_FAINT`, for **Add project…**.
 
 ### No per-project color palette
 It's tempting to give each project its own accent color the way each role has one, but that risks
@@ -55,47 +57,54 @@ handful of projects would either reuse those hues (a project tagged the same cya
 sitting next to a Spec avatar in a cross-project list, reads as related when it isn't) or need a
 second palette to invent and keep distinct. Simpler and collision-proof: **projects are disambiguated
 by name/handle, never by color.** A project's identity everywhere is its monogram (rail), its full
-name (tooltips, the attach popover), or the `@project` suffix already baked into COM-005 handles —
+name (tooltips, the Add project… flow), or the `@project` suffix already baked into COM-005 handles —
 never a swatch.
 
 ## Project states
-Five states, each a status-dot color plus (where color alone is ambiguous) a small glyph overlay —
-tooltip always gives the full state name and detail on hover, so the dot is a glance-level signal, not
-the only source of truth:
+GUI-040/029 specify seven rail states — working / idle / paused / stopped / reloading / offline /
+crashed. Same idle-vs-working distinction Stage already uses for agent nodes (`design/stage.md`), just
+applied at the whole-service level: a calm breathing glow for idle vs. an active pulse for working,
+same hue.
 
-| State | Dot | Glyph | Detail (tooltip) |
-|---|---|---|---|
-| Live | `T.GREEN`, same slow breathing pulse as the top-bar Live pill | — | "Live · N working" |
-| Paused | `T.YELLOW` | — | "Paused" |
-| Restart needed (stale version, ENG-006) | `T.YELLOW` | small refresh glyph overlaid on the dot | "Restart needed — service is 0.1.0, installed 0.2.0" |
-| Throttled/rate-limited | `T.ORANGE` | — | same phrasing as the top-bar/Stage throttle treatment: "Claude limited until 14:05" |
-| Offline (registered, not running) | hollow ring, `T.TEXT_FAINT`, no glow | — | "Offline — click Start" |
-| Missing (`.troupe/` gone, ENG-008) | hollow ring, `T.RED` | small warning glyph | "Project folder not found" — tile can't be opened, only removed from the registry |
+| State | Dot | Detail (tooltip) |
+|---|---|---|
+| Working (≥1 agent running) | `T.GREEN`, active pulse (same `sin(t·3.2)` language as a working agent node) | "Working · 3 agents" |
+| Idle (live, nothing running) | `T.GREEN`, calm breathing glow, no pulse | "Idle" |
+| Paused | `T.YELLOW` | "Paused" |
+| Stopped (kill switch, REQ-SAFE-010) | `T.RED`, solid, no pulse — deliberately inert, not alarm-flashing | "Stopped — click Resume" |
+| Reloading (config reload in flight, REQ-ENG-009) | `T.YELLOW`, same as Paused but with a small spinning-arc glyph overlay to read as transient rather than a settled state | "Reloading… 2 runs draining" |
+| Offline (registered, not running) | hollow ring, `T.TEXT_FAINT`, no glow | "Offline — click Start" |
+| Crashed (crash loop, REQ-ENG-042) | `T.RED`, solid, small warning glyph | "Crashed — see engine.log" |
 
-Paused and Restart-needed share a color family deliberately (both are "intentional/needs-action, not
-broken") but need the glyph to tell apart at tile size, since they call for different human actions.
+Stopped and Crashed are both solid `T.RED` but need to read distinctly at tile size (one is a deliberate
+human action, the other an unexpected failure) — the warning-glyph badge is Crashed-only; Stopped stays
+plain. Reloading and Paused share `T.YELLOW` for the same "intentional/transient, not broken" reason
+already established for the top-bar pill (`design/system.md`) — Reloading's spinning-arc glyph is what
+tells them apart, same principle as the earlier Paused-vs-Restart-needed pairing this table used to have.
 
-## Cross-project "needs you"
+**Missing** (`.troupe/` gone, ENG-008) isn't one of the seven state dots — it's a registry condition,
+not a service state, and gets its own treatment: hollow ring, `T.RED`, tooltip "Project folder not
+found." A missing tile can't be opened, only removed (see Start / Add / Remove below).
 
-The top-bar/inbox needs-you badge becomes a **sum across every attached project** (not just the active
-one) — this is the single most important payoff of the rail existing at all; if it only counted the
-active project, you'd have to click through every tile just to find out nothing's wrong, which defeats
-the point.
+## Needs you across projects
 
-The "Needs You" panel itself goes **cross-project by default**: it lists every open question from
-every attached project, not just the current one (same card layout as today —
-`views._q_layout` — unchanged), each card gaining one addition: a small neutral tag pill
-(`ui.pill`, `T.TEXT_FAINT`, the project's short name) before the asker's name. A flat list with tags
-rather than grouped sections — simpler, no new list structure, and scans fine at the realistic project
-count (a handful); if the typical count grows a lot, grouped sections with a project header become the
-natural upgrade, but that's not needed yet.
-
-Clicking a cross-project question card: switches the rail's active project to that card's project
-(tile highlight moves), *then* behaves exactly as today (reply inline, option buttons work as normal)
-— the switch is instant and automatic, not a separate step the human has to do first.
-
-Each rail tile's own needs-you badge (above) is the "at a glance, which project" signal; the panel is
-the "read and answer" surface. They always agree in total count.
+Per GUI-040, the inbox gets a **"This project / All" toggle** (two `ui.chip`s at the top of the panel,
+same shape as any other filter chip pair in the app). **All is the default the moment a second project
+is attached** (spec's correction to my earlier draft, which had This-project as the default) — with the
+rail existing at all, a background question should never be silently hidden behind a toggle the human
+has to know to flip. With only one project attached, the toggle doesn't render (nothing to aggregate),
+matching the rail's own "hidden at 1 project" rule.
+- **All** (default at 2+ projects): lists every open question from every attached project. Each card
+  gains one addition: a small neutral tag pill (`ui.pill`, `T.TEXT_FAINT`, the project's short name)
+  before the asker's name. Answering a card from a background project delivers the answer into *that*
+  project's DB and wakes the right agent there, same as if you'd switched to it first.
+- **This project**: an explicit narrow-down, unchanged from today's single-project behavior otherwise.
+- **Rail badges still always sum across every project** regardless of which toggle position is active —
+  the tile badge and the panel's default should never disagree about "is anything happening elsewhere."
+- **Notifications** for a background-project question name the project in the notification text;
+  clicking one switches to that project and opens the panel.
+- **Window title count** (REQ-GUI-027) is the total across every attached project, not just the active
+  one — matches the rail badge total.
 
 ## Handles across projects (REQ-COM-005)
 
@@ -104,60 +113,76 @@ form wherever it can't.**
 - Inside the active project's own views (team sidebar, Chat, Board, Agent tab, single-project Stage) —
   short form, no `@project` — exactly as COM-005 already specifies for "purely spatial" labels, and
   correct here too: you're unambiguously looking at one project's team.
-- The cross-project needs-you panel, and any other view that ever aggregates across projects (a future
-  cross-project Mail or activity feed) — full handle, always. This is exactly the ambiguity COM-005
-  exists to resolve, and it only becomes real once two projects' agents can appear in the same list.
+- The **All** inbox, notifications, and rail tooltips — full handle, always (GUI-040's exact list).
+  This is exactly the ambiguity COM-005 exists to resolve, and it only becomes real once two projects'
+  agents can appear in the same list.
 
-## Start / stop
+## Start / Add / Remove
 
-- **Start** (offline project): hovering an offline tile reveals a small play-glyph button overlapping
-  the tile; one click starts the service (`troupe up`-equivalent) and the dot eases from hollow to
+- **Start** (offline project): hover reveals a small play-glyph control on the tile; one click starts
+  a detached service for that project (no second window opens) and the dot eases from hollow to
   `GREEN` once its heartbeat appears — no confirmation needed, starting is non-destructive.
-- **Stop** (live project): hovering a live tile reveals a stop-glyph button; clicking it goes through
-  the same confirm-modal pattern used for other consequential actions in the app (Decisions' delete,
-  Board's cancel) — this stops running agents mid-work (ENG-006), so it deserves the pause a modal
-  provides, unlike Start.
-- **Attach another project**: clicking the "+" tile opens a small popover (anchored to the tile,
-  `T.TOOLTIP`-style background, not a full scrim modal — this is a light, frequent-ish action) listing
-  registry entries (REQ-ENG-008) not currently attached, plus an "Open folder…" row that hands off to
-  the OS file picker for a path not yet in the registry. Picking an entry attaches and switches to it.
-- **Remove a missing project** from the registry: available from that tile's hover actions (a single
-  "Remove" — the project folder is already gone, so there's nothing to confirm against).
+- **Add project…**: clicking the "+" tile opens a small popover (anchored to the tile, `T.TOOLTIP`-
+  style background, not a full scrim modal — this is a light, occasional action) with a directory
+  picker (hands off to the OS file picker). If the chosen directory has no `.troupe/`, it runs
+  `troupe init` first; either way the project is registered and attached, and the rail switches to it.
+- **Remove from rail**: hover action on any tile (most relevant for offline/missing ones, but available
+  on any); unregisters the project from this window without touching its files or stopping its service
+  if one is running elsewhere — this is "stop showing it here," not "stop the team." No confirmation
+  needed: it's non-destructive and the project can be re-added any time.
+- There's no rail-level **Stop** — stopping a project's service is a "Stop team" action that belongs to
+  that project's own top-bar (REQ-ENG-006, with its existing confirmation), reached by switching to it
+  first, same as any other in-project control. The rail is for visibility and reach, not for consequential
+  per-project actions.
 
 ## Switching
 
-Click any tile to make it active — the whole window's content (team sidebar, all tabs, the top bar's
-single-project stats) re-points to that project's data. Active-tile highlight, described above, is the
-only persistent indicator of "which project am I looking at" — worth being unambiguous, since it's easy
-to forget once you've switched. A keyboard shortcut for cycling projects should use a modifier
-combination not already claimed (⌘1–7 are tabs, ⌘⇧F is Stage) — e.g. ⌥1–9 for direct tile selection,
-matching the tab bar's direct-select convention rather than only offering next/previous cycling.
+Click any tile, or **⌘⌥1–9** for direct selection (GUI-040's exact shortcut — doesn't collide with
+⌘1–7 for tabs or ⌘⇧F for Stage), to make it active. The switched-to project's full UI appears on the
+**next frame**, from its already-cached background snapshot (see Performance below) — no loading
+state, no blank frame. If that project qualifies for "While you were away" (REQ-GUI-028, ≥10 min since
+it was last looked at), that panel appears immediately after the switch, exactly as it would if you'd
+opened the app straight into that project.
+
+Active-tile highlight (described above) is the only persistent indicator of "which project am I
+looking at" — worth being unambiguous, since it's easy to forget once you've switched.
+
+## Performance
+
+Only the visible project refreshes at full rate; every background project's rail tile and inbox data
+refresh **at most every 2 s** — that's all a background project needs to drive (a status dot, a working
+count, a needs-you badge, and All-inbox rows), nothing else about it is being drawn. No DB I/O happens
+in draw code for any project, visible or not. With 3 attached projects, idle frame rate stays the
+existing 20 fps target (REQ-GUI-006) — the rail must not turn "idle" into "polling 3 databases 60 times
+a second."
+
+Top-bar stats (runs/h, 24h cost, Claude usage meters) and budget stay scoped to the active project only
+— an aggregate view across projects is out of scope for now (per GUI-040).
 
 ## Layout at typical counts
 
 - **1 project:** rail absent (see "When it appears").
 - **2–4 projects:** comfortable, generously spaced tiles, no scrolling.
 - **5+ projects:** rail scrolls (same scrollbar treatment as the team sidebar); tiles keep their full
-  size rather than shrinking — a smaller tile would make the status dot/glyph distinction (the whole
-  point of the tile) harder to read, and scrolling a short list is cheap.
+  size rather than shrinking — a smaller tile would make the status dot / working-count / needs-you
+  distinction (the whole point of the tile) harder to read, and scrolling a short list is cheap.
 
 ## Empty/edge states
 - **No projects registered besides the current one:** rail absent, nothing to design (see above).
-- **A project goes from Live to Missing while attached** (its folder was deleted externally): tile
-  transitions in place to the Missing treatment; if it was the active project, the center content shows
-  a calm explanatory state ("This project's folder is no longer here") rather than a blank or crashed
-  view, with a "Remove from list" action and a prompt to pick another attached project.
+- **A project goes from a live state to Missing while attached** (its folder was deleted externally):
+  tile transitions in place to the Missing treatment; if it was the active project, the center content
+  shows a calm explanatory state ("This project's folder is no longer here") rather than a blank or
+  crashed view, with a "Remove from rail" action and a prompt to pick another attached project.
 
 ## New tokens
-None. Every state reuses existing `design/system.md` semantic colors (GREEN/YELLOW/ORANGE/TEXT_FAINT/
-RED) with new referents (project state, not task/agent state) — same established pattern as Stage's
-reuse of CYAN for the throttled-node state. The explicit decision *against* a new per-project color
-palette (see above) is itself the notable design call here, not a token addition.
+None. Every state reuses existing `design/system.md` semantic colors (GREEN/YELLOW/TEXT_FAINT/RED)
+with new referents (project state, not task/agent state) — same established pattern as Stage's reuse
+of CYAN for the throttled agent-node state. The explicit decision *against* a new per-project color
+palette (see above) is itself the notable design call here, not a token addition. The idle/working
+pulse distinction reuses Stage's existing agent-node motion language rather than inventing a new one.
 
-## Open item for spec
-GUI-040 (`[ ]`, not yet superseded by dedicated #29 REQs as of this writing) only specifies "lists
-projects from the registry with service state; choosing one re-opens the GUI on that project" — this
-design goes further (cross-project needs-you aggregation, start/stop from the rail, the popover attach
-flow, handle rules) since the human's ask was "connects to all running projects **at once**," not a
-picker that reopens a new window per project. Flagging so #29's REQs are written against this shape
-rather than GUI-040's narrower one — let me know if any of it should be scoped out.
+## Resolved with spec
+Superseded the earlier draft of this doc, which was written before REQ-GUI-040 was finalized (it
+guessed at cross-project-by-default inbox aggregation and a rail-level Stop action). Spec's msg #93
+settled the shape: the five-state dot list, the This-project/All toggle (not always-on aggregation),
+⌘⌥1–9, and Start/Add project…/Remove from rail (no rail-level Stop) — all reflected above.
