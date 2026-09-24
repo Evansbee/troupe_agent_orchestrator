@@ -53,6 +53,13 @@ class FakeClient:
             return {"question": q}
         raise ApiError("unknown_method", method)
 
+    def answer_elsewhere(self, question_id: int) -> dict:
+        """Simulate another client answering a card — the way a live `question.answered` event would."""
+        q = self.questions[question_id]
+        q["status"] = "answered"
+        q["answer"] = "Answered elsewhere"
+        return dict(q)
+
 
 def question(id, kind="question", options=None, context="", **extra):
     return dict(id=id, ts=0, asker="lead", kind=kind, question=f"Q{id}?",
@@ -108,9 +115,117 @@ def test_answer_by_number_key_after_pressing_a():
             await pilot.press("a")
             assert pane.answering is True
             await pilot.press("2")
+            await pilot.press("enter")
             await pilot.pause()
             assert client.calls[-1] == ("answer_question", {"id": 1, "text": "No"})
             assert pane.answering is False  # answering mode closes after submitting
+
+    run(body())
+
+
+def test_digit_leading_reply_is_sent_verbatim_not_split_into_two_answers():
+    """QA #67 bug A/C: no instant-digit path, so "3 but only after lunch" must go through whole, and
+    the embedded "a"/"d" must never re-arm answering or fire a dismiss."""
+    async def body():
+        client = FakeClient([question(1, options=["one builder", "two builders", "three builders"])])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press(*"3 but only after lunch")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert client.calls[-1] == ("answer_question", {"id": 1, "text": "3 but only after lunch"})
+            answer_calls = [c for c in client.calls if c[0] == "answer_question"]
+            assert len(answer_calls) == 1  # not split into "3" and a second reply from "after..."
+            assert pane.answering is False
+
+    run(body())
+
+
+def test_digit_leading_reply_with_trailing_d_never_dismisses():
+    """QA #67 bug C: "2 days" must not answer on "2" and then have the "d" fire dismiss_focused."""
+    async def body():
+        client = FakeClient([question(1, options=["1 day", "2 days"])])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press(*"2 days")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert client.calls == [("questions", {"status": "open", "limit": 1000}),
+                                    ("answer_question", {"id": 1, "text": "2 days"})]
+            assert client.questions[1]["status"] == "answered"
+
+    run(body())
+
+
+def test_digits_typed_before_pressing_a_do_nothing():
+    async def body():
+        client = FakeClient([question(1, options=["Yes", "No"])])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("2")
+            await pilot.pause()
+            assert not any(m == "answer_question" for m, _ in client.calls)
+            assert pane.answering is False
+
+    run(body())
+
+
+def test_answer_target_is_captured_at_a_not_at_enter():
+    """QA #67 bug D: focus card #2, press `a`; while typing, card #1 is answered elsewhere and its
+    removal shifts list indices. The answer must still land on #2, never on whatever is now
+    highlighted by index."""
+    async def body():
+        client = FakeClient([question(1), safety_question(2), safety_question(3)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            list_view = pane.query_one("#ny-cards", ListView)
+            list_view.focus()
+            for i, item in enumerate(list_view.children):
+                if item.question["id"] == 2:
+                    list_view.index = i
+            await pilot.pause()
+            await pilot.press("a")
+            assert pane._answering_id == 2
+            await pilot.press(*"approve")
+            # #1 gets answered by someone else while the human is still typing; its removal shifts
+            # index-based lookups toward whatever was after it (e.g. card #3).
+            answered = client.answer_elsewhere(1)
+            pane.on_troupe_event({"event": "question.answered", "data": {"question": answered}})
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            method, params = client.calls[-1]
+            assert method == "answer_question"
+            assert params["id"] == 2  # not 3, even though #3 may now sit where #2's index once pointed
+            assert client.questions[3]["status"] == "open"
+
+    run(body())
+
+
+def test_answer_target_gone_sends_nothing():
+    """The focused card is answered elsewhere while the human is still typing a reply to it — on
+    Enter, the pane must notice the target is gone rather than silently doing nothing useful or,
+    worse, resurrecting a stale action against a since-closed card."""
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("a")
+            await pilot.press(*"sure")
+            answered = client.answer_elsewhere(1)
+            pane.on_troupe_event({"event": "question.answered", "data": {"question": answered}})
+            await pilot.pause()
+            calls_before = len(client.calls)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(client.calls) == calls_before  # no new call — the target no longer exists
+            assert "answered elsewhere" in pane.status
 
     run(body())
 
@@ -161,7 +276,8 @@ def test_dismiss_on_regular_question_calls_dismiss_question():
     run(body())
 
 
-def test_dismiss_on_safety_card_rejects_instead_of_dismissing():
+def test_dismiss_on_safety_card_asks_for_confirmation_first():
+    """QA #67 ask: `d` on a safety card must confirm (y/N) before rejecting, like the kill switch."""
     async def body():
         client = FakeClient([safety_question(2)])
         async with NeedsYouTestApp(client).run_test() as pilot:
@@ -169,10 +285,57 @@ def test_dismiss_on_safety_card_rejects_instead_of_dismissing():
             pane.query_one("#ny-cards", ListView).focus()
             await pilot.press("d")
             await pilot.pause()
+            assert not any(m == "answer_question" for m, _ in client.calls)
+            assert "Reject #2" in pane.status
+            assert client.questions[2]["status"] == "open"
+
+    run(body())
+
+
+def test_confirming_reject_with_y_submits_reject():
+    async def body():
+        client = FakeClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("d")
+            await pilot.press("y")
+            await pilot.pause()
             method, params = client.calls[-1]
             assert method == "answer_question"
             assert params["id"] == 2 and params["decision"] == "reject"
             assert client.questions[2]["status"] == "answered"
+
+    run(body())
+
+
+def test_declining_reject_confirmation_with_n_sends_nothing():
+    async def body():
+        client = FakeClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("d")
+            await pilot.press("n")
+            await pilot.pause()
+            assert not any(m == "answer_question" for m, _ in client.calls)
+            assert client.questions[2]["status"] == "open"
+            assert pane._confirm_reject_id is None
+
+    run(body())
+
+
+def test_escape_declines_reject_confirmation():
+    async def body():
+        client = FakeClient([safety_question(2)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            pane.query_one("#ny-cards", ListView).focus()
+            await pilot.press("d")
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not any(m == "answer_question" for m, _ in client.calls)
+            assert pane._confirm_reject_id is None
 
     run(body())
 
@@ -185,6 +348,7 @@ def test_safety_card_approve_uses_decision_param():
             pane.query_one("#ny-cards", ListView).focus()
             await pilot.press("a")
             await pilot.press("1")
+            await pilot.press("enter")
             await pilot.pause()
             method, params = client.calls[-1]
             assert method == "answer_question"
@@ -205,6 +369,7 @@ def test_safety_cards_are_never_batch_answered():
             await pilot.pause()
             await pilot.press("a")
             await pilot.press("1")
+            await pilot.press("enter")
             await pilot.pause()
             answer_calls = [p for m, p in client.calls if m == "answer_question"]
             assert len(answer_calls) == 1
@@ -248,6 +413,28 @@ def test_on_troupe_event_adds_and_removes_cards_live():
     run(body())
 
 
+def test_highlight_follows_focused_id_when_a_different_card_is_removed():
+    """QA #67 "ideally": focus card #3; #1 (above it) is answered elsewhere. #3 must stay highlighted
+    even though its index shifted, not whatever card now sits at #3's old index."""
+    async def body():
+        client = FakeClient([question(1), question(2), question(3)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            list_view = pane.query_one("#ny-cards", ListView)
+            list_view.focus()
+            for i, item in enumerate(list_view.children):
+                if item.question["id"] == 3:
+                    list_view.index = i
+            await pilot.pause()
+            assert pane._focused_question_id() == 3
+            answered = client.answer_elsewhere(1)
+            pane.on_troupe_event({"event": "question.answered", "data": {"question": answered}})
+            await pilot.pause()
+            assert pane._focused_question_id() == 3
+
+    run(body())
+
+
 def test_unavailable_response_shows_status_and_never_crashes():
     class UnavailableClient(FakeClient):
         async def call(self, method, timeout=5.0, **params):
@@ -262,6 +449,7 @@ def test_unavailable_response_shows_status_and_never_crashes():
             pane.query_one("#ny-cards", ListView).focus()
             await pilot.press("a")
             await pilot.press("1")
+            await pilot.press("enter")
             await pilot.pause()
             assert "Not available yet" in pane.status
             # card is untouched — the pane didn't pretend the approval went through

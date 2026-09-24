@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 from rich.markup import escape
-from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -50,27 +49,6 @@ def render_card(question: dict) -> str:
     return "\n".join(lines)
 
 
-class AnswerInput(Input):
-    """The reply box for `a`-armed answering. A leading digit 1-9 (nothing typed yet) is an instant
-    option pick, matching REQ-TUI-020's "1-9 or free text"; anything else is normal text entry. Once
-    the human has started typing, digits are just characters — REQ-COM-025's "never fire while an
-    input has focus" is otherwise automatic: Input's own key handling consumes and stops every
-    printable key before it could reach the pane's digit-shortcut binding."""
-
-    def __init__(self, pane: "NeedsYouPane", **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._pane = pane
-
-    async def _on_key(self, event: events.Key) -> None:
-        if not self.value and event.is_printable and event.character and event.character.isdigit() \
-                and event.character != "0" and self._pane.digit_is_valid_option(event.character):
-            event.stop()
-            event.prevent_default()
-            await self._pane.answer_by_digit(event.character)
-            return
-        await super()._on_key(event)
-
-
 class QuestionCard(ListItem):
     """One Needs-you card. Safety-kind cards get a distinct border and can't be dismissed outright —
     dismissing one is a Reject (api.py forbids `dismiss_question` for approval-kind questions)."""
@@ -97,10 +75,18 @@ class QuestionCard(ListItem):
 
 
 class NeedsYouPane(Widget):
-    """Open questions/ideas/safety cards. `a` then a number or free text + Enter answers the focused
-    card (REQ-TUI-020); see AnswerInput for how a bare digit picks an option while typed text never
-    does (REQ-COM-025). `d` dismisses — for a safety card that means Reject, since dismissing an
-    approval outright is forbidden."""
+    """Open questions/ideas/safety cards.
+
+    `a` arms answering **on the card focused at that moment** — the target id is captured then, not
+    re-read at Enter, so a live removal elsewhere (another card answered, an event reshuffling the
+    list) can never redirect the answer to whatever happens to be highlighted later (QA #67 bug: a
+    human approving what they think is one safety card could otherwise approve a different one).
+    `a` + a number + Enter picks that option; `a` + free text + Enter sends it verbatim — there is no
+    instant-digit shortcut, so a reply that happens to start with a digit (or contain "d"/"a") is
+    never partially interpreted as a keybinding (QA #67 bug: "3 but only after lunch" used to answer
+    instantly on "3", then "after" re-armed answering and "fter lunch" fired as a second answer).
+    `d` dismisses a regular card; on a safety card it asks "Reject #N? y/N" first, the same
+    confirm-before-protected-action pattern as the kill switch (`s`, REQ-TUI-020)."""
 
     DEFAULT_CSS = """
     NeedsYouPane { height: 1fr; }
@@ -110,6 +96,8 @@ class NeedsYouPane(Widget):
     BINDINGS = [
         Binding("a", "start_answer", "Answer", show=True),
         Binding("d", "dismiss_focused", "Dismiss", show=True),
+        Binding("y", "confirm_yes", "Confirm reject", show=False),
+        Binding("n", "confirm_no", "Cancel", show=False),
         Binding("escape", "cancel_answer", "Cancel", show=False),
     ]
 
@@ -119,15 +107,27 @@ class NeedsYouPane(Widget):
         super().__init__()
         self.client = client
         self.status = ""
+        self._answering_id: int | None = None
+        self._confirm_reject_id: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("Needs you", classes="pane-title")
         yield ListView(id="ny-cards")
-        yield AnswerInput(self, placeholder="a number, or a reply + Enter, Esc to cancel", id="ny-answer")
+        yield Input(placeholder="a number, or a reply, then Enter — Esc to cancel", id="ny-answer")
         yield Static("", id="ny-status")
 
     def on_mount(self) -> None:
-        self.query_one("#ny-answer", AnswerInput).display = False
+        self.query_one("#ny-answer", Input).display = False
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Keeps `y`/`n` inert (and free to bubble to some future global binding, e.g. copy) except
+        while a safety-reject confirmation is actually pending; `a`/`d` inert with no focused card or
+        mid-flow, so they can't stack on top of an answer or confirmation already in progress."""
+        if action in ("confirm_yes", "confirm_no"):
+            return self._confirm_reject_id is not None
+        if action in ("start_answer", "dismiss_focused"):
+            return not self.answering and self._confirm_reject_id is None and self._focused_card() is not None
+        return True
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
@@ -157,23 +157,40 @@ class NeedsYouPane(Widget):
             return
         q = (event.get("data") or {}).get("question")
         if q:
-            self._apply_update(q)
+            self.run_worker(self._apply_update(q), exclusive=False)
 
-    def _apply_update(self, q: dict) -> None:
+    async def _apply_update(self, q: dict) -> None:
         list_view = self.query_one("#ny-cards", ListView)
+        focused_id = self._focused_question_id()
         for item in list(list_view.children):
             if isinstance(item, QuestionCard) and item.question["id"] == q["id"]:
                 if q["status"] != "open":
-                    item.remove()
+                    await item.remove()
+                    if q["id"] == self._confirm_reject_id:
+                        self._confirm_reject_id = None
+                        self._set_status(f"#{q['id']} was answered elsewhere.")
+                    # Removing an item can shift everyone below it up one slot; re-find whichever
+                    # card was actually highlighted so the human's attention doesn't silently land
+                    # on a different card (the visual half of the same bug as the answer-target fix).
+                    self._restore_highlight(focused_id)
                 else:
                     item.question = q
                     item.refresh_content()
                 return
         if q.get("status") == "open":
             was_empty = not list_view.children
-            list_view.append(QuestionCard(q))
+            await list_view.append(QuestionCard(q))
             if was_empty:
                 list_view.index = 0
+
+    def _restore_highlight(self, focused_id: int | None) -> None:
+        if focused_id is None:
+            return
+        list_view = self.query_one("#ny-cards", ListView)
+        for i, item in enumerate(list_view.children):
+            if isinstance(item, QuestionCard) and item.question["id"] == focused_id:
+                list_view.index = i
+                return
 
     # ── focus helpers ────────────────────────────────────────────────────
     def _focused_card(self) -> QuestionCard | None:
@@ -184,62 +201,75 @@ class NeedsYouPane(Widget):
         card = self._focused_card()
         return card.question["id"] if card else None
 
+    def _find_card_by_id(self, question_id: int) -> QuestionCard | None:
+        for item in self.query_one("#ny-cards", ListView).children:
+            if isinstance(item, QuestionCard) and item.question["id"] == question_id:
+                return item
+        return None
+
     # ── answer flow ──────────────────────────────────────────────────────
     def action_start_answer(self) -> None:
-        if self.answering or self._focused_card() is None:
+        card = self._focused_card()
+        if self.answering or self._confirm_reject_id is not None or card is None:
             return
         self.answering = True
-        answer_input = self.query_one("#ny-answer", AnswerInput)
+        self._answering_id = card.question["id"]
+        answer_input = self.query_one("#ny-answer", Input)
         answer_input.value = ""
         answer_input.display = True
         answer_input.focus()
 
     def action_cancel_answer(self) -> None:
-        if not self.answering:
-            return
-        self.answering = False
-        answer_input = self.query_one("#ny-answer", AnswerInput)
-        answer_input.display = False
-        self.query_one("#ny-cards", ListView).focus()
+        if self.answering:
+            self.answering = False
+            self._answering_id = None
+            answer_input = self.query_one("#ny-answer", Input)
+            answer_input.display = False
+            self.query_one("#ny-cards", ListView).focus()
+        elif self._confirm_reject_id is not None:
+            self._confirm_reject_id = None
+            self._set_status("")
 
     async def action_dismiss_focused(self) -> None:
         card = self._focused_card()
         if card is None:
             return
         if card.is_safety:
-            await self._submit(card, "Reject")
+            self._confirm_reject_id = card.question["id"]
+            self._set_status(f"Reject #{card.question['id']}? y/N")
         else:
             await self._call_safely("dismiss_question", id=card.question["id"])
+
+    async def action_confirm_yes(self) -> None:
+        question_id = self._confirm_reject_id
+        if question_id is None:
+            return
+        self._confirm_reject_id = None
+        card = self._find_card_by_id(question_id)
+        if card is None:
+            self._set_status(f"#{question_id} was answered elsewhere.")
+            return
+        await self._submit(card, "Reject")
+
+    def action_confirm_no(self) -> None:
+        self._confirm_reject_id = None
+        self._set_status("")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "ny-answer":
             return
-        card = self._focused_card()
+        question_id = self._answering_id
         text = event.value.strip()
         self.action_cancel_answer()
-        if card is None or not text:
+        if question_id is None or not text:
+            return
+        card = self._find_card_by_id(question_id)
+        if card is None:
+            self._set_status(f"#{question_id} was answered elsewhere.")
             return
         options = card.question.get("options") or []
         if text.isdigit() and 1 <= int(text) <= min(9, len(options)):
             text = options[int(text) - 1]
-        await self._submit(card, text)
-
-    def digit_is_valid_option(self, digit: str) -> bool:
-        """Whether `digit` picks a real option on the focused card — else AnswerInput types it literally."""
-        card = self._focused_card()
-        if card is None:
-            return False
-        options = card.question.get("options") or []
-        return 0 <= int(digit) - 1 < min(9, len(options))
-
-    async def answer_by_digit(self, digit: str) -> None:
-        """Called by AnswerInput when a bare leading digit picks a valid option in answering mode."""
-        card = self._focused_card()
-        if card is None:
-            return
-        options = card.question.get("options") or []
-        text = options[int(digit) - 1]
-        self.action_cancel_answer()
         await self._submit(card, text)
 
     async def _submit(self, card: QuestionCard, text: str) -> None:
