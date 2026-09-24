@@ -73,29 +73,37 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 ## Crash reporting (#91)
 Scope decision: human via PM, 2026-09-24 (msg #814): report both client and engine crashes and auto-file P0 work.
 Client reporting does not depend on the deferred service supervisor shipping.
-- **REQ-ENG-056 [ ]** Every troupe process entrypoint captures an unhandled crash in a report file under the
-  affected project's `.troupe/crashes/`, including GUI, TUI and engine startup and runtime failures.
+- **REQ-ENG-056 [ ]** Every troupe process entrypoint captures an unhandled crash in a report file at the
+  affected project's `.troupe/crashes/<utc>-<entrypoint>.txt`, including GUI, TUI and engine startup and runtime
+  failures.
   - The report is persisted even when the engine is offline, so the human never has to copy a traceback to the
     team. Normal quit, intentional stop and reload are not crashes.
+  - The failed process exits non-zero and prints the report path to stderr. The original traceback is never
+    swallowed: it remains visible on stderr as well as in the report. A report-writing failure must not hide
+    the original traceback or turn the crash into a successful exit.
   - Reports contain the crash details and the fields specified in #91; secrets and private data must not be
     exposed through reports or the tasks, notifications and messages derived from them (Principle 0).
   - **Editorial dependency:** transcribe and verify #91's exact report-field list before implementation review.
     The PM's scope message is available, but task/memory reads were denied by the session's tool approval policy
     when this section was written; the field list has not been verified.
   - Acceptance: inject an exception during startup and during normal operation of each entrypoint; each produces
-    a report, including with no engine running. Compare report fields against #91. A normal exit produces none.
+    a report at the specified path, including with no engine running. Verify non-zero exit, the stderr pointer
+    and original traceback; repeat with an unwritable report directory and verify the traceback still appears
+    and exit remains non-zero. Compare report fields against #91. A normal exit produces none.
 - **REQ-ENG-057 [ ]** The engine consumes pending crash reports on startup and while running, automatically
   files a **P0** task with the crash details/report reference, sends messages to both PM and lead, and emits a
   human-facing notification of kind `crash` (REQ-ENG-047).
   - Dedupe survives engine restarts: consuming the same report again never creates another task or repeats its
-    messages/notification. Repeated occurrences of the same crash attach to the existing open crash task rather
-    than flooding the board with duplicates; a different crash creates its own task.
+    messages/notification. Crash identity is `(entrypoint, last traceback frame)`: repeated occurrences with
+    the same identity attach to the existing open crash task rather than flooding the board with duplicates;
+    a different entrypoint or last frame creates its own task.
   - `crash` is must-deliver alongside #89's kinds: neither `[notify] enabled = false` nor `quiet` can silence it.
     A crashed client must not remain the notification destination merely because its focus/connection state is
     stale; delivery must reach the human through the available notification path.
   - Acceptance: a saved client report produces a P0, both messages and a notification; replay it across an engine
-    restart and verify no duplicate delivery/task. Repeat the crash and verify one open task; inject a distinct
-    crash and verify a second task. Disable notifications and quiet `crash`; the crash notification still arrives.
+    restart and verify no duplicate delivery/task. Repeat the same `(entrypoint, last frame)` and verify one
+    open task; change only the entrypoint, then only the last frame, and verify each creates a distinct task.
+    Disable notifications and quiet `crash`; the crash notification still arrives.
 - **REQ-ENG-058 [ ]** Engine crashes use the same report and ingestion path as client crashes. A report saved
   before engine exit is consumed when the engine next starts, including after supervisor restart (ENG-042/#28).
   - When the supervisor observes an unexpected exit that could not write its own report (for example `kill -9`),
@@ -105,11 +113,15 @@ Client reporting does not depend on the deferred service supervisor shipping.
     #28 supervisor enabled, exercise a killed child and verify the same reporting and dedupe behavior.
   - Engine restart policy, backoff and crash-loop limits remain ENG-042/#28, which is deferred. Reporting does
     not re-enable supervision or change TUI engine ownership (REQ-TUI-001).
-- **REQ-ENG-059 [ ]** The merge gate for changes to GUI/TUI code includes a headless launch smoke test of the
-  affected client, using the candidate merged tree (REQ-ENG-040).
+- **REQ-ENG-059 [ ]** For changes under `src/troupe/gui/` or `src/troupe/tui/`, the merge gate includes headless
+  GUI and TUI launch smoke tests using the candidate merged tree (REQ-ENG-040).
   - Exercise actual startup and at least one render/update cycle, then clean shutdown in a disposable project;
     an import-only check is insufficient. A startup exception, non-zero exit or timeout blocks the merge through
     the normal ENG-040 failure path. The check leaves no client or engine processes running.
+  - The fixture starts with a pending safety approval card. After each client has initialized its notification
+    cursor, insert a new `needs_help` event and wait for its notification handler to run and render. A card or
+    event present before launch alone does not cover this path (#90). Capture a GUI screenshot and TUI output
+    as review evidence; any traceback during startup, notification handling or shutdown fails the gate.
   - Acceptance: inject the #90 failure (GUI calls a missing `Data.notify`) and verify the gate refuses the merge;
     inject a TUI startup exception and verify the same. Healthy clients pass and exit cleanly. The check runs
     headlessly without interacting with the human's live project.
@@ -117,6 +129,7 @@ Client reporting does not depend on the deferred service supervisor shipping.
 ### Out of scope
 - Automatically restarting or relaunching the human-facing client. Engine restart remains ENG-042/#28.
 - Agent-run stalls and timeouts, already covered by ENG-050.
+- Sending crash reports or their contents off-machine; this workflow uses local files, board tasks and delivery.
 
 ## Wake-ups (who runs, when, why)
 Each agent run is one session of a backend CLI. Agents never loop; they are woken with a reason.
@@ -367,7 +380,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
 ## The human's attention and requests
-- **REQ-ENG-047 [x]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
+- **REQ-ENG-047 [~]** (#35 shipped; #89/#91 extensions pending; human: "we can then also notify when someone needs help") The service sends **needs-help**
   notifications, and they work with the GUI closed.
   - Events:
     - a new `ask_human` question or `propose_idea`, or an approval card (REQ-SAFE-020);
@@ -526,6 +539,9 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-056/057/059 refined from lead msg #818: report filenames, non-zero exits and stderr traceback,
+  `(entrypoint, last frame)` deduplication, and both client launch checks with a pending safety card plus a live
+  `needs_help` insertion. No off-machine reporting. ENG-047 marked partial for pending #89/#91 extensions.
 - 2026-09-24 — ENG-056..059: crash reports, deduplicated P0 filing/PM+lead mail, must-deliver `crash`, engine
   restart ingestion and GUI/TUI launch smoke gate (#91, PM msg #814). Resolved the crash-watcher scope question:
   both client and engine, no client auto-relaunch, engine supervision remains deferred under #28. Exact report
