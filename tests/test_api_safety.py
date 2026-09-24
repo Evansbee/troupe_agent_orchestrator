@@ -88,11 +88,14 @@ def test_stop_now_over_the_api_kills_runs_within_2s_and_enters_stopped_state(api
             s.send("human", aid, "chat", kind="chat")
             await engine.launch(Wake(0, cfg.agent(aid), "chat"))
         running = list(engine.running.values())
-        for _ in range(100):
+        # #71: two real subprocess spawns race OS scheduling under load — poll generously (4s)
+        # rather than the original tight 1s budget. `start` is captured after setup finishes, so
+        # widening this doesn't eat into the "within 2s" budget the test name promises below.
+        for _ in range(400):
             if all(r.proc for r, _, _ in running):
                 break
             await asyncio.sleep(.01)
-        await asyncio.sleep(.1)  # children install their SIGTERM-ignoring handler
+        await asyncio.sleep(.5)  # children install their SIGTERM-ignoring handler (no observable to poll)
 
         start = time.monotonic()
         with client(api) as c:
