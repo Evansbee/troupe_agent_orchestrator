@@ -251,6 +251,15 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - The board card shows a "checks failed" chip from the failure until the task next enters `review`.
   - A conflict while merging main into the branch, or while merging into main afterwards, takes the existing
     REQ-ENG-034 path.
+  - (#81) **Main moved during the check.** If main moves while the check runs (which it often does, because of docs
+    autocommits), the result is not a failure.
+    - The worker re-merges main into the branch and re-runs the check, up to 3 times with backoff. It doesn't message
+      the builder, and it doesn't count toward `max_task_attempts`.
+    - After 3 consecutive "main moved" retries, the task goes back to the builder with a clear message saying so.
+    - Only a real check failure or a merge conflict goes back to the builder.
+    - The merge into main is always of the exact tree that passed the check, and the worker stays serial.
+    - Test: main moving during a check retries and merges silently; a real failure still goes back with output; the
+      3-retry limit sends it back; the merged tree equals the checked tree.
   - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
     output, a timeout counts as a failure, and an empty check merges directly.
 - **REQ-ENG-043 [ ]** (#36) Architecture review for **risky changes only** (human's answer). A task needs the architect's
@@ -390,6 +399,7 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
   | `push_remote` | a remote in `[safety] remotes` (REQ-SAFE-032) | `origin` |
   | `pull_requests` | `off` (only value supported now; `per_task`/`per_milestone` reserved) | `off` |
   | `commit_name`, `commit_email` | the identity for agent commits (the human's chosen address) | unset |
+  | `allowed_emails`, `private_emails` | addresses allowed in commit metadata / addresses that must never appear in pushed content | empty |
   - Unknown or reserved values are rejected with an error naming the key. `[git]` push settings are guarded like
     `check` (REQ-SAFE-021): an agent's hand edit isn't enforced until the human approves it.
 - **REQ-ENG-053 [ ]** Merge strategy. After approvals and the merge gate (REQ-ENG-040/043, SAFE-020), the engine
@@ -409,7 +419,10 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
     - (b) `commit_email` is unset;
     - (c) any commit in the range to push has an author or committer email other than `commit_email` or the
       human's addresses in `[git] allowed_emails`. This stops a work email leaking into a public repo (Principle 0);
-    - (d) the SAFE-031 secret scan finds anything in the range.
+    - (d) the SAFE-031 secret scan finds anything in the range;
+    - (e) any file content in the range contains an address from `[git] private_emails` (the human's addresses that
+      must never be public, e.g. a work email). Found 2026-09-24: the work email was in `pyproject.toml`'s authors, so
+      commit metadata alone isn't enough to check.
   - A non-fast-forward rejection is reported, never forced (SAFE-032). Force-push to main/deploy is impossible.
   - Every push, and every refusal, appears in the feed and the TUI (last push time and result).
   - The default for new projects is `never`. troupe's own posture (`per_task`, `merge_commit`, `on_merge` to
@@ -479,3 +492,4 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
   own roster differs from the init default.
 - 2026-09-24 — ENG-052..055 git posture per project (#80): push opt-in, identity/email and secret pre-push checks, never
   force. BE-016/ENG-041 caps are per-window, 80/50 (human, question #18).
+- 2026-09-24 — ENG-040: auto-retry when main moves during checks (#81).
