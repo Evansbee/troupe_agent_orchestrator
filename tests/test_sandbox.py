@@ -21,9 +21,26 @@ from troupe.sandbox.codex import extra_add_dirs, hooks_toml, sandbox_args
 
 # ── grep test (REQ-SAFE-050 AC1) ─────────────────────────────────────────────
 def test_no_dangerous_bypass_flags_in_runners():
+    """The two flags REQ-SAFE-050 names, explicitly, gone — not just "replaced with something"."""
     text = Path("src/troupe/runners.py").read_text()
     assert "--dangerously-skip-permissions" not in text
     assert "--dangerously-bypass-approvals-and-sandbox" not in text
+
+
+def test_every_remaining_dangerously_flag_in_runners_is_the_disclosed_one():
+    """A plain `grep dangerously runners.py` finds one more hit beyond the two named flags above:
+    --dangerously-bypass-hook-trust. It is NOT a sandbox/approval bypass — it skips codex's
+    interactive "trust this hook" review for the PreToolUse hook troupe itself generates fresh
+    into the isolated CODEX_HOME every run (codex_config_toml/sandbox.codex.hooks_toml), which is
+    the documented use for that flag ("automation that already vets hook sources"). Disclosed here
+    and in docs/adr/005 and the task summary per lead's #43 follow-up (msg #664), not hidden behind
+    a passing two-flag grep."""
+    text = Path("src/troupe/runners.py").read_text()
+    hits = {line.strip() for line in text.splitlines() if "dangerously" in line.lower()}
+    for line in hits:
+        assert "dangerously-bypass-hook-trust" in line, (
+            f"unexpected 'dangerously' flag/reference in runners.py, not accounted for: {line!r}")
+    assert hits, "expected to find the disclosed --dangerously-bypass-hook-trust usage/comments"
 
 
 # ── role profiles (REQ-SAFE-051) ─────────────────────────────────────────────
