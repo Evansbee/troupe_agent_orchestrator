@@ -26,12 +26,23 @@ the Mac app.
 - **REQ-GUI-008 [ ]** (#55) Minimum window 1120×720: all seven tabs render without overlap or clipping at zoom 1.0 and
   1.15, and nothing regresses at 1560×980. Board card height grows with wrapped titles at any width (unit test on the
   height calculation). Verified by TROUPE_SHOT at both sizes.
-- **REQ-GUI-009 [ ]** (#23; human: "a bit larger") Global UI zoom.
-  - ⌘+ / ⌘- / ⌘0 change it live. The default is 1.15, and ⌘0 resets to it. The range is 0.8 up to the largest step
-    at which all seven tabs render without overlap or clipping at the reference window of 1560×980. The builder
-    records the actual maximum here when shipping.
-  - Zoom persists across restarts, and idle stays at 20 fps.
-  - At 1120×720 with zoom 1.0, rendering is unchanged from before zoom existed. Small-window fixes are REQ-GUI-008.
+- **REQ-GUI-009 [x]** (#23; human: "a bit larger") Global UI zoom, not per-widget font bumping: one factor scales the
+  whole logical coordinate system (fonts *and* layout metrics — `TOP_H`/`SIDEBAR_W`/`GAP`/`RADIUS`/etc.), so
+  everything stays proportional.
+  - ⌘+ / ⌘- / ⌘0 change it live, in 5% steps. The default is 1.15, and ⌘0 resets to it. A toast ("Zoom 115%")
+    confirms each change. The range is 0.8 up to **1.20**, the largest step at which all seven tabs render without
+    overlap or clipping at the reference window of 1560×980 — verified at 0.8, 1.15 and 1.20 via TROUPE_SHOT. Above
+    1.20, several views' fixed-width chrome (Board's 5 columns, Agent's header, Pulse's node orbit) run out of
+    absolute room as the logical canvas shrinks; raising the ceiling further needs a responsive pass across those
+    views, not a zoom change.
+  - Fonts are rasterized at `size × dpi × zoom` so zoomed text is real texture detail, not a blown-up bitmap; text
+    stays crisp on Retina at any zoom level.
+  - Zoom persists across restarts (`kv.gui_zoom`), and idle stays at 20 fps (font atlases are cached per rasterized
+    px size and evicted, not endlessly accumulated, on an actual zoom change — never per frame).
+  - At 1120×720 with zoom 1.0, the zoom mechanism itself (core.py) is unchanged from before it existed. Two small,
+    unconditional views.py fixes made to reach a usable 1560×980 max (Board's assignee/timestamp row, Agent's header
+    button reservation) incidentally improve — never worsen — the pre-existing small-window gaps REQ-GUI-008 tracks,
+    since they aren't zoom-gated.
   - The Mac app gets zoom natively (REQ-MAC).
 
 ## Views
