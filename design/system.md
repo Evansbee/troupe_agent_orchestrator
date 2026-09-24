@@ -350,6 +350,28 @@ the two never coordinate, which is exactly QA's current #23 repro (Stop button, 
 includes that frame's actual button block width — not a fixed constant, so it correctly shrinks further
 whenever Stop is showing.
 
+## App icon (REQ-GUI-027)
+
+`src/troupe/assets/icon/troupe-1024.png` (master), `troupe.iconset/` (standard macOS size set) and
+`troupe.icns` (built via `iconutil`) — regenerate with `design/icon/build-icns.sh <svg>` from the
+1024px source SVG. The iconset's file naming matches Xcode's `AppIcon.appiconset` convention exactly,
+so the same PNGs drop into a SwiftUI asset catalog if/when that's needed — no separate Mac-app asset
+work required.
+
+**Direction ("Orb"), chosen by the human from 3 options (question #9):** a single luminous indigo
+sphere (`ACCENT`-family gradient, bright specular highlight top-left per current Apple icon lighting
+convention) on the midnight squircle background, with a thin orbit ring and one small green
+satellite dot — the calmest, most premium-reading of the three explorations, and the most legible at
+menu-bar/Dock scale since it resolves to one dominant shape rather than several small ones. The other
+two explored directions (a three-orb "Triad" evolving the in-app logo mark literally, and a bold
+abstract "T" monogram) are kept in `design/icon/` for reference; all three were verified legible at
+32px and 16px before presenting them (`design/icon/legibility-check.png`; final shipped-asset check
+at `design/icon/final-legibility-check.png`).
+
+Rendered from hand-authored SVG via `qlmanage -t` (no new runtime dependency — `qlmanage`/`sips`/
+`iconutil` are all macOS built-ins) rather than a raster tool, so the source stays editable and
+resolution-independent.
+
 ## Known gaps (feeds the polish backlog below)
 
 - No real type-scale or radius-scale constants — both are "whatever the nearest call site used."
