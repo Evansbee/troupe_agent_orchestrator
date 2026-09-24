@@ -58,7 +58,7 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
   - Agents not woken are not interrupted; the message appears in their next wake prompt under team chat.
   - The room thread interleaves human and agent replies in time order, each bubble in the agent's role color.
   - Test: routing (mention, role mention, @all, no mention, unknown mention).
-- **REQ-COM-025 [ ]** Keyboard answering in the inbox. (#12)
+- **REQ-COM-025 [x]** Keyboard answering in the inbox. (#12)
   - Keys 1–9 pick that option on the hovered question card, or the top card if none is hovered.
   - Ignored whenever a text input has focus (typing "3" in a reply never answers a question).
   - The answered card gets the same feedback as a click (toast + card leaves).

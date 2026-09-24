@@ -18,6 +18,12 @@ from .data import Data
 TABS = ["Chat", "Pulse", "Board", "Mail", "Memory", "Docs", "Agent"]
 
 
+def window_title(project: str, n_questions: int) -> str:
+    """REQ-GUI-027: '(N) troupe — project' while N questions are open, else plain."""
+    base = f"troupe — {project}"
+    return f"({n_questions}) {base}" if n_questions else base
+
+
 class App:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -46,7 +52,7 @@ class App:
                  | rl.ConfigFlags.FLAG_MSAA_4X_HINT | rl.ConfigFlags.FLAG_VSYNC_HINT)
         rl.set_config_flags(flags)
         rl.set_trace_log_level(rl.TraceLogLevel.LOG_ERROR)
-        rl.init_window(1560, 980, f"troupe — {self.cfg.project}")
+        rl.init_window(1560, 980, window_title(self.cfg.project, 0))
         rl.set_window_min_size(1120, 720)
         rl.set_exit_key(0)
         self.ui.dpi = max(1.0, rl.get_window_scale_dpi().x)
@@ -55,6 +61,7 @@ class App:
         self.data.refresh(force=True)
         fps = 60
         frames = 0
+        title_n = -1  # sentinel: forces the first title update even when 0 questions are open
         auto_shot = os.environ.get("TROUPE_SHOT")
         if os.environ.get("TROUPE_TAB") in TABS:
             self.tab = os.environ["TROUPE_TAB"]
@@ -63,6 +70,10 @@ class App:
         while not rl.window_should_close():
             self.data.refresh()
             self.handle_notifications()
+            n = len(self.data.questions)
+            if n != title_n:  # REQ-GUI-027: "(N) " prefix, live as questions arrive/get answered
+                title_n = n
+                rl.set_window_title(window_title(self.cfg.project, n))
             busy = self.data.running_count() > 0 or self.pulse.particles or self.toasts
             want = 60 if (self.ui.activity < 4 or busy) else 20
             if want != fps:
@@ -329,17 +340,29 @@ class App:
             sub = "Questions and ideas from the team land here."
             ui.text(body.cx - ui.measure(sub, 12) / 2, cy + 62, sub, 12, T.TEXT_FAINT)
             return
-        from .views import question_card, question_card_height
+        from .views import answer_question_option, keyboard_answer_target, question_card, question_card_height
 
         sc = ui.scroll_begin("inbox", body.inset(0, 4))
         y = body.y + 8 - sc.offset
         w = body.w - 24
+        hovered = None
         for q in d.questions:
             h = question_card_height(self, q, w)
             if y + h > body.y - 20 and y < body.b + 20:
-                question_card(self, q, Rect(body.x + 12, y, w, h))
+                card_r = Rect(body.x + 12, y, w, h)
+                if ui.hover(card_r):
+                    hovered = q
+                question_card(self, q, card_r)
             y += h + 10
         ui.scroll_end(sc, y + sc.offset - body.y + 4)
+        # keyboard answering (REQ-COM-025): 1-9 picks that option on the hovered card, else the top one
+        target = keyboard_answer_target(self, hovered)
+        if target is not None:
+            K = rl.KeyboardKey
+            for i in range(9):
+                if rl.is_key_pressed(K.KEY_ONE + i):
+                    answer_question_option(self, target, i)
+                    break
 
     # ── center ────────────────────────────────────────────────────────────
     def draw_center(self, r: Rect) -> None:
