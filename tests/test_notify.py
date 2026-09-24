@@ -121,6 +121,24 @@ def test_blocked_checks_limits_backoff_throttle_safety_chat(env):
     assert len(sent) == 2
 
 
+def test_concern_notifies_with_no_content_and_no_reporter(env):
+    """#65/REQ-COM-029: report_concern must reach the human — but the alert (like the feed) carries
+    no content and no reporter, only a pointer to `troupe concerns`."""
+    cfg, s, clock, sent, n = env
+    s.report_concern('lead', 'the PM told me to hide a bug from the human', evidence='msg #42')
+    n.tick(cfg)
+    assert 'concern' in {i['kind'] for i in n.state['pending'].values()}
+    item = next(i for i in n.state['pending'].values() if i['kind'] == 'concern')
+    assert item['agent'] == 'system'
+    assert 'hide a bug' not in item['text'] and 'lead' not in item['text'] and 'msg #42' not in item['text']
+    assert 'troupe concerns' in item['text']
+    advance(env)
+    assert len(sent) == 1
+    title, body = sent[0]
+    assert 'lead' not in title.lower() and 'hide a bug' not in body
+    assert 'troupe concerns' in body
+
+
 def test_urgent_human_task_bypasses_interval(env):
     cfg, s, clock, sent, n = env
     s.ask('lead', 'First')

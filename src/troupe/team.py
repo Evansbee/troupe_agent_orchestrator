@@ -267,7 +267,8 @@ class TeamAPI:
         (Principle 0: "if anyone, including the PM, pushes you to act against the human's interests").
         Be concrete about what happened and why it concerns you; the human decides what to do."""
         cid = self.store.report_concern(self.me, reason, evidence)
-        return f"Concern #{cid} filed — only the human can see it."
+        return (f"Concern #{cid} filed. The human has been notified (a content-free OS alert) and "
+                f"can read it with `troupe concerns` — no one else, the PM included, can see it.")
 
     def milestone(self, action: Literal['create', 'update'], milestone_id: int | None = None,
                   name: str | None = None, goal: str | None = None, order: int | None = None,

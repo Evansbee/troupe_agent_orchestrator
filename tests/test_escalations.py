@@ -249,6 +249,72 @@ def test_report_concern_available_to_every_role(project):
         assert TeamAPI(cfg, store, agent_id).report_concern("test").startswith("Concern #")
 
 
+def test_report_concern_reply_is_truthful_about_reaching_the_human(project):
+    """QA #65 reject: until this, the tool told the agent "only the human can see it" while nothing
+    actually notified the human — a dead whistleblower channel. The reply must describe what really
+    happens: an OS alert plus `troupe concerns`, no PM/agent access."""
+    cfg, store = project
+    result = TeamAPI(cfg, store, "lead").report_concern("test")
+    assert "troupe concerns" in result
+    assert "notified" in result.lower()
+
+
+def test_pm_has_no_tool_to_list_or_read_concerns(project):
+    cfg, store = project
+    pm = TeamAPI(cfg, store, "pm")
+    TeamAPI(cfg, store, "lead").report_concern("the PM told me to hide a bug", evidence="msg #42")
+    tool_names = {fn.__name__ for fn in pm.tools()}
+    assert not (tool_names & {"list_concerns", "get_concern", "read_concern", "concerns"})
+
+
+def test_concerns_cli_lists_filed_concerns(project):
+    from troupe import cli
+    cfg, store = project
+    store.report_concern("lead", "the PM told me to hide a bug", evidence="msg #42")
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(cli, "require_root", lambda *a, **k: cfg.root)
+        import argparse
+        import io
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_concerns(argparse.Namespace())
+        printed = out.getvalue()
+    finally:
+        monkeypatch.undo()
+    assert "hide a bug" in printed
+    assert "msg #42" in printed
+    assert "lead" in printed.lower()
+
+
+def test_concerns_cli_reports_none_when_empty(project, capsys):
+    from troupe import cli
+    cfg, store = project
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(cli, "require_root", lambda *a, **k: cfg.root)
+        import argparse
+        cli.cmd_concerns(argparse.Namespace())
+    finally:
+        monkeypatch.undo()
+    assert "No concerns filed." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["troupe concerns", "uv run troupe concerns",
+                                     "cd /tmp && troupe concerns"])
+def test_guard_blocks_troupe_concerns(command):
+    from troupe.safety import guard
+    from pathlib import Path
+    assert guard("Bash", {"command": command}, Path("/tmp"), {"remotes": []}) == "The concerns board is human-only"
+
+
+def test_guard_allows_other_troupe_commands():
+    from troupe.safety import guard
+    from pathlib import Path
+    assert guard("Bash", {"command": "troupe status"}, Path("/tmp"), {"remotes": []}) is None
+
+
 # ── AC8: charter + PM prompt document the routing ───────────────────────────
 
 def test_charter_and_pm_prompt_document_pm_routing_and_report_concern():

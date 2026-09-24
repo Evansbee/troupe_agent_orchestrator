@@ -9,7 +9,7 @@ from datetime import datetime
 from .store import HandleBook, Store
 
 KINDS = {'question', 'blocked', 'check_failed', 'rate_limit', 'providers',
-         'backoff', 'crash_loop', 'throttle', 'safety', 'chat', 'stalled', 'timeout'}
+         'backoff', 'crash_loop', 'throttle', 'safety', 'chat', 'stalled', 'timeout', 'concern'}
 FOCUS_TTL = 5
 BATCH_DELAY = 3
 INTERVAL = 30
@@ -78,7 +78,13 @@ class Notifier:
         # Read ascending so busy projects never skip events across bounded pages.
         for e in s.q('SELECT * FROM events WHERE id>? ORDER BY id LIMIT 1000', state['cursor']):
             state['cursor'] = e['id']
-            if e['kind'] in ('safety', 'crash_loop', 'providers', 'stalled', 'timeout'):
+            if e['kind'] == 'concern':
+                # REQ-COM-029: content-free and reporter-free, same as the feed — 'system' as the
+                # agent (never the real reporter) keeps the notification title/body from leaking who
+                # filed it, exactly like the feed text itself carries no content or reporter.
+                self.add(f"event:{e['id']}", 'concern', 'system',
+                        'An agent raised a concern. Run `troupe concerns` to read it.')
+            elif e['kind'] in ('safety', 'crash_loop', 'providers', 'stalled', 'timeout'):
                 self.add(f"event:{e['id']}", e['kind'], e['agent'], e['text'])
             elif e['kind'] == 'message' and e['ref'].startswith('msg:'):
                 m = s.one('SELECT * FROM messages WHERE id=?', int(e['ref'][4:]))
