@@ -100,7 +100,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     before the backend starts, so they exist even for runs that crash.
   - Runs from before the migration show "(not recorded)" rather than erroring.
   - Test: migration on an old-schema DB; a launched run persists both fields.
-- **REQ-ENG-019 [ ]** The team is defined in `.troupe/team.yaml` and both config files hot-reload. (#20; human,
+- **REQ-ENG-019 [x]** The team is defined in `.troupe/team.yaml` and both config files hot-reload. (#20; human,
   live chat: "the agent setup should be a yaml file, which provider, which level")
   - `team.yaml` holds `agents:`, a list of `{id, role, name, providers, enabled, idle_minutes, extra_args}`, plus the
     top-level `provider_limits` (REQ-BE-011).
@@ -129,8 +129,9 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     invalid file keeps the old config.
   - Ids: new agents use `<role>_<N>` ids (the handle's local part, REQ-COM-005). If `id` is omitted it is derived
     from role + the next free N. Legacy ids (`builder-1`, `spec`) stay valid and are never rewritten in the DB.
-- **REQ-ENG-041 [ ]** (#20 ships the mechanism and today's roles; each row notes its task) Default roster, written by `troupe init` and
+- **REQ-ENG-041 [~]** (#20 ships the mechanism and today's roles; each row notes its task) Default roster, written by `troupe init` and
   adopted for this project once #20 lands. Human: trust codex; reviewers run on a different provider from writers.
+  Existing roles and the roster mechanism shipped in #20; architect/researcher entries await #36/#41.
   Each cell is a preference list, first = preferred:
   | id | providers (provider · model · level) |
   |---|---|

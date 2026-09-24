@@ -228,3 +228,25 @@ def test_fresh_init_uses_detected_local_model_and_new_pm_id(tmp_path, monkeypatc
     assert Store(cfg.db_path).messages()[0]["sender"] == "pm_1"
     cfg.team_data["agents"][4]["providers"][0]["level"] = "low"
     assert cfg.team_data["agents"][5]["providers"][0]["level"] == "high"
+
+
+def test_offline_provider_change_clears_old_session_on_recovery(project):
+    cfg, store = project
+    store.set_agent("builder-1", session_id="claude-session", session_runs=2)
+    document = copy.deepcopy(cfg.team_data)
+    next(a for a in document["agents"] if a["id"] == "builder-1")["provider"] = "codex"
+    install_team(cfg, document)
+    Engine(config.load(cfg.root)).recover()
+    assert store.agent("builder-1")["session_id"] is None
+    assert store.agent("builder-1")["session_runs"] == 0
+
+
+def test_mcp_missing_team_uses_snapshot_without_recreating_legacy_roster(project):
+    cfg, store = project
+    engine = Engine(cfg)
+    path = cfg.state_dir / config.TEAM_FILE
+    path.unlink()
+    engine.reload_config()
+    assert config.load_runtime(cfg.root).agent("pm")
+    assert not path.exists()
+    assert store.kv_get("config_error.team.yaml")

@@ -17,14 +17,14 @@ Code: `src/troupe/runners.py`.
   from `fallback_backend`/`fallback_model`.
 - **REQ-BE-008 [ ]** Local backend streaming + reasoning display.
 - **REQ-BE-009 [ ]** Cost for codex/local runs (token-based estimate with configurable prices).
-- **REQ-BE-010 [ ]** Per-agent `level` (from `team.yaml`, REQ-ENG-019) maps to each provider's reasoning control. (#20)
+- **REQ-BE-010 [x]** Per-agent `level` (from `team.yaml`, REQ-ENG-019) maps to each provider's reasoning control. (#20)
   | level | claude | codex | local |
   |---|---|---|---|
   | (empty) | no flag | no flag | nothing sent |
   | low / medium / high | `--effort <level>` | `-c model_reasoning_effort=<level>` | ignored |
   | max | `--effort max` | `-c model_reasoning_effort=xhigh` | ignored |
   - local ignores `level` because OpenAI-compatible servers disagree on the parameter and some reject unknown
-    fields. The Settings view shows "not supported" next to level for local agents.
+    fields. The Settings view will show "not supported" next to level for local agents (#5).
   - Test: argv built for each provider/level pair.
 
 ## Provider usage caps and fallback (#38; human: "if we hit 50% (for example) claude usage, we can stop. Those agents

@@ -291,6 +291,8 @@ def migrate_team(root: Path, raw: dict) -> None:
     if not (root / STATE_DIR / TEAM_FILE).exists():
         if not raw.get("agents"):
             raise ValueError("team.yaml: agents: no team or legacy [[agents]] found")
+        if not isinstance(raw["agents"], list) or not all(isinstance(a, dict) for a in raw["agents"]):
+            raise ValueError("troupe.toml: agents: expected [[agents]] tables")
         agents = []
         for legacy in raw["agents"]:
             row = dict(legacy)
@@ -390,6 +392,10 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
     for key in Budget.__dataclass_fields__:
         if key in raw.get("budget", {}):
             nonnegative(raw["budget"][key], f"budget.{key}", CONFIG_FILE)
+    if "local_max_steps" in raw.get("backends", {}):
+        nonnegative(raw["backends"]["local_max_steps"], "backends.local_max_steps", CONFIG_FILE)
+        if not isinstance(raw["backends"]["local_max_steps"], int):
+            raise ValueError("troupe.toml: backends.local_max_steps must be an integer")
     limits = team_data.get("provider_limits", {})
     if not isinstance(limits, dict):
         raise ValueError("team.yaml: provider_limits: expected a mapping")
@@ -412,11 +418,13 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
 
 def load_runtime(root: Path) -> Config:
     """Let tool servers use the engine's last good config while edits are invalid."""
+    from .store import Store
+    snapshot = Store(root / STATE_DIR / "troupe.db").kv_get("config.last_good")
     try:
+        if snapshot and not (root / STATE_DIR / TEAM_FILE).exists():
+            raise ValueError("team.yaml is missing")
         return load(root)
     except (ValueError, TypeError, KeyError):
-        from .store import Store
-        snapshot = Store(root / STATE_DIR / "troupe.db").kv_get("config.last_good")
         if not snapshot:
             raise
         return load(root, toml_data=snapshot["toml"], team_data=snapshot["team"])

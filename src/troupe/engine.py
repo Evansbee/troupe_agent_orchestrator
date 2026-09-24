@@ -86,26 +86,30 @@ class Engine:
                 lead = next(a.id for a in self.cfg.agents if a.role == "lead")
                 self.store.send("system", lead, message, subject=f"{name} invalid", kind="system")
                 continue
-            previous = {a.id: a for a in self.cfg.agents}
-            for aid, old in previous.items():
-                new = updated.agent(aid)
-                if not new or old.role != new.role:
-                    for task in self.store.tasks(OPEN_STATUSES):
-                        if task["assignee"] == aid or task["reviewer"] == aid:
-                            self.store.update_task(task["id"], actor="system", status="ready", assignee=None,
-                                                   reviewer=None, next_attempt_at=0,
-                                                   event_text=f"#{task['id']} returned to ready after {aid} changed")
-                if not new or old.backend != new.backend:
-                    self._session_versions[aid] = self._session_versions.get(aid, 0) + 1
-                    self.store.set_agent(aid, session_id=None, session_runs=0)
-                    self.store.kv_set(f"local_history:{aid}", [])
+            self.sync_config_agents(updated)
             self.cfg = updated
             self.save_config_snapshot()
-            self.store.sync_agents(updated.agents)
-            for a in updated.agents:
-                self.store.set_agent(a.id, enabled=int(a.enabled))
             self.store.kv_set(f"config_error.{name}", "")
             self.store.event("system", "config", f"Reloaded {name}", significant=False)
+
+    def sync_config_agents(self, updated: Config) -> None:
+        for old in self.store.agents():
+            aid = old["id"]
+            new = updated.agent(aid)
+            if not new or old["role"] != new.role:
+                tasks = self.store.q("SELECT * FROM tasks WHERE status NOT IN ('done','cancelled') "
+                                     "AND (assignee=? OR reviewer=?)", aid, aid)
+                for task in tasks:
+                    self.store.update_task(task["id"], actor="system", status="ready", assignee=None,
+                                           reviewer=None, next_attempt_at=0,
+                                           event_text=f"#{task['id']} returned to ready after {aid} changed")
+            if not new or old["backend"] != new.backend:
+                self._session_versions[aid] = self._session_versions.get(aid, 0) + 1
+                self.store.set_agent(aid, session_id=None, session_runs=0)
+                self.store.kv_set(f"local_history:{aid}", [])
+        self.store.sync_agents(updated.agents)
+        for a in updated.agents:
+            self.store.set_agent(a.id, enabled=int(a.enabled))
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start_thread(self) -> threading.Thread:
@@ -118,7 +122,7 @@ class Engine:
 
     def recover(self) -> None:
         s = self.store
-        s.sync_agents(self.cfg.agents)
+        self.sync_config_agents(self.cfg)
         for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
             s.kv_set(f"config_error.{name}", "")
         s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
