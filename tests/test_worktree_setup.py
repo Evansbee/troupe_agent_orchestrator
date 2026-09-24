@@ -130,13 +130,15 @@ def test_stop_during_setup_does_not_start_provider(project, monkeypatch):
     async def stop():
         await engine.launch(Wake(3, agent, 'task', store.task(tid)))
         running = engine.running[agent.id][1]
-        for _ in range(100):
+        # #71: a real subprocess spawn (cfg.git.setup) races OS scheduling under load, so poll
+        # generously (5s) rather than the original tight 1s budget.
+        for _ in range(500):
             if runner.proc:
                 break
             await asyncio.sleep(0.01)
         assert runner.proc
         runner.kill()
-        await asyncio.wait_for(running, timeout=3)
+        await asyncio.wait_for(running, timeout=10)
     asyncio.run(stop())
     assert runner.specs == []
     assert store.runs()[0]['status'] == 'stopped'

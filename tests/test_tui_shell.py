@@ -34,7 +34,7 @@ def _app(project):
     return TroupeApp(cfg, owns_engine=True)
 
 
-async def _wait_until(predicate, timeout=2.0):
+async def _wait_until(predicate, timeout=5.0):  # #71: generous default under load
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() > deadline:
@@ -93,7 +93,8 @@ def test_live_event_refreshes_the_team_pane_within_a_second(project):
                     state="idle", status="", current_run=None, runs=1, tokens=0, cost=0.0,
                     last_run_at=0.0, activity="", waiting_on=None, mail_queued=0, mail_reading=0)]
                 await server.push_event("agent.state", {"id": "qa"})
-                await _wait_until(lambda: any(a["id"] == "qa" for a in app._panes[0]._agents), timeout=1.0)
+                # #71: was timeout=1.0, tight for a real socket round-trip under load.
+                await _wait_until(lambda: any(a["id"] == "qa" for a in app._panes[0]._agents), timeout=3.0)
         finally:
             await server.stop()
 

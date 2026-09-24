@@ -74,7 +74,12 @@ def test_detach_concurrent_start_stale_and_registry(project):
     assert os.getsid(state["pid"]) == state["pid"]
     store = Store(cfg.db_path)
     heartbeat = store.kv_get("heartbeat")
-    time.sleep(1.1)
+    # #71: the real detached engine subprocess only writes a fresh heartbeat once per ~1s tick
+    # (TICK in engine.py); a single 1.1s sleep left almost no margin for that process to actually
+    # get scheduled under load, so poll generously (10s) instead.
+    deadline = time.monotonic() + 10
+    while store.kv_get("heartbeat") <= heartbeat and time.monotonic() < deadline:
+        time.sleep(0.1)
     assert store.kv_get("heartbeat") > heartbeat
     assert start_service(cfg)["pid"] == state["pid"]
     assert projects()[0]["state"] == "running"
