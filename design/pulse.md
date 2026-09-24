@@ -20,7 +20,44 @@ dashboards. Noted honestly where a source was fully viewed vs. only visible thro
 snippets/thumbnails, per the task's caveat that Dribbble shot pages often don't render for automated
 fetching.)*
 
-<!-- REFERENCES_PLACEHOLDER -->
+All Dribbble shot pages I tried failed to render (JS-heavy pages, known issue) — four leads
+(`dribbble.com/shots/25510763`, `/27561937`, `/18901191`, `/26830008`, plus the tag pages
+`ai-agent-dashboard` and `constellation-animation`) are noted for manual browsing but **not** cited
+below since I never saw the actual visuals. The five below I have verified real page content for.
+
+1. **["Give Your AI Agent a Living Cosmic Interface"](https://hellotrillion.ai/p/cosmic-orb-ui)** — a
+   voice-reactive agent UI: sub-agents orbit a central orb, and light up with a trail-beam + pulse-ring
+   burst *at the moment they're dispatched*, then visually dock near the panel showing what they're
+   working on. **Idea taken:** the "dock near their panel while they work" pairing is stronger than a
+   hover-only link — Layer 5 below adds a persistent (not just hover) thin connective line from a
+   working node to its own Work-panel row, so the pairing is visible at a glance, not just on interaction.
+2. **[Grafana Node Graph panel docs](https://grafana.com/docs/grafana/latest/visualizations/panels-visualizations/visualizations/node-graph/)**
+   — Grafana's network-topology panel encodes connection *type* as dashed-vs-solid strokes and traffic
+   *volume* as edge thickness. **Idea taken:** validates the dashed(waiting)-vs-solid(spoke) split
+   already in Layer 2, and adds a new one — Layer 1's warm-edge spokes now scale thickness with recent
+   message volume on that edge, not just brightness, giving "who talks to whom a lot" a second visual
+   dimension.
+3. **[Fuselab Creative — CyberDefend case study](https://fuselabcreative.com/our-projects/cyberdefend/)**
+   — a satellite-ops dashboard where clicking a flagged node surfaces its correlated detail inline,
+   spatially anchored to the node, never a disconnected modal. **Idea taken:** confirms the no-modal,
+   inline-linking approach already chosen for Layer 5's panel↔scene hover, and extends it — Layer 5 now
+   specifies a **click** (not just hover) pins that link and scrolls/expands the panel row, for
+   deliberately inspecting one agent rather than only transient hover.
+4. **[Linear's UI redesign write-up](https://linear.app/now/how-we-redesigned-the-linear-ui)** — their
+   dark surfaces are generated as LCH-derived elevation steps off one base color, not hand-picked grays,
+   which is why stacked dark panels read as one material. **Idea taken:** principle-level validation for
+   the scene background / Work-panel dock / ticker strip relationship — they should read as elevation
+   steps of one surface (which `design/system.md`'s `PANEL`/`PANEL2`/`PANEL3` progression already
+   approximates), not three separately-designed panels.
+5. **[Vercel's dashboard redesign post](https://vercel.com/blog/dashboard-redesign)** — deployment state
+   surfaces in the browser tab's favicon itself, so status is visible even unfocused. **Idea taken:**
+   supports (doesn't replace) the already-speced but not-yet-designed REQ-GUI-027 dock badge/icon — a
+   future pass on that requirement should consider reflecting "someone is waiting on you," not just the
+   open-question count, echoing this ambient-outside-the-window principle.
+
+(One further lead, Raycast's hairline-border/no-shadow card treatment, surfaced only in unverified search
+snippets — not fetched directly, so not cited as a source, though it's a reasonable thing to eyeball
+manually before committing to glow-heavy treatments everywhere.)
 
 ## Principle: one scene, two densities
 
