@@ -93,6 +93,8 @@ class GitSettings:
     setup: str = ""
     check: str = ""
     check_timeout: float = 600
+    doc_only_paths: list[str] = field(default_factory=lambda: [
+        "specs/**", "design/**", "docs/**", "*.md", "README*", "LICENSE"])
 
     def __post_init__(self) -> None:
         if not isinstance(self.setup, str) or not isinstance(self.check, str):
@@ -100,6 +102,9 @@ class GitSettings:
         if (isinstance(self.check_timeout, bool) or not isinstance(self.check_timeout, (int, float))
                 or not math.isfinite(self.check_timeout) or self.check_timeout < 0):
             raise ValueError("troupe.toml: git.check_timeout must be a non-negative number")
+        if not isinstance(self.doc_only_paths, list) or not all(
+                isinstance(p, str) for p in self.doc_only_paths):
+            raise ValueError("troupe.toml: git.doc_only_paths must be a list of strings")
 
 
 @dataclass
@@ -192,6 +197,9 @@ autocommit = true         # commit doc/spec changes in the main tree after each 
 setup = ""               # command run once in each new worktree, e.g. "uv sync"
 # check = "uv run pytest" # optional merge gate; omitted/empty means no gate
 check_timeout = 600      # seconds
+# doc_only_paths: main moving by only these globs during a check doesn't restart it (#107) —
+# an autocommit that can't touch what the check verifies shouldn't cost an approved task its merge.
+doc_only_paths = ["specs/**", "design/**", "docs/**", "*.md", "README*", "LICENSE"]
 
 # ── The team ─────────────────────────────────────────────────────────────
 # backend: claude | codex | local.  model: backend-specific ("" = backend default).

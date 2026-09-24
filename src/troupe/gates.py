@@ -8,9 +8,12 @@ from pathlib import Path
 
 from . import gitops
 from .safety import audit, fingerprint, protected, redact
+from .store import now
 
 MERGE_RETRY_ATTEMPTS = 3  # #81: how many times to re-check after "repository changed during checks"
 MERGE_RETRY_BACKOFF_SECONDS = 2.0  # wait between retries, so main has a moment to settle
+MERGE_REQUEUE_BACKOFF_SECONDS = 30.0  # #107: real code movement exhausted retries — sit out a
+                                       # while before spending another full check on the same task
 
 
 def request(store, key: str, title: str, context: str, payload: dict, task_id=None) -> dict:
@@ -200,10 +203,20 @@ class MergeGateMixin:
         is always the one that just passed. A real check failure or a genuine merge conflict still
         bounces to the builder immediately, with no retry — retrying wouldn't change the outcome.
 
+        `merge_checked` gets `cfg.git.doc_only_paths` (#107): if main only moved via commits that
+        can't touch what the check verifies (docs/specs by default), that alone doesn't count as
+        "changed" and the merge lands on the first attempt without a retry at all.
+
+        If all retries genuinely lose the race to real code movement, this no longer bounces the
+        task to the builder (#107) — an approved task didn't get worse because main moved, so it
+        shouldn't cost a builder/QA cycle. It stays `approved` and is requeued with a backoff
+        instead, and the outcome is only logged to the check log.
+
         Returns (ok, out, bounced). `bounced=True` means the task was already handled (check_failed,
-        a stop request, or the human's protected-path gate) and the caller should just move on to the
-        next task. `bounced=False` means the caller should apply its normal ok/out merge-result
-        handling (merge success, or a real conflict from merge_checked's own `git merge`)."""
+        requeued after exhausted retries, a stop request, or the human's protected-path gate) and
+        the caller should just move on to the next task. `bounced=False` means the caller should
+        apply its normal ok/out merge-result handling (merge success, or a real conflict from
+        merge_checked's own `git merge`)."""
         for attempt in range(1, MERGE_RETRY_ATTEMPTS + 1):
             main_head, task_head = gitops.prepare_check(cfg.root, tree, t["branch"])
             passed, outcome = gitops.run_check(tree, cfg.git.check, cfg.git.check_timeout, log_path, CheckStop(self))
@@ -219,7 +232,8 @@ class MergeGateMixin:
             if not task_gate(cfg, s, s.task(t["id"])):
                 return False, "awaiting protected-path approval", True
             ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
-                                           f"Merge #{t['id']}: {t['title']}", CheckStop(self))
+                                           f"Merge #{t['id']}: {t['title']}", CheckStop(self),
+                                           doc_only_paths=cfg.git.doc_only_paths)
             if self._stop.is_set() or self.store.kv_get("stopped"):
                 return False, out, True
             if ok or not out.startswith("Repository changed"):
@@ -227,9 +241,12 @@ class MergeGateMixin:
             with log_path.open("a") as log:
                 log.write(f"{out} (attempt {attempt}/{MERGE_RETRY_ATTEMPTS})\n")
             if attempt == MERGE_RETRY_ATTEMPTS:
-                self.check_failed(t, f"Repository changed during checks {MERGE_RETRY_ATTEMPTS} times in a "
-                                      f"row — main kept moving underneath the checked tree. Resubmit for "
-                                      f"review once things settle down.")
+                requeue_at = now() + MERGE_REQUEUE_BACKOFF_SECONDS
+                with log_path.open("a") as log:
+                    log.write(f"Repository changed during checks {MERGE_RETRY_ATTEMPTS} times in a row — "
+                              f"real code movement, not doc/spec-only. Staying approved; requeued in "
+                              f"{MERGE_REQUEUE_BACKOFF_SECONDS:g}s instead of bouncing to the builder.\n")
+                s.update_task(t["id"], next_attempt_at=requeue_at)
                 return False, out, True
             stop = CheckStop(self)
             if stop.wait(MERGE_RETRY_BACKOFF_SECONDS):
@@ -239,6 +256,8 @@ class MergeGateMixin:
         s = self.store
         process_answers(self.cfg, s)
         for t in s.tasks(("approved",)):
+            if now() < (t["next_attempt_at"] or 0):  # #107: sitting out a requeue backoff
+                continue
             if s.kv_get("stopped") or not task_gate(self.cfg, s, t):
                 continue
             if self._stop.is_set() or self.store.kv_get("stopped"):

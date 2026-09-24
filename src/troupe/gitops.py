@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import os
 import signal
@@ -155,6 +156,17 @@ def prune_worktrees(root: Path) -> None:
         git(root, "worktree", "prune")
 
 
+def doc_only_since(root: Path, base: str, head: str, patterns: list[str]) -> bool:
+    """True if every path that changed between `base` and `head` matches at least one glob in
+    `patterns` (fnmatch-style; `*` also spans `/`, so `specs/**` and `specs/*` behave the same).
+    `base == head` (nothing changed) is trivially doc-only — the caller only asks this when it
+    already knows the two differ, but this stays correct either way."""
+    if base == head:
+        return True
+    changed = git(root, "diff", "--name-only", base, head).splitlines()
+    return bool(changed) and all(any(fnmatch.fnmatchcase(p, pat) for pat in patterns) for p in changed)
+
+
 def prepare_check(root: Path, tree: Path, branch: str) -> tuple[str, str]:
     """Bring main into the task tree and return the exact heads being checked."""
     with MAIN_LOCK:
@@ -214,12 +226,25 @@ def run_check(tree: Path, command: str, timeout: float, log_path: Path,
 
 
 def merge_checked(root: Path, tree: Path, branch: str, main_head: str, task_head: str,
-                  message: str, stop: threading.Event | None = None) -> tuple[bool, str]:
-    """Never merge code different from the checked tree, or silently change main first."""
+                  message: str, stop: threading.Event | None = None,
+                  doc_only_paths: list[str] | None = None) -> tuple[bool, str]:
+    """Never merge code different from the checked tree, or silently change main first.
+
+    `doc_only_paths` (#107): main moving is normally treated as "repository changed" and bounces
+    the whole check back to a retry, but every lead/pm/spec/designer/qa run autocommits doc/spec
+    edits straight to main, so main moves more than once per multi-minute check and every retry
+    loses the same race. None of those commits can affect a code check, so if every path that
+    changed on main since `main_head` matches one of these globs, merge the checked tree onto
+    main's *current* HEAD (folding those doc commits in) instead of bouncing. Any change outside
+    the glob list still fails this check exactly as before, forcing a fresh re-check."""
     with MAIN_LOCK:
         if stop is not None and stop.is_set():
             return False, "Check stopped"
-        if (git(root, "rev-parse", "HEAD") != main_head or git(root, "status", "--porcelain")
+        current_head = git(root, "rev-parse", "HEAD")
+        if current_head != main_head and not (
+                doc_only_paths and doc_only_since(root, main_head, current_head, doc_only_paths)):
+            return False, "Repository changed during checks; resubmit so the current tree is checked."
+        if (git(root, "status", "--porcelain")
                 or git(tree, "rev-parse", "HEAD") != task_head or git(tree, "status", "--porcelain")
                 or git(root, "rev-parse", branch) != task_head):
             return False, "Repository changed during checks; resubmit so the current tree is checked."

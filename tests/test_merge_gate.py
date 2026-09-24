@@ -116,7 +116,10 @@ def test_dirty_tree_after_check_retries_once_then_bounces_clearly(project, monke
 
 def test_main_moving_during_check_retries_and_merges_without_bouncing(project, monkeypatch):
     """#81: main moves constantly from non-builder autocommits — that shouldn't cost the builder a
-    wake. The worker re-merges main into the task tree and re-runs the check itself."""
+    wake. The worker re-merges main into the task tree and re-runs the check itself.
+
+    "moved.txt" isn't under any of #107's doc_only_paths globs, so this stays a real retry (today's
+    #81 behavior) rather than the #107 first-attempt-succeeds path below — this pins that down."""
     from troupe import gates as gates_module
     monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
     cfg, store, engine, tid, tree = approved(project)
@@ -141,9 +144,96 @@ def test_main_moving_during_check_retries_and_merges_without_bouncing(project, m
     assert store.kv_get(f"check_failures.{tid}", 0) == 0
 
 
-def test_repository_keeps_changing_gives_up_after_max_attempts(project, monkeypatch):
-    """#81: after MERGE_RETRY_ATTEMPTS consecutive "repository changed" results, stop retrying and
-    bounce with a message that says what actually happened."""
+def test_doc_only_main_movement_merges_on_first_attempt(project, monkeypatch):
+    """#107: a specs/**-only autocommit to main during the check can't affect what the check just
+    verified, so it doesn't count as "repository changed" — the merge lands on the very first
+    attempt (no retry needed), and the merged tree includes both the task's own change and the doc
+    commit that landed on main while the check was running."""
+    cfg, store, engine, tid, tree = approved(project)
+    real_run_check = gitops.run_check
+    calls = []
+    def run_check(tree_, command, timeout, log_path, stop):
+        calls.append(1)
+        (cfg.root / "specs").mkdir(exist_ok=True)
+        (cfg.root / "specs" / "99-scratch.md").write_text("doc change mid-check")
+        gitops.commit_all(cfg.root, "troupe(spec): doc-only change mid-check")
+        return real_run_check(tree_, command, timeout, log_path, stop)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "true"
+    engine.process_approved()
+    assert len(calls) == 1  # first attempt succeeded — no retry needed
+    task = store.task(tid)
+    assert task["status"] == "done"
+    assert (cfg.root / "feature.txt").exists()  # the task's own change
+    assert (cfg.root / "main.txt").exists()  # main's pre-check content
+    assert (cfg.root / "specs" / "99-scratch.md").exists()  # the doc commit, not reverted
+    bodies = [m["body"] for m in store.messages() if m["recipient"] == "builder-1"]
+    assert any("merged into main" in b for b in bodies)
+
+
+def test_non_doc_path_alongside_a_doc_path_still_retries(project, monkeypatch):
+    """#107: the doc-only exception is all-or-nothing per commit set since main_head — a mid-check
+    autocommit that touches even one path outside doc_only_paths must still count as "repository
+    changed" and go through the normal retry, not be waved through because most of it was docs."""
+    from troupe import gates as gates_module
+    monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
+    cfg, store, engine, tid, tree = approved(project)
+    real_run_check = gitops.run_check
+    calls = []
+    moved = {"done": False}
+    def run_check(tree_, command, timeout, log_path, stop):
+        calls.append(1)
+        if not moved["done"]:
+            moved["done"] = True
+            (cfg.root / "specs").mkdir(exist_ok=True)
+            (cfg.root / "specs" / "99-scratch.md").write_text("doc change mid-check")
+            (cfg.root / "src_change.py").write_text("not a doc path")
+            gitops.commit_all(cfg.root, "Mixed doc + code change mid-check")
+        return real_run_check(tree_, command, timeout, log_path, stop)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "true"
+    engine.process_approved()
+    task = store.task(tid)
+    assert task["status"] == "done"  # the retry still succeeds — this isn't testing exhaustion
+    assert (cfg.root / "src_change.py").exists()
+    assert len(calls) == 2  # first-attempt check ran, "changed" triggered a second — not waved through
+
+
+def test_repository_keeps_changing_stays_approved_and_requeues_instead_of_bouncing(project, monkeypatch):
+    """#107: after MERGE_RETRY_ATTEMPTS consecutive "repository changed" results from real code
+    movement (not doc/spec-only, so the #107 doc-only exception doesn't apply), the task no longer
+    bounces to the builder — an approved task didn't get worse because main moved, so it stays
+    `approved` and is requeued with a backoff instead of costing a builder/QA cycle."""
+    from troupe.gates import MERGE_RETRY_ATTEMPTS, MERGE_REQUEUE_BACKOFF_SECONDS
+    from troupe import gates as gates_module
+    from troupe.store import now
+    monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
+    cfg, store, engine, tid, tree = approved(project)
+    real_run_check = gitops.run_check
+    calls = []
+    def run_check(tree_, command, timeout, log_path, stop):
+        calls.append(1)
+        (cfg.root / f"moved{len(calls)}.txt").write_text("moved")  # not a doc-only path
+        gitops.commit_all(cfg.root, f"Main advanced #{len(calls)}")
+        return real_run_check(tree_, command, timeout, log_path, stop)
+    monkeypatch.setattr(gitops, "run_check", run_check)
+    cfg.git.check = "true"
+    before = now()
+    engine.process_approved()
+    assert len(calls) == MERGE_RETRY_ATTEMPTS
+    task = store.task(tid)
+    assert task["status"] == "approved"  # not bounced to in_progress
+    assert task["next_attempt_at"] >= before + MERGE_REQUEUE_BACKOFF_SECONDS
+    assert not store.kv_get(f"check_failed.{tid}")
+    assert not store.unread("builder-1")  # builder not woken
+    assert not (cfg.root / "feature.txt").exists()  # nothing merged yet
+    log = (cfg.state_dir / "checks" / f"t{tid}.log").read_text()
+    assert "requeued" in log.lower() and str(MERGE_RETRY_ATTEMPTS) in log
+
+
+def test_requeued_task_does_not_recheck_until_its_backoff_elapses(project, monkeypatch):
+    """#107: the requeue backoff must actually stop the gate from immediately spending another
+    full check on the same task — otherwise "requeue with a backoff" is just relabeled thrashing."""
     from troupe.gates import MERGE_RETRY_ATTEMPTS
     from troupe import gates as gates_module
     monkeypatch.setattr(gates_module, "MERGE_RETRY_BACKOFF_SECONDS", 0)
@@ -159,12 +249,11 @@ def test_repository_keeps_changing_gives_up_after_max_attempts(project, monkeypa
     cfg.git.check = "true"
     engine.process_approved()
     assert len(calls) == MERGE_RETRY_ATTEMPTS
-    task = store.task(tid)
-    assert task["status"] == "in_progress"
-    assert str(MERGE_RETRY_ATTEMPTS) in task["review_notes"]
-    assert "kept moving" in task["review_notes"] or "changed" in task["review_notes"].lower()
-    assert store.unread("builder-1")
-    assert not (cfg.root / "feature.txt").exists()
+    engine.process_approved()  # immediately again: still inside the backoff window
+    assert len(calls) == MERGE_RETRY_ATTEMPTS  # no new checks ran
+    store.update_task(tid, next_attempt_at=0)  # simulate the backoff having elapsed
+    engine.process_approved()
+    assert len(calls) > MERGE_RETRY_ATTEMPTS  # retried for real this time
 
 
 def test_real_check_failure_bounces_immediately_without_retrying(project, monkeypatch):
@@ -253,3 +342,12 @@ def test_check_config_validation(project):
     assert loaded.git.check_timeout == 600
     with pytest.raises(ValueError, match="git.check_timeout"):
         config.GitSettings(check_timeout=-1)
+
+
+def test_doc_only_paths_config_default_and_validation():
+    assert config.GitSettings().doc_only_paths == [
+        "specs/**", "design/**", "docs/**", "*.md", "README*", "LICENSE"]
+    with pytest.raises(ValueError, match="doc_only_paths"):
+        config.GitSettings(doc_only_paths="specs/**")  # must be a list, not a bare string
+    with pytest.raises(ValueError, match="doc_only_paths"):
+        config.GitSettings(doc_only_paths=[1, 2])
