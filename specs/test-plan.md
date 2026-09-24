@@ -25,6 +25,7 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-ENG-013 | E `budget_limits_ignore_chat_count_and_clear_throttle`: hourly and cost caps stop budget eligibility, chat excluded from run count, reason cleared after recovery. Manual: top bar displays Throttled and correct reason at each cap. |
 | REQ-ENG-014 | E `wake_precedence_debounce_and_pause`: paused agents still eligible for chat, autonomous wakes suppressed. Manual: Pause/Resume changes actual dispatch and leaves chat responsive. |
 | REQ-ENG-015 | E `failures_requeue_mail_and_backoff_to_cap`: 30/60/120/240/480/600/600s retry delays, unread mail restored, candidates suppressed. |
+| REQ-ENG-016 | R = `tests/test_rate_limits.py`: R `provider_events` (claude/codex limit detection), `reset_formats`, `backend_gate_survives_restart_and_expires`, `limited_run_requeues_without_failure_or_attempt`, `gui_snapshot_label_expires`, `event_order_persists_authoritative_expiry`, `persisted_provenance_across_restart_and_independent_reports`. Manual (verified in #2 review): top-bar limit pill and the queued-chat "limited until" label. |
 | REQ-ENG-020 | E `prompts_include_role_and_context`: role prompt and roster included in charter. |
 | REQ-ENG-021 | E `prompts_include_role_and_context`: mail, brief/acceptance, other tasks, board, questions, decisions/reasons, own private notes, team and changes present; others' private notes absent. E `main_checkout_autocommit_policy` checks idle-builder instruction. |
 | REQ-ENG-030 | C `lead_tasks_are_ready_others_backlog`; manual: human +Task creates Ready. |
@@ -34,6 +35,13 @@ manual checks; mocks do not establish real CLI/model interoperability.
 | REQ-ENG-034 | E `conflict_aborts_and_returns_to_builder`: divergent file edits conflict, main unchanged, merge aborted, tree kept and builder receives merge-main instructions. |
 | REQ-ENG-035 | E `unfinished_task_backs_off_then_escalates`: first retry delayed 45s, configured attempt cap blocks and mails Lead. |
 | REQ-ENG-036 | E `main_checkout_autocommit_policy` (builder/spec): idle builder gets no-edit instruction and no automatic commit; spec changes are committed. |
+
+## Safety — specs/05-safety.md
+
+| Requirement | Verification and expected effect |
+|---|---|
+| REQ-SAFE-001 | `tests/test_charter.py`: `charter_reaches_provider` (7 roles × claude/codex/local, the rendered system prompt starts with the approved Principle 0 text) and `every_wake_has_footer` (6 wake reasons end with the reminder). Rollout: resumed Codex sessions need a New session to receive the charter (#42). |
+| REQ-SAFE-004 | Charter text only: covered by REQ-SAFE-001's tests (the appendix text includes both duties). The mechanics are #45. |
 
 ## Communication — specs/20-comms-and-memory.md
 

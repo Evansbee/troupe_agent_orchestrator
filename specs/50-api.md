@@ -81,7 +81,8 @@ Milestone  id, name, goal, order: int, done: int, total: int (tasks, excluding c
 Message    id, ts, sender, recipient, subject, body, kind: "msg"|"chat"|"system", room: str? ("team"),
            reply_to: int?, task_id: int?, read_at: ts?
 Question   id, ts, asker, kind: "question"|"idea"|"approval", question, context, options: [str],
-           status: "open"|"answered"|"dismissed", answer: str?, answered_at: ts?, task_id: int?,
+           status: "open"|"answered"|"dismissed", answer: str?, answered_at: ts?,
+           answered_via: "inbox"|"chat"? (REQ-COM-026), task_id: int?,
            approval?: {task_id, branch, paths: [str]} (kind approval only; REQ-SAFE protected paths)
 Memory     id, ts, agent, kind: "decision"|"note"|"fact"|"idea"|"preference", title, content, rationale,
            scope: "team"|"private", major: bool, pinned: bool, superseded_by: int?,

@@ -88,7 +88,8 @@ class Data:
         self._answer_event = answer_event
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
-        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit")}
+        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
+                                                       "limit.claude", "limit.codex", "limit.local")}
         self.cost_24h = s.scalar("SELECT SUM(cost) FROM runs WHERE started>?", now - 86400, default=0.0)
         self.runs_1h = s.scalar("SELECT COUNT(*) FROM runs WHERE started>? AND chat=0", now - 3600, default=0)
         self.chat_unread = {r["sender"]: r["n"] for r in s.q(
@@ -106,6 +107,13 @@ class Data:
             self.docs = self.scan_docs()
 
     # ── derived ───────────────────────────────────────────────────────────
+    def limit_label(self, backend: str) -> str:
+        until = self.kv.get(f"limit.{backend}") or 0
+        if until <= time.time():
+            return ""
+        reset = time.strftime("%H:%M", time.localtime(until))
+        return f"{backend.title()} limited until {reset}"
+
     @property
     def engine_alive(self) -> bool:
         hb = self.kv.get("heartbeat") or 0
