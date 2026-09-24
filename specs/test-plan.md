@@ -113,6 +113,8 @@ REQ-ENG-039 and the merge gate REQ-ENG-040; current merge tests do not claim to 
 Backend fallback/streaming/cost requirements remain pending in specs/30.
 
 ## Execution record
+_Commit SHAs recorded before 2026-09-24 11:31 predate the history rewrite (author-email change) and no longer
+resolve. Match those runs by date instead._
 
 - 2026-09-23, task #14: `uv run pytest -q` — 31 passed (7 existing, 24 new). New tests cover engine
   scheduling/lifecycle/prompts/git and team permissions/mail/memory. No real backend calls or GUI manual
