@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="38%" cy="28%" r="85%">
+      <stop offset="0%" stop-color="#242b3e"/>
+      <stop offset="60%" stop-color="#12141d"/>
+      <stop offset="100%" stop-color="#090b10"/>
+    </radialGradient>
+    <filter id="glowLg" x="-140%" y="-140%" width="380%" height="380%">
+      <feGaussianBlur stdDeviation="46"/>
+    </filter>
+    <filter id="glowSm" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <radialGradient id="orb" cx="36%" cy="30%" r="72%">
+      <stop offset="0%" stop-color="#d3d8ff"/>
+      <stop offset="35%" stop-color="#8f9cff"/>
+      <stop offset="75%" stop-color="#6a6ff0"/>
+      <stop offset="100%" stop-color="#4638b8"/>
+    </radialGradient>
+    <radialGradient id="satellite" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#c9ffe9"/>
+      <stop offset="55%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#189d6b"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="210" fill="url(#bg)"/>
+  <rect x="33" y="33" width="958" height="958" rx="209" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="2"/>
+
+  <!-- orbit ring -->
+  <circle cx="512" cy="512" r="340" fill="none" stroke="#aab4ff" stroke-opacity="0.22" stroke-width="7"/>
+
+  <!-- satellite -->
+  <circle cx="782" cy="368" r="60" fill="#34d399" filter="url(#glowSm)" opacity="0.55"/>
+  <circle cx="782" cy="368" r="38" fill="url(#satellite)"/>
+
+  <!-- central orb -->
+  <circle cx="512" cy="512" r="255" fill="#7c8cff" filter="url(#glowLg)" opacity="0.55"/>
+  <circle cx="512" cy="512" r="205" fill="url(#orb)"/>
+  <ellipse cx="450" cy="430" rx="80" ry="50" fill="#ffffff" opacity="0.4" filter="url(#glowSm)"/>
+</svg>
