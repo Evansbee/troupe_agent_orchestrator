@@ -375,6 +375,11 @@ def _bez(p0, p1, t, bend=0.18):
 
 def pulse_view(app: "App", r: Rect) -> None:
     ui, d, p = app.ui, app.data, app.pulse
+    metrics, r = r.cut_top(30)
+    counts = d.work_tokens_1h
+    ui.text_fit(metrics.x + 16, metrics.y + 7,
+                f"Autonomous tokens / hour · coordination {counts['coordination']:,} · work {counts['work']:,}",
+                metrics.w - 32, 12, T.TEXT_DIM)
     graph, feed = r.cut_top(r.h * 0.6)
     g = graph.inset(30, 24)
     pos = _node_positions(app, Rect(g.x, g.y + 6, g.w, g.h - 30))

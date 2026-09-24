@@ -12,6 +12,7 @@ from ruamel.yaml.error import YAMLError
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .triage import TriageSettings
 from .roles import get_role
 
 STATE_DIR = ".troupe"
@@ -94,6 +95,7 @@ class Config:
     team_data: dict = field(default_factory=dict, repr=False)
     toml_data: dict = field(default_factory=dict, repr=False)
     git: GitSettings = field(default_factory=GitSettings)
+    triage: TriageSettings = field(default_factory=TriageSettings)
 
     @property
     def state_dir(self) -> Path:
@@ -146,6 +148,12 @@ check_timeout = 600      # seconds
 # ── The team ─────────────────────────────────────────────────────────────
 # backend: claude | codex | local.  model: backend-specific ("" = backend default).
 # idle_minutes overrides how often an agent proactively looks for work (0 = never).
+
+[triage]
+enabled = false
+model = ""  # empty uses the configured local agent model
+max_pending = 5
+timeout = 5.0
 
 [[agents]]
 id = "lead"
@@ -395,7 +403,7 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
         migrate_team(root, raw)
         team_data = read_team(root)
     agents = parse_agents(team_data)
-    for section in ("project", "budget", "backends", "git"):
+    for section in ("project", "budget", "backends", "git", "triage"):
         if not isinstance(raw.get(section, {}), dict):
             raise ValueError(f"troupe.toml: {section}: expected a table")
     for section in ("budget", "backends", "git"):
@@ -426,6 +434,7 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
         git_autocommit=raw.get("git", {}).get("autocommit", True),
         git=GitSettings(**{k: v for k, v in raw.get("git", {}).items() if k in GitSettings.__dataclass_fields__}),
         provider_limits=limits, team_data=team_data, toml_data=raw,
+        triage=TriageSettings(**raw.get("triage", {})),
     )
 
 
