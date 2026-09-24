@@ -483,3 +483,37 @@ def test_cli_and_engine_lifecycle(tmp_path, monkeypatch, capsys):
     assert not thread.is_alive() and not socket_path(tmp_path).exists()
     assert cli(tmp_path, "ping") == 2
     assert "engine not running" in capsys.readouterr().err
+
+
+def test_default_backpressure_threshold(api):
+    server, s = api
+    with client(api) as c:
+        c.call("subscribe", {"topics": ["message.new"]})
+        s.conn.execute("BEGIN")
+        for _ in range(12):
+            s.x(
+                "INSERT INTO messages(ts,sender,recipient,body) VALUES(1,'human','builder-1',?)",
+                "x" * (1024 * 1024),
+            )
+        s.conn.commit()
+        time.sleep(0.3)
+        event = c.event()
+        assert event["event"] == "resync_required"
+        assert c.call("ping")["pong"]
+
+
+def test_internal_error_logs_traceback(api, monkeypatch):
+    server, _ = api
+    original = server.data.read
+
+    def broken(method, params):
+        if method == "config":
+            raise RuntimeError("test failure")
+        return original(method, params)
+
+    monkeypatch.setattr(server.data, "read", broken)
+    with client(api) as c:
+        error(c, "config", {}, "internal")
+        assert c.call("ping")["pong"]
+    log = (server.cfg.state_dir / "engine.log").read_text()
+    assert "Traceback" in log and "test failure" in log

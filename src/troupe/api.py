@@ -12,6 +12,7 @@ import socket
 import stat
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 from dataclasses import asdict
@@ -873,7 +874,7 @@ class Connection:
                             ValueError("non-finite JSON number")
                         ),
                     )
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, RecursionError):
                     self.enqueue(
                         dict(
                             id=None,
@@ -896,7 +897,7 @@ class Connection:
                         await self.flush()
                         break
                 except Exception:
-                    logging.exception("API request failed")
+                    self.server.log_exception("API request failed")
                     self.enqueue(
                         dict(
                             id=rid,
@@ -952,6 +953,11 @@ class APIServer:
         self._usage = None
         self._usage_at = 0
 
+    def log_exception(self, message: str) -> None:
+        logging.exception(message)
+        with (self.cfg.state_dir / "engine.log").open("a") as stream:
+            stream.write(f"{time.time():.3f} {message}\n{traceback.format_exc()}\n")
+
     @property
     def notifications_suppressed(self):
         return any(c.notifications and not c.closed for c in tuple(self.connections))
@@ -979,7 +985,7 @@ class APIServer:
         except Exception as e:
             self._error = e
             self._ready.set()
-            logging.exception("API server failed")
+            self.log_exception("API server failed")
         finally:
             if (
                 self.path
