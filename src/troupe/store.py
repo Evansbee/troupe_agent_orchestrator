@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -69,6 +70,54 @@ ALL_STATUSES = OPEN_STATUSES + ("done", "cancelled")
 
 def now() -> float:
     return time.time()
+
+
+class HandleBook:
+    """Derived display handles and aliases; database identities remain untouched."""
+
+    def __init__(self, project: str, agents: list, *, validate: bool = True):
+        self.project = re.sub(r"[^A-Za-z0-9_.-]", "", re.sub(r"\s+", "_", project))
+        self.handles: dict[str, str] = {}
+        self.aliases: dict[str, str] = {}
+        self.roles: dict[str, list[str]] = {}
+        for agent in agents:
+            aid, role = (agent["id"], agent["role"]) if isinstance(agent, dict) else (agent.id, agent.role)
+            number = re.search(r"(\d+)$", aid)
+            local = f"{role}_{int(number[1]) if number else 1}"
+            handle = f"{local}@{self.project}"
+            for alias in (aid, local, handle):
+                previous = self.aliases.get(alias.casefold())
+                if validate and previous is not None and previous != aid:
+                    raise ValueError(f"team.yaml: {aid}: handle {handle} collides with {previous}")
+                self.aliases[alias.casefold()] = aid
+            self.handles[aid] = handle
+            self.roles.setdefault(role.casefold(), []).append(aid)
+
+    def name(self, agent_id: str | None, *, local: bool = False) -> str:
+        if not agent_id:
+            return "unassigned"
+        handle = self.handles.get(agent_id, agent_id)
+        return handle.split("@", 1)[0] if local else handle
+
+    def resolve(self, address: str, *, exclude: str | None = None) -> list[str]:
+        key = address.strip().lstrip("@").casefold()
+        if key in ("human", "user", "owner"):
+            return ["human"]
+        if key in ("team", "all", "everyone"):
+            return [aid for aid in self.handles if aid != exclude]
+        if key in self.aliases:
+            return [self.aliases[key]]
+        if key in self.roles:
+            return [aid for aid in self.roles[key] if aid != exclude]
+        detail = "Cross-project addresses are not supported. " if "@" in key else ""
+        raise ValueError(f"{detail}Unknown address {address!r}. Use an agent id or handle ({', '.join(self.handles.values())}), a role, team or human.")
+
+    def event_text(self, text: str) -> str:
+        """Render IDs in generated event labels without changing stored history."""
+        if not self.handles:
+            return text
+        pattern = r"(?<![\w@./-])(" + "|".join(re.escape(a) for a in sorted(self.handles, key=len, reverse=True)) + r")(?![\w@./-])"
+        return re.sub(pattern, lambda m: self.name(m[0]), text)
 
 
 class Store:

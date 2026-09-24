@@ -13,7 +13,7 @@ from typing import Literal
 from . import gitops
 from .config import Config
 from .roles import get_role
-from .store import ALL_STATUSES, OPEN_STATUSES, Store
+from .store import ALL_STATUSES, OPEN_STATUSES, Store, HandleBook
 
 MAX_OPEN_QUESTIONS_PER_AGENT = 4
 PRIORITY_NAMES = {0: "P0-urgent", 1: "P1-high", 2: "P2-normal", 3: "P3-low"}
@@ -32,14 +32,15 @@ def ago(ts: float | None) -> str:
     return f"{int(d // 86400)}d ago"
 
 
-def fmt_task_line(t: dict) -> str:
-    who = t["assignee"] or f"({t['role']})"
+def fmt_task_line(t: dict, names: HandleBook | None = None) -> str:
+    who = (names.name(t["assignee"]) if names else t["assignee"]) if t["assignee"] else f"({t['role']})"
     deps = f" deps:{','.join('#' + str(d) for d in t['depends_on'])}" if t["depends_on"] else ""
     return f"#{t['id']} [{t['status']}] {PRIORITY_NAMES.get(t['priority'], t['priority'])} {t['title']} — {who}{deps}"
 
 
-def fmt_task_full(store: Store, t: dict) -> str:
-    lines = [fmt_task_line(t), f"created by {t['created_by']} {ago(t['created'])}, updated {ago(t['updated'])}"]
+def fmt_task_full(store: Store, t: dict, names: HandleBook | None = None) -> str:
+    name = names.name if names else str
+    lines = [fmt_task_line(t, names), f"created by {name(t['created_by'])} {ago(t['created'])}, updated {ago(t['updated'])}"]
     if t["description"]:
         lines += ["", "Description:", t["description"]]
     if t["acceptance"]:
@@ -49,19 +50,20 @@ def fmt_task_full(store: Store, t: dict) -> str:
     if t["branch"]:
         lines += [f"Branch: {t['branch']}   Worktree: {t['worktree']}"]
     if t["reviewer"]:
-        lines += [f"Reviewer: {t['reviewer']}"]
+        lines += [f"Reviewer: {name(t['reviewer'])}"]
     if t["result"]:
         lines += ["", "Builder's summary:", t["result"]]
     if t["review_notes"]:
         lines += ["", "Latest review notes:", t["review_notes"]]
     notes = store.task_notes(t["id"])
     if notes:
-        lines += ["", "Notes:"] + [f"- {n['agent']} ({ago(n['ts'])}): {n['text']}" for n in notes[-12:]]
+        lines += ["", "Notes:"] + [f"- {name(n['agent'])} ({ago(n['ts'])}): {n['text']}" for n in notes[-12:]]
     return "\n".join(lines)
 
 
-def fmt_message(m: dict) -> str:
-    head = f"[msg #{m['id']}] from {m['sender']} → {m['recipient']} ({ago(m['ts'])})"
+def fmt_message(m: dict, names: HandleBook | None = None) -> str:
+    name = names.name if names else str
+    head = f"[msg #{m['id']}] from {name(m['sender'])} → {name(m['recipient'])} ({ago(m['ts'])})"
     if m["subject"]:
         head += f" — {m['subject']}"
     if m["reply_to"]:
@@ -74,6 +76,7 @@ def fmt_message(m: dict) -> str:
 class TeamAPI:
     def __init__(self, cfg: Config, store: Store, agent_id: str):
         self.cfg = cfg
+        self.names = HandleBook(cfg.project, cfg.agents)
         self.store = store
         self.me = agent_id
         me = cfg.agent(agent_id)
@@ -86,18 +89,16 @@ class TeamAPI:
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _resolve(self, to: str) -> list[str]:
-        to = to.strip().lstrip("@")
-        if to in ("human", "user", "owner"):
-            return ["human"]
-        if to in ("team", "all", "everyone"):
-            return [a.id for a in self.cfg.agents if a.id != self.me]
-        if self.cfg.agent(to):
-            return [to]
-        by_role = [a.id for a in self.cfg.agents_with_role(to) if a.id != self.me]
-        if by_role:
-            return by_role
-        raise ValueError(f"unknown recipient {to!r}. Use an agent id ({', '.join(a.id for a in self.cfg.agents)}),"
-                         " a role, 'team', or 'human'.")
+        return self.names.resolve(to, exclude=self.me)
+
+    def _assignment(self, address: str) -> tuple[str | None, str | None]:
+        key = address.strip().lstrip("@").casefold()
+        if key in self.names.roles and key not in self.names.aliases:
+            return None, key  # let the scheduler choose a seat of that role
+        ids = self.names.resolve(address)
+        if len(ids) != 1 or ids[0] == "human":
+            raise ValueError("Choose one agent handle or a role for assignee: " + ", ".join(self.names.handles.values()))
+        return ids[0], None
 
     def _is_lead(self) -> bool:
         return self.role == "lead" or self.me == "human"
@@ -117,7 +118,7 @@ class TeamAPI:
             return f"ERROR: {e}"
         ids = [self.store.send(self.me, r, body, subject=subject, reply_to=reply_to, task_id=task_id)
                for r in recipients]
-        return f"Sent to {', '.join(recipients)} (msg {', '.join('#' + str(i) for i in ids)})."
+        return f"Sent to {', '.join(self.names.name(r) for r in recipients)} (msg {', '.join('#' + str(i) for i in ids)})."
 
     def check_inbox(self) -> str:
         """Fetch any unread messages that arrived since your wake-up (they're marked read)."""
@@ -125,7 +126,7 @@ class TeamAPI:
         self.store.mark_read([m["id"] for m in msgs])
         if not msgs:
             return "No new messages."
-        return "\n\n".join(fmt_message(m) for m in msgs)
+        return "\n\n".join(fmt_message(m, self.names) for m in msgs)
 
     # ── the human ─────────────────────────────────────────────────────────
     def ask_human(self, question: str, context: str = "", options: list[str] | None = None,
@@ -190,8 +191,12 @@ class TeamAPI:
             get_role(role)
         except KeyError as e:
             return f"ERROR: {e}"
-        if assignee and not self.cfg.agent(assignee):
-            return f"ERROR: unknown assignee {assignee!r}"
+        if assignee:
+            try:
+                assignee, assigned_role = self._assignment(assignee)
+                role = assigned_role or role
+            except ValueError as e:
+                return f"ERROR: {e}"
         status = "ready" if self._is_lead() else "backlog"
         tid = self.store.add_task(title, description, acceptance, territory, status=status,
                                   priority=max(0, min(3, priority)), role=role, assignee=assignee or None,
@@ -225,8 +230,13 @@ class TeamAPI:
         edits = {k: v for k, v in edits.items() if v is not None}
         if edits and not (self._is_lead() or (mine and set(edits) <= {"description", "acceptance", "territory"})):
             return "ERROR: only the lead can re-prioritize/re-assign tasks. Add a note or message the lead."
-        if "assignee" in edits and edits["assignee"] and not self.cfg.agent(edits["assignee"]):
-            return f"ERROR: unknown assignee {edits['assignee']!r}"
+        if edits.get("assignee"):
+            try:
+                edits["assignee"], assigned_role = self._assignment(edits["assignee"])
+                if assigned_role:
+                    edits["role"] = assigned_role
+            except ValueError as e:
+                return f"ERROR: {e}"
         fields.update(edits)
         if note:
             self.store.task_note(task_id, self.me, note)
@@ -248,16 +258,19 @@ class TeamAPI:
         else:
             rows = self.store.tasks((status,))
         if assignee:
-            who = self.me if assignee == "me" else assignee
-            rows = [t for t in rows if t["assignee"] == who]
+            try:
+                ids = [self.me] if assignee.casefold() == "me" else self.names.resolve(assignee)
+            except ValueError as e:
+                return f"ERROR: {e}"
+            rows = [t for t in rows if t["assignee"] in ids]
         if not rows:
             return "No matching tasks."
-        return "\n".join(fmt_task_line(t) for t in rows)
+        return "\n".join(fmt_task_line(t, self.names) for t in rows)
 
     def get_task(self, task_id: int) -> str:
         """Full details of a task: brief, acceptance criteria, notes, review history."""
         t = self.store.task(task_id)
-        return fmt_task_full(self.store, t) if t else f"ERROR: no task #{task_id}"
+        return fmt_task_full(self.store, t, self.names) if t else f"ERROR: no task #{task_id}"
 
     def complete_task(self, task_id: int, summary: str) -> str:
         """Mark your task finished. `summary`: what changed, how you verified it, anything left undone.
@@ -268,7 +281,7 @@ class TeamAPI:
         if not t:
             return f"ERROR: no task #{task_id}"
         if t["assignee"] != self.me and not self._is_lead():
-            return f"ERROR: task #{task_id} is assigned to {t['assignee']}, not you."
+            return f"ERROR: task #{task_id} is assigned to {self.names.name(t['assignee'])}, not you."
         if get_role(t["role"]).works_in_task_tree and t["role"] != "qa" and not t["branch"]:
             return ("ERROR: code tasks are built in a task worktree, which this task doesn't have yet. "
                     "Stop here; the orchestrator will wake you inside its worktree.")
@@ -305,7 +318,7 @@ class TeamAPI:
         if t["assignee"]:
             self.store.send(self.me, t["assignee"], notes, subject=f"Review: #{task_id} needs changes",
                             task_id=task_id)
-        return f"Rejected #{task_id}; sent back to {t['assignee']} with your notes."
+        return f"Rejected #{task_id}; sent back to {self.names.name(t['assignee'])} with your notes."
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, title: str, content: str = "", rationale: str = "",
@@ -320,6 +333,14 @@ class TeamAPI:
     def recall(self, query: str = "", agent: str = "", kind: str = "", limit: int = 15) -> str:
         """Search team memory (plus your private notes) — decisions, facts, preferences, ideas.
         `query`: keywords (all must match). Filter by `agent` or `kind`. Check before deciding or asking."""
+        if agent:
+            try:
+                ids = self.names.resolve(agent)
+                if len(ids) != 1:
+                    return "ERROR: choose one agent handle: " + ", ".join(self.names.handles.values())
+                agent = ids[0]
+            except ValueError as e:
+                return f"ERROR: {e}"
         rows = self.store.memories(agent=agent or None, query=query, kind=kind, limit=limit,
                                    include_private_of=self.me)
         answered = []
@@ -329,7 +350,7 @@ class TeamAPI:
                                for w in query.split())][:8]
         if not rows and not answered:
             return "Nothing found."
-        out = [f"[{m['kind']} #{m['id']}] {m['title']} — {m['agent']}, {ago(m['ts'])}"
+        out = [f"[{m['kind']} #{m['id']}] {m['title']} — {self.names.name(m['agent'])}, {ago(m['ts'])}"
                + (f"\n  {m['content']}" if m["content"] else "")
                + (f"\n  why: {m['rationale']}" if m["rationale"] else "") for m in rows]
         out += [f"[answered question #{q['id']}] {q['question']} → human: {q['answer']}" for q in answered]
@@ -349,7 +370,7 @@ class TeamAPI:
         for a in self.store.agents():
             role = get_role(a["role"])
             mine = [f"#{t['id']}({t['status']})" for t in open_tasks if t["assignee"] == a["id"]]
-            out.append(f"- {a['id']} — {a['name']}, {role.title} [{a['backend']}{'/' + a['model'] if a['model'] else ''}]"
+            out.append(f"- {self.names.name(a['id'])} — {a['name']}, {role.title} [{a['backend']}{'/' + a['model'] if a['model'] else ''}]"
                        f" · {a['state']}{' · ' + a['status'] if a['status'] else ''}"
                        f"{' · tasks: ' + ' '.join(mine) if mine else ''}")
         return "\n".join(out)

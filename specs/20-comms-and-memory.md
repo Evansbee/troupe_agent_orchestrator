@@ -9,7 +9,7 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - **REQ-COM-001 [x]** Identity comes from `TROUPE_AGENT`; the same API is used natively by local models.
 - **REQ-COM-002 [x]** Tool results are short plain text written for an LLM; errors start with `ERROR:` and say
   what to do instead.
-- **REQ-COM-005 [ ]** (#25) Every agent has a **handle** `<role>_<N>@<project>` (human: so it's clear who is talking
+- **REQ-COM-005 [x]** (#25) Every agent has a **handle** `<role>_<N>@<project>` (human: so it's clear who is talking
   to whom across projects), e.g. `lead_1@troupe`, `builder_2@troupe`.
   - `<project>` is `[project] name`, with runs of whitespace turned into `_` and characters outside
     `[A-Za-z0-9_.-]` dropped. Always numbered, even for single-seat roles.

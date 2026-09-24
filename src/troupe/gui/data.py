@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..config import Config
 from ..roles import get_role
-from ..store import OPEN_STATUSES, Store
+from ..store import OPEN_STATUSES, Store, HandleBook
 
 
 class Data:
@@ -17,6 +17,7 @@ class Data:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.store = Store(cfg.db_path)
+        self.names = HandleBook(cfg.project, cfg.agents)
         self.last = 0.0
         self.agents: list[dict] = []
         self.agent_by_id: dict[str, dict] = {}
@@ -62,11 +63,10 @@ class Data:
             return f"B{digits or ''}"
         return r.initials
 
-    def name_of(self, agent_id: str) -> str:
+    def name_of(self, agent_id: str, *, local: bool = False) -> str:
         if agent_id == "human":
             return "You"
-        a = self.agent_by_id.get(agent_id)
-        return a["name"] if a else agent_id
+        return self.names.name(agent_id, local=local)
 
     def refresh(self, force: bool = False) -> None:
         now = time.time()
@@ -75,10 +75,13 @@ class Data:
         self.last = now
         s = self.store
         self.agents = s.agents()
+        self.names = HandleBook(self.cfg.project, self.agents, validate=False)
         self.agent_by_id = {a["id"]: a for a in self.agents}
         self.tasks = s.tasks(limit=800)
         self.questions = s.questions("open")
         self.events = s.events(limit=300)
+        for event in self.events:
+            event["text"] = self.names.event_text(event["text"])
         answer_event = s.max_event_id()
         if self._answer_event is not None:
             self.new_chat_answers += s.q(

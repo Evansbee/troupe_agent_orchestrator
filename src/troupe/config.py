@@ -373,6 +373,8 @@ def parse_agents(document: dict) -> list[AgentCfg]:
                                row.get("enabled", True), row.get("idle_minutes"), first.level, list(args), providers))
     if sum(a.role == "lead" for a in agents) != 1:
         raise ValueError("team.yaml: agents: role: exactly one lead is required")
+    from .store import HandleBook
+    HandleBook("", agents)  # aliases and full handles must be unambiguous
     return agents
 
 
