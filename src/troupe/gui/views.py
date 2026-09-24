@@ -789,6 +789,9 @@ def agent_view(app: "App", r: Rect) -> None:
     x = chips.x + 14
     for run in runs:
         label = f"#{run['id']} {run['reason']}"
+        w_est = ui.measure(label, 11.5, "med") + 20
+        if x + w_est > chips.r - 8:
+            break
         c = {"ok": T.GREEN, "running": T.ACCENT, "failed": T.RED, "stopped": T.YELLOW}.get(run["status"], T.TEXT_FAINT)
         clicked, w = ui.chip(f"run:{run['id']}", x, chips.y + 10, label, run["id"] == rsel, c, 11.5)
         if ui.hover(Rect(x, chips.y + 10, w, 26)):
@@ -796,8 +799,6 @@ def agent_view(app: "App", r: Rect) -> None:
         if clicked:
             app.sel_run = run["id"]
         x += w + 6
-        if x > chips.r - 8:
-            break
     vx = view_toggle.x + 8
     for mode in ("Transcript", "Prompt"):
         clicked, w = ui.chip(f"runview:{mode}", vx, view_toggle.y + 10, mode, app.run_view == mode,
