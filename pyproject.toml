@@ -12,6 +12,7 @@ dependencies = [
     "mcp>=2.2.0",
     "raylib>=6.0.1.0",
     "ruamel-yaml>=0.19.1",
+    "textual>=8.2.8",
 ]
 
 [project.scripts]

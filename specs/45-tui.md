@@ -1,7 +1,8 @@
 # TUI: the per-project terminal dashboard
 
 Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
-Code: `src/troupe/tui/` (Textual app), `src/troupe/cli.py` (default command). Task: #66.
+Code: `src/troupe/tui/` (Textual app), `src/troupe/cli.py` (default command). Tasks: #66–#69. Look and layout:
+`design/tui.md`.
 
 > The human, 2026-09-24: "in a tmux terminal window, I want to do troupe-project or something similar; the TUI for the
 > project will have status for that specific project, something simple that shows mailboxes, comms, tasks, maybe a
@@ -51,7 +52,8 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     - a second TUI attaches, and its `q` doesn't stop the engine.
 - **REQ-TUI-002 [ ]** Data only through the API, including the TUI's own child engine: hello, snapshot, then
   subscribe (REQ-API-010/020/060).
-  - No direct DB reads and no polling.
+  - No direct DB reads and no polling. Read-only local files are the exception, as in REQ-API-022: docs, and
+    `git diff` for an approval card's "Open full diff" (design/tui.md).
   - Live updates appear within 1 s of a new message or task change.
   - An engine restart (`r`) reconnects without clearing the screen (as REQ-MAC-012).
   - Methods the API reports as `unavailable` (REQ-API-006) are hidden or disabled, never errors.
@@ -60,7 +62,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   for a TUI. No other additions without a reason in the task summary.
 
 ## Layout
-- **REQ-TUI-010 [ ]** Panes, dense and calm:
+- **REQ-TUI-010 [~]** Panes, dense and calm (Needs you done, #67; the rest is #66/#68/#69):
   - **Header:** project, engine state (REQ-GUI-029 states, including Stopped), active milestone progress
     (REQ-ENG-045), and provider usage meters (REQ-BE-011/014).
   - **Team:** one line per agent: handle, state (working / idle / waiting-on-X from `waiting_on`, REQ-ENG-046),
@@ -92,7 +94,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     the human is elsewhere in tmux.
 
 ## Keys
-- **REQ-TUI-020 [ ]** Key bindings (shown in a footer):
+- **REQ-TUI-020 [~]** Key bindings (shown in a footer) (`a` answering done, #67; the rest is #66/#69):
 
   | key | action |
   |---|---|
