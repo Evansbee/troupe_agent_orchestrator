@@ -56,6 +56,8 @@ class App:
         auto_shot = os.environ.get("TROUPE_SHOT")
         if os.environ.get("TROUPE_TAB") in TABS:
             self.tab = os.environ["TROUPE_TAB"]
+        if os.environ.get("TROUPE_TASK", "").isdigit():
+            self.sel_task = int(os.environ["TROUPE_TASK"])
         while not rl.window_should_close():
             self.data.refresh()
             self.handle_notifications()
@@ -318,7 +320,8 @@ class App:
         unread_total = sum(d.chat_unread.values())
         for i, name in enumerate(TABS):
             label = name if name != "Agent" else d.name_of(self.sel_agent)
-            w = ui.measure(label, 13, "med") + 28
+            has_badge = name == "Chat" and unread_total
+            w = ui.measure(label, 13, "med") + 28 + (22 if has_badge else 0)
             tr = Rect(x, bar.y + 6, w, 34)
             active = self.tab == name
             hov = ui.hover(tr)
@@ -327,15 +330,15 @@ class App:
                 ui.hand()
             col = T.TEXT if active else (T.TEXT if hov else T.TEXT_DIM)
             ui.text(tr.x + 14, tr.y + 9, label, 13, col, "med")
-            if name == "Chat" and unread_total:
-                ui.badge(tr.r - 4, tr.y + 8, unread_total, T.ACCENT)
+            if has_badge:
+                ui.badge(tr.x + 14 + ui.measure(label, 13, "med") + 16, tr.cy, unread_total, T.ACCENT)
             if name == "Board":
                 nrev = sum(1 for t in d.tasks if t["status"] == "review")
                 if nrev:
                     ui.dot(tr.r - 6, tr.y + 8, T.ORANGE, 3.5)
             if active:
                 ux = ui.ease("tab_x", tr.x + 10, 18)
-                uw = ui.ease("tab_w", tr.w - 20, 18)
+                uw = ui.ease("tab_w", tr.w - 20 - (22 if has_badge else 0), 18)
                 ui.rect(Rect(ux, bar.b - 3, uw, 3), T.ACCENT, 1.5)
             if ui.click(tr):
                 self.tab = name
