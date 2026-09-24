@@ -157,12 +157,18 @@ class Engine:
 
     async def main(self) -> None:
         from .api import APIServer
+        from .notify import Notifier
 
         self.api = APIServer(self.cfg, self)
+        notifier_task = None
         try:
             self.api.start()
+            notifier_task = asyncio.create_task(Notifier(self.store).run(self))
             await self._serve()
         finally:
+            if notifier_task:
+                notifier_task.cancel()
+                await asyncio.gather(notifier_task, return_exceptions=True)
             self.api.stop()
 
     async def _serve(self) -> None:
@@ -346,6 +352,8 @@ class Engine:
             self._merge_lock.release()
 
     def check_failed(self, task: dict, output: str) -> None:
+        key = f"check_failures.{task['id']}"
+        self.store.kv_set(key, (self.store.kv_get(key, 0) or 0) + 1)
         note = f"Checks failed on #{task['id']}:\n{output}"
         self.store.update_task(task["id"], actor="system", status="in_progress", next_attempt_at=0,
                                review_notes=note, event_text=f"Checks failed on #{task['id']}")
@@ -383,6 +391,7 @@ class Engine:
                             tail = "".join(deque(log, maxlen=50))[-12000:]
                         self.check_failed(t, tail or outcome)
                         continue
+                    s.kv_set(f"check_failures.{t['id']}", 0)
                     ok, out = gitops.merge_checked(cfg.root, tree, t["branch"], main_head, task_head,
                                                    f"Merge #{t['id']}: {t['title']}", self._stop)
                     if self._stop.is_set():
@@ -402,6 +411,7 @@ class Engine:
             else:
                 ok, out = gitops.merge_branch(cfg.root, t["branch"], f"Merge #{t['id']}: {t['title']}")
             if ok:
+                s.kv_set(f"check_failures.{t['id']}", 0)
                 try:
                     if t["worktree"]:
                         gitops.remove_worktree(self.cfg.root, Path(t["worktree"]))

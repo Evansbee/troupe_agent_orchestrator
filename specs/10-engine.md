@@ -277,7 +277,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
 ## The human's attention and requests
-- **REQ-ENG-047 [ ]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
+- **REQ-ENG-047 [x]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
   notifications, and they work with the GUI closed.
   - Events:
     - a new `ask_human` question or `propose_idea`, or an approval card (REQ-SAFE-020);
