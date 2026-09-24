@@ -62,7 +62,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   for a TUI. No other additions without a reason in the task summary.
 
 ## Layout
-- **REQ-TUI-010 [ ]** Panes, dense and calm:
+- **REQ-TUI-010 [~]** Panes, dense and calm (Needs you done, #67; the rest is #66/#68/#69):
   - **Header:** project, engine state (REQ-GUI-029 states, including Stopped), active milestone progress
     (REQ-ENG-045), and provider usage meters (REQ-BE-011/014).
   - **Team:** one line per agent: handle, state (working / idle / waiting-on-X from `waiting_on`, REQ-ENG-046),
@@ -94,7 +94,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
     the human is elsewhere in tmux.
 
 ## Keys
-- **REQ-TUI-020 [ ]** Key bindings (shown in a footer):
+- **REQ-TUI-020 [~]** Key bindings (shown in a footer) (`a` answering done, #67; the rest is #66/#69):
 
   | key | action |
   |---|---|
