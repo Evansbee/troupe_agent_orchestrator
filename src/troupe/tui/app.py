@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -15,7 +16,7 @@ from textual.widgets import Footer, Label, Static, TabbedContent, TabPane
 from .. import config as config_mod
 from ..api import APIError
 from .client import TuiClient
-from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
+from .lifecycle import ensure_engine, kill_owned_engine_now, restart_engine, stop_owned_engine
 from .panes.chat import ChatPane, Composer
 from .panes.feed import FeedPane
 from .panes.header import HeaderPane
@@ -84,6 +85,10 @@ class TroupeApp(App):
         # "q" only quits when the composer isn't focused (it's a text character otherwise); ctrl+q
         # (Textual's own default binding, see action_quit below) always works, so the footer says so.
         Binding("q", "quit_app", "Quit (^Q always)"),
+        # priority=True (REQ-TUI-001, #100 F1): without it, a focused Input/TextArea (the chat
+        # composer) eats ctrl+c as its own "copy selection" binding and this never fires. Kill
+        # intent, so no confirm screen — see _kill_now.
+        Binding("ctrl+c", "kill_now", "Kill", priority=True, show=False),
         Binding("s", "stop_everything", "Stop"),
         # A real terminal reports Shift+R as the plain character "R" (there's no separate shift
         # modifier byte for a printable ASCII letter) — the same caveat panes/chat.py notes for
@@ -109,6 +114,8 @@ class TroupeApp(App):
         self._stopped_banner: StoppedBanner | None = None
         self._engine_stopped = False
         self._compact: bool | None = None  # unknown until first layout, forcing an initial build
+        self._kill_requested = False  # set on the first Ctrl-C/SIGINT/SIGHUP/SIGTERM; a second
+        # one while a stop is still in flight escalates straight to SIGKILL (REQ-TUI-001)
 
     @property
     def _all_panes(self) -> list:
@@ -257,16 +264,33 @@ class TroupeApp(App):
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGHUP, signal.SIGTERM):
+        # SIGINT (#100 F2): the terminal driver runs in raw mode for Textual's own key handling, so
+        # a real Ctrl-C keypress normally never reaches us as this signal at all -- action_kill_now
+        # (bound above with priority=True) is what catches that. This handler exists for a SIGINT
+        # delivered directly (e.g. `kill -INT`), which used to exit rc=0 and orphan the engine
+        # because nothing here handled it. SIGHUP/SIGTERM: terminal closed / normal termination.
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
             try:
-                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self._on_terminate()))
+                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self._kill_now()))
             except (NotImplementedError, ValueError):
                 pass  # not every platform/context supports this (e.g. non-main thread in tests)
 
-    async def _on_terminate(self) -> None:
-        """SIGHUP/SIGTERM: stop everything without asking if we own the engine; either way exit."""
+    def action_kill_now(self) -> None:
+        asyncio.ensure_future(self._kill_now())
+
+    async def _kill_now(self) -> None:
+        """Ctrl-C (key or signal), SIGINT, SIGHUP, SIGTERM: kill intent, no confirm dialog
+        (REQ-TUI-001). The first call starts a bounded (5s) graceful stop of an owned engine; a
+        second call while that's still in flight escalates immediately to SIGKILL instead of
+        waiting the rest of it out."""
+        if self._kill_requested:
+            if self.owns_engine:
+                await kill_owned_engine_now(self.cfg)
+            self.exit()
+            return
+        self._kill_requested = True
         if self.owns_engine:
-            await stop_owned_engine(self.cfg)
+            await stop_owned_engine(self.cfg, timeout=5)
         self.exit()
 
     @work
@@ -350,3 +374,10 @@ class TroupeApp(App):
 def run_tui(cfg: config_mod.Config, *, owns_engine: bool) -> None:
     app = TroupeApp(cfg, owns_engine=owns_engine)
     app.run()
+    # #108: Textual's own crash handling (App.panic/_fatal_error) catches an unhandled exception
+    # from a message handler, prints the traceback, and returns normally from run() -- it does not
+    # raise or exit non-zero on its own (its return_code docstring's own example is `sys.exit(
+    # app.return_code)`, i.e. that's the caller's job). Without this, an app that crashed on
+    # startup looked exactly like a clean exit to anything checking the process exit code.
+    if app.return_code:
+        sys.exit(app.return_code)

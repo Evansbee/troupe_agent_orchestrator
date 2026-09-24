@@ -19,6 +19,7 @@ from textual.containers import Container
 from textual.widgets import RichLog
 
 from .. import colors as C
+from . import AutoRetrier, ReloadCoalescer
 
 MAX_ITEMS = 300  # kept in memory per source; RichLog itself is unbounded scrollback
 
@@ -48,6 +49,7 @@ class FeedPane(Container):
         Binding("d", "toggle_decisions", "Decisions only", show=True),
         Binding("[", "prev_agent", "Prev agent filter", show=False),
         Binding("]", "next_agent", "Next agent filter", show=False),
+        Binding("r", "retry", "Retry", show=False),
     ]
 
     def __init__(self, client: Any, **kwargs: Any) -> None:
@@ -59,19 +61,44 @@ class FeedPane(Container):
         self._agent_filter: str | None = None  # None = all
         self._fyi_filter: bool | None = None  # None = all, True = FYI only, False = action only
         self._decisions_only = False
+        self._loaded_ok = False
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="feed-log", auto_scroll=True, markup=False, wrap=True, max_lines=2000)
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        agents = await self.client.call("agents")
-        self._agents_by_id = {a["id"]: a for a in agents["items"]}
-        messages = await self.client.call("messages", kind="msg", limit=MAX_ITEMS)
-        self._messages = list(reversed(messages["items"]))  # API returns newest-first
-        decisions = await self.client.call("memories", kind="decision", limit=MAX_ITEMS)
-        self._decisions = list(reversed(decisions["items"]))
+        # #108: coalesced (a burst of triggers collapses to one in-flight + one trailing reload)
+        # and non-destructive on a refresh failure -- see panes/__init__.py's Pane.load().
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
+        try:
+            agents = await self.client.call("agents")
+            self._agents_by_id = {a["id"]: a for a in agents["items"]}
+            messages = await self.client.call("messages", kind="msg", limit=MAX_ITEMS)
+            self._messages = list(reversed(messages["items"]))  # API returns newest-first
+            decisions = await self.client.call("memories", kind="decision", limit=MAX_ITEMS)
+            self._decisions = list(reversed(decisions["items"]))
+        except Exception as e:
+            reason = str(e) or type(e).__name__
+            if self._loaded_ok:
+                self.border_subtitle = f"couldn't refresh: {reason} (r)"
+            else:
+                log = self.query_one(RichLog)
+                log.clear()
+                log.write(f"couldn't load: {reason} (r to retry)")
+            self._retrier.schedule()
+            return
+        self._loaded_ok = True
+        self._retrier.reset()
+        self.border_subtitle = ""
         self._repaint()
+
+    async def action_retry(self) -> None:
+        await self.load()
 
     def on_troupe_event(self, event: dict) -> None:
         name = event["event"]
@@ -90,7 +117,10 @@ class FeedPane(Container):
             self.app.call_later(self._refresh_agents)
 
     async def _refresh_agents(self) -> None:
-        agents = await self.client.call("agents")
+        try:
+            agents = await self.client.call("agents")
+        except Exception:
+            return  # a transient failure here just means stale handles until the next event/retry
         self._agents_by_id = {a["id"]: a for a in agents["items"]}
         self._repaint()
 

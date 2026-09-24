@@ -18,16 +18,15 @@ from . import __version__
 from .store import HandleBook, Store
 
 
-def write_service_state(
-    state_dir: Path, state: str, reason: str = "", restarts: int | None = None
-):
+def _read_service_json(state_dir: Path) -> dict:
+    try:
+        return json.loads((state_dir / "service.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_service_json(state_dir: Path, value: dict) -> None:
     path = state_dir / "service.json"
-    if restarts is None:
-        try:
-            restarts = json.loads(path.read_text()).get("restarts", 0)
-        except (OSError, ValueError):
-            restarts = 0
-    value = dict(state=state, reason=reason, since=time.time(), restarts=restarts)
     fd, name = tempfile.mkstemp(prefix=".service-", dir=state_dir)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -37,6 +36,54 @@ def write_service_state(
         Path(name).unlink(missing_ok=True)
 
 
+def write_service_state(
+    state_dir: Path, state: str, reason: str = "", restarts: int | None = None
+):
+    existing = _read_service_json(state_dir)
+    if restarts is None:
+        restarts = existing.get("restarts", 0)
+    value = dict(state=state, reason=reason, since=time.time(), restarts=restarts)
+    if state == "stopped":
+        # QA's #100 regression: a stale owner record must never outlive the engine it named, or
+        # (a) a later, unrelated engine looks like the same orphaned TUI and gets silently
+        # adopted, or (b) a real orphan looks falsely owned because its pid got reused. Every stop
+        # path -- stop_service, kill_service_now, and the engine's own clean shutdown (api.py's
+        # serve() calling this with "stopped" from its finally block) -- funnels through here.
+        value.update(owner_kind=None, owner_pid=None, owner_identity=None)
+    else:
+        # Otherwise this is the launcher's concern (set_owner, below), not the engine's: this is
+        # also called from inside the engine process itself (api.py, state="running" at startup),
+        # which must not clobber who started it.
+        value.update(owner_kind=existing.get("owner_kind"), owner_pid=existing.get("owner_pid"),
+                     owner_identity=existing.get("owner_identity"))
+    _write_service_json(state_dir, value)
+
+
+def set_owner(state_dir: Path, pid: int, kind: str) -> None:
+    """Record which launcher process is responsible for this engine, and how (REQ-TUI-001's
+    relaunch re-adopt, #100 F3 + QA's regression fix): `kind` is "tui", "up" or "service" (matching
+    the caller). Only a "tui" owner is ever a candidate for re-adoption -- `troupe up`/`start`/
+    `engine` legitimately keep an engine running independent of their own process lifetime, exactly
+    like a plain `troupe start` does, so a later TUI must still just attach to those, not adopt
+    them, even if their own launcher process has since exited."""
+    assert kind in ("tui", "up", "service"), kind
+    existing = _read_service_json(state_dir)
+    existing.update(owner_kind=kind, owner_pid=pid, owner_identity=_identity(pid))
+    existing.setdefault("since", time.time())
+    _write_service_json(state_dir, existing)
+
+
+def tui_owner_is_dead(root: Path) -> bool:
+    """True only when the recorded owner is a TUI and that specific process is provably gone
+    (identity-checked, so a pid the kernel later reused for something unrelated is never mistaken
+    for the same still-alive TUI). Any other owner ("up", "service", or none recorded at all --
+    pre-#100 engines, or `troupe up`/`start`/`engine`, never having named themselves "tui") is
+    never a re-adopt candidate; ensure_engine just attaches to those, as before #100."""
+    owner = _read_service_json(root / ".troupe")
+    if owner.get("owner_kind") != "tui" or owner.get("owner_pid") is None:
+        return False
+    pid = owner["owner_pid"]
+    return not (_process_alive(pid) and _identity(pid) == owner.get("owner_identity"))
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -147,10 +194,17 @@ def service_status(root: Path) -> dict:
         uptime=max(0, time.time() - record.get("started_at", time.time())),
         heartbeat=heartbeat,
         heartbeat_age=heartbeat_age,
+        owner_pid=_read_service_json(state).get("owner_pid") if live else None,
+        owner_kind=_read_service_json(state).get("owner_kind") if live else None,
     )
 
 
-def start_service(cfg, timeout: float = 10) -> dict:
+def start_service(cfg, timeout: float = 10, owner: str = "service") -> dict:
+    """`owner` records who's responsible for this engine ("tui", "up" or "service") -- but only if
+    THIS call is the one that actually spawns it. Attaching to an engine someone else already
+    started must never overwrite (or invent) an ownership record for it; that's what QA's #100
+    regression was -- a `troupe start`-owned engine had no owner recorded, which ensure_engine's
+    old adopt-when-ownerless rule misread as an orphan and adopted."""
     register_project(cfg.root, cfg.project)
     status = service_status(cfg.root)
     child = None
@@ -171,6 +225,8 @@ def start_service(cfg, timeout: float = 10) -> dict:
             and status["heartbeat_age"] < 2
             and status["heartbeat"] >= status["started_at"]
         ):
+            if child is not None:
+                set_owner(cfg.state_dir, os.getpid(), owner)
             return status
         if child is not None and child.poll() not in (None, 0):
             break
@@ -266,6 +322,30 @@ def stop_service(cfg, timeout: float = 15) -> bool:
     return True
 
 
+def kill_service_now(cfg) -> bool:
+    """No SIGTERM grace period: REQ-TUI-001's "a second Ctrl-C SIGKILLs any remaining runs" — the
+    human already asked once and is done waiting."""
+    status = service_status(cfg.root)
+    if status["state"] != "running":
+        if not _locked(cfg.state_dir):
+            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+        return False
+    pid = status["pid"]
+    kill_descendants(pid)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 2
+    while _locked(cfg.state_dir) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not _locked(cfg.state_dir):
+        recover_interrupted(Store(cfg.db_path))
+        (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+        write_service_state(cfg.state_dir, "stopped", "Force-killed (second Ctrl-C)")
+    return True
+
+
 def run_foreground(cfg) -> bool:
     from .engine import Engine
 
@@ -351,11 +431,22 @@ def run_foreground(cfg) -> bool:
         try:
             asyncio.run(run())
         finally:
-            eng.store.kv_set("heartbeat", 0)
+            # #100: this must be the very first thing that happens, unconditionally -- the pid
+            # file's absence has to be a guarantee callers (stop_service's graceful-return path,
+            # which trusts we've already done this before it observes the lock released) can rely
+            # on regardless of what else in this block does. Under load, a later step here (an
+            # SQLite write, a logging call) can be slow enough that stop_service's own timeout
+            # expires and escalates to SIGKILL before reaching this line, or can itself raise and
+            # abort the rest of the block -- either way, unlinking last made the guarantee only
+            # probabilistic instead of ordered.
+            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
+            try:
+                eng.store.kv_set("heartbeat", 0)
+            except Exception:
+                pass
             logger.info("Engine stopped")
             logger.removeHandler(handler)
             handler.close()
-            (cfg.state_dir / "engine.pid").unlink(missing_ok=True)
             for sig, previous in old_handlers.items():
                 signal.signal(sig, previous)
         return True

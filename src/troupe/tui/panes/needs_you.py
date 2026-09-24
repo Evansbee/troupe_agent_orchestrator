@@ -16,12 +16,46 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Static
 
+from . import AutoRetrier, ReloadCoalescer
+
 APPROVAL_KINDS = ("approval", "safety")
 CALL_TIMEOUT = 5.0
+
+# #109/design/system.md "Pinning & priority order": exactly REQ-COM-029's must-deliver set that
+# can appear as a card — concern outranks safety (Principle 0 over a protected-merge approval),
+# which outranks the team's own stability (crash/crash_loop, kept together since neither is senior
+# to the other). Only `kind` values the pane can actually receive today are wired in; #97 plugs
+# `concern`/`crash`/`crash_loop` into this same list/questions feed later with no ordering change.
+# The API rewrites a stored `kind='safety'` row to `'approval'` before the TUI ever sees it
+# (api.py's `question()`), so `'approval'` — not `'safety'` — is the literal value pinning has to
+# match; both are listed so this stays correct if that ever changes.
+_PIN_RANK = {"concern": 0, "safety": 1, "approval": 1, "crash": 2, "crash_loop": 2}
 
 
 def is_safety(question: dict) -> bool:
     return question.get("kind") in APPROVAL_KINDS
+
+
+def pin_rank(question: dict) -> int | None:
+    """None for an ordinary card (unaffected, newest-first as today); otherwise the pinned group
+    it belongs to, lowest first: concern (0), safety (1), crash/crash_loop (2)."""
+    return _PIN_RANK.get(question.get("kind"))
+
+
+def sort_cards(items: list[dict]) -> list[dict]:
+    """Pinned kinds float to the top of the list, ordered concern > safety > crash/crash_loop; the
+    safety group is oldest-first within itself (these gate a merge — newest-first would let an
+    older pending approval rot under a newer one), everything else (including the other pinned
+    groups) stays newest-first, matching the API's own delivery order for the un-pinned tail."""
+    def key(q: dict) -> tuple[int, float]:
+        # Only ever called on an already-pinned item (rank is never None here) — see the generator
+        # expression below, which filters before sorting.
+        rank = pin_rank(q)
+        ts = q.get("ts", 0) or 0
+        return (rank, ts) if rank == 1 else (rank, -ts)
+    pinned = sorted((q for q in items if pin_rank(q) is not None), key=key)
+    rest = [q for q in items if pin_rank(q) is None]
+    return pinned + rest
 
 
 def split_decision(text: str) -> tuple[str, str]:
@@ -60,6 +94,29 @@ def _diff_roles(previous: dict | None, proposed: dict | None) -> list[str]:
     return lines
 
 
+_KNOWN_SAFETY_FIELDS = ("protected", "remotes", "secret_allow", "roles")
+_KNOWN_TOP_FIELDS = ("safety", "check", "check_timeout", "doc_only_paths")
+
+
+def _has_unrecognized_changes(previous: dict, proposed: dict) -> bool:
+    """True if `previous`/`proposed` differ anywhere this module doesn't already summarize by name
+    (#109: a diff that mixes a known field with a brand-new one, e.g. a future `safety.<key>` or a
+    new top-level key, used to disappear entirely behind the known-field summary — the human would
+    approve a change they never saw). Checked by stripping every known key from both payloads
+    first, then comparing what's left over field-by-field, rather than comparing full dicts, since
+    a proposal only ever *replaces* config wholesale — a value merely reordered or defaulted
+    differently in a key we don't track would otherwise register as "unrecognized" every time."""
+    prev_safety = {k: v for k, v in ((previous or {}).get("safety") or {}).items()
+                   if k not in _KNOWN_SAFETY_FIELDS}
+    next_safety = {k: v for k, v in ((proposed or {}).get("safety") or {}).items()
+                   if k not in _KNOWN_SAFETY_FIELDS}
+    if prev_safety != next_safety:
+        return True
+    prev_top = {k: v for k, v in (previous or {}).items() if k not in _KNOWN_TOP_FIELDS}
+    next_top = {k: v for k, v in (proposed or {}).items() if k not in _KNOWN_TOP_FIELDS}
+    return prev_top != next_top
+
+
 def _safety_baseline_changes(previous: dict, proposed: dict) -> list[str] | None:
     """Summarize gates.py guard_config's previous vs. proposed safety/merge-check config as a
     handful of human-readable fragments — never a bare count, since the human is approving a
@@ -67,7 +124,9 @@ def _safety_baseline_changes(previous: dict, proposed: dict) -> list[str] | None
 
     Returns `None` (not `[]`) when the two payloads are genuinely identical, so the caller can
     tell "no changes" apart from "changes we don't know how to summarize" (#85 round 2: the old
-    code conflated the two and silently hid unrecognized changes behind "no changes detected")."""
+    code conflated the two and silently hid unrecognized changes behind "no changes detected").
+    Callers must pair this with `_has_unrecognized_changes` (#109): a non-empty result here is the
+    *known* diff only, and never a guarantee that it's the *whole* diff."""
     if previous == proposed:
         return None
     prev_safety = (previous or {}).get("safety") or {}
@@ -85,6 +144,9 @@ def _safety_baseline_changes(previous: dict, proposed: dict) -> list[str] | None
         before, after = (previous or {}).get(field), (proposed or {}).get(field)
         if before != after:
             changes.append(f"{field}: {json.dumps(before)} → {json.dumps(after)}")
+    doc_only_diff = _diff_named_list((previous or {}).get("doc_only_paths"), (proposed or {}).get("doc_only_paths"))
+    if doc_only_diff:
+        changes.append(f"doc_only_paths: {doc_only_diff}")
     return changes
 
 
@@ -92,7 +154,13 @@ def render_card(question: dict) -> str:
     """Markup tags (`[b]`, `[dim]`, ...) are ours; every field that came from a question or a task
     result is escaped, since it can contain a literal `[...]` (a spec ref, a path, agent prose)."""
     q = question
-    lines = [f"[b]#{q['id']}[/b] " + ("[bold red]⚠ SAFETY APPROVAL[/bold red]" if is_safety(q) else q["kind"].upper())]
+    title = f"[b]#{q['id']}[/b] " + ("[bold red]⚠ SAFETY APPROVAL[/bold red]" if is_safety(q) else q["kind"].upper())
+    if pin_rank(q) is not None:
+        # design/system.md "Pinning & priority order": color never carries meaning alone
+        # (REQ-TUI-011), so the red left bar (QuestionCard's `pinned-card` CSS class) always comes
+        # with this word too.
+        title += " [red]· Pinned[/red]"
+    lines = [title]
     lines.append(escape(q["question"]))
     skip_context = False
     if is_safety(q):
@@ -123,13 +191,19 @@ def render_card(question: dict) -> str:
                 changes = _safety_baseline_changes(previous, proposed)
                 if changes is None:
                     lines.append("[dim]baseline:[/dim] re-approval requested (no changes detected)")
-                elif changes:
-                    lines.append("[dim]changed:[/dim] " + escape("; ".join(changes)))
                 else:
-                    # The payloads differ but nothing here recognizes how (#85 round 2: silently
-                    # summarizing this as "no changes" let a real change through unseen) — fall
-                    # back to the raw context dump rather than hide an unrecognized change.
-                    skip_context = False
+                    if changes:
+                        lines.append("[dim]changed:[/dim] " + escape("; ".join(changes)))
+                    # #109: a known-field diff is never a guarantee it's the *whole* diff — a
+                    # proposal that mixes a recognized change (say, a new remote) with one this
+                    # module doesn't know how to summarize (a brand-new safety.* key, or a new
+                    # top-level key) used to show only the recognized half and hide the rest. If
+                    # anything unrecognized changed too — or *only* unrecognized fields changed,
+                    # the `changes == []` case the old code silently mislabeled "no changes" — show
+                    # the raw Approved/Proposed context alongside whatever summary exists.
+                    if not changes or _has_unrecognized_changes(previous, proposed):
+                        lines.append("[dim]other changes:[/dim]")
+                        lines.append(escape(q.get("context", "")))
     if q.get("context") and not skip_context:
         lines.append(escape(q["context"]))
     for i, opt in enumerate(q.get("options") or [], start=1):
@@ -147,11 +221,15 @@ class QuestionCard(ListItem):
     DEFAULT_CSS = """
     QuestionCard { padding: 1; border: round $panel; }
     QuestionCard.safety-card { border: heavy $error; }
+    QuestionCard.pinned-card { border-left: heavy $error; }
     QuestionCard:focus-within { border: round $accent; }
     """
 
     def __init__(self, question: dict) -> None:
-        super().__init__(classes="safety-card" if is_safety(question) else "question-card")
+        classes = "safety-card" if is_safety(question) else "question-card"
+        if pin_rank(question) is not None:
+            classes += " pinned-card"
+        super().__init__(classes=classes)
         self.question = question
 
     @property
@@ -193,6 +271,7 @@ class NeedsYouPane(Widget):
         Binding("y", "confirm_yes", "Confirm reject", show=False),
         Binding("n", "confirm_no", "Cancel", show=False),
         Binding("escape", "cancel_answer", "Cancel", show=False),
+        Binding("r", "retry", "Retry", show=False),
     ]
 
     answering: reactive[bool] = reactive(False)
@@ -203,6 +282,9 @@ class NeedsYouPane(Widget):
         self.status = ""
         self._answering_id: int | None = None
         self._confirm_reject_id: int | None = None
+        self._load_error_shown = False
+        self._coalescer = ReloadCoalescer(self._attempt_load)
+        self._retrier = AutoRetrier(self.load)
 
     def compose(self) -> ComposeResult:
         yield Static("Needs you", classes="pane-title")
@@ -225,14 +307,36 @@ class NeedsYouPane(Widget):
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        result = await self.client.call("questions", timeout=CALL_TIMEOUT, status="open", limit=1000)
+        # #108: coalesced (a burst of question.* events collapses to one in-flight + one trailing
+        # reload) -- see panes/__init__.py's Pane.load(). #ny-status is its own small status line,
+        # separate from #ny-cards, so a failed reload here already can't wipe the visible cards.
+        await self._coalescer.trigger()
+
+    async def _attempt_load(self) -> None:
+        try:
+            result = await self.client.call("questions", timeout=CALL_TIMEOUT, status="open", limit=1000)
+        except Exception as e:
+            reason = str(e) or type(e).__name__
+            self._load_error_shown = True
+            self._set_status(f"couldn't load: {reason} (r to retry)")
+            self._retrier.schedule()
+            return
+        self._retrier.reset()
+        if self._load_error_shown:
+            # Only clear #ny-status if a load failure is what's showing there -- it's shared with
+            # _call_safely's own action-failure messages, which a background resync must not stomp.
+            self._load_error_shown = False
+            self._set_status("")
         await self._set_cards(result.get("items", []))
+
+    async def action_retry(self) -> None:
+        await self.load()
 
     async def _set_cards(self, items: list[dict]) -> None:
         list_view = self.query_one("#ny-cards", ListView)
         focused_id = self._focused_question_id()
         await list_view.clear()
-        for q in items:
+        for q in sort_cards(items):
             await list_view.append(QuestionCard(q))
         # ListView.index only auto-tracks children present at construction time, not appended ones,
         # so a freshly (re)populated list needs its highlight set explicitly.
@@ -273,9 +377,20 @@ class NeedsYouPane(Widget):
                 return
         if q.get("status") == "open":
             was_empty = not list_view.children
-            await list_view.append(QuestionCard(q))
+            # A newly-arrived card (e.g. a live safety approval) must land in its sorted position,
+            # not just at the end — re-deriving the order from the current children plus the new
+            # card keeps a live insert consistent with _set_cards's own initial ordering, without
+            # assuming anything about event arrival order.
+            existing = [item.question for item in list_view.children if isinstance(item, QuestionCard)]
+            ordered_ids = [item["id"] for item in sort_cards(existing + [q])]
+            await list_view.insert(ordered_ids.index(q["id"]), [QuestionCard(q)])
             if was_empty:
                 list_view.index = 0
+            else:
+                # Inserting above the focused card (a pinned arrival jumping the queue) shifts its
+                # position — unlike the pre-#109 append-only path, where the end never moved
+                # anything. Re-anchor by id, the same fix the removal path already applies.
+                self._restore_highlight(focused_id)
 
     def _restore_highlight(self, focused_id: int | None) -> None:
         if focused_id is None:

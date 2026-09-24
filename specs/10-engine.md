@@ -26,11 +26,19 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
-- **REQ-ENG-060 [x]** (#103; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
+- **REQ-ENG-060 [~]** (#103 shipped; #115 pending; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
   never outlives its project. If its project root or `.troupe/` disappears, it stops its runs, removes its pid
   file and exits within a few ticks. This check lives in the heartbeat loop.
   - Test hygiene, same task: a full `uv run pytest` session, even one killed mid-run, leaves no engine whose
     cwd is under the test temp root. A session-level guard fails the run if one survives.
+  - [ ] (#115) The check compares the root dir's identity (inode), not just its existence, so a delete-and-recreate
+    at the same path also triggers the exit.
+  - [ ] (#115) A shared reaper, `python -m troupe.service reap <dir>`, stops every engine whose project root is at
+    or under `<dir>`, along with its process group. Each engine is identity-checked (pid plus recorded start),
+    SIGTERM then SIGKILL, and nothing outside `<dir>` is touched. launch_smoke, test fixtures and QA harnesses
+    call it before deleting a project dir.
+    - Test: rmtree and recreate the dir, and the engine still exits. The reaper stops only engines under its
+      dir. A forced kill mid-smoke leaves zero engines.
   - Test: delete a running engine's project dir, and it exits and removes its pid within a few ticks. QA's check:
     run the full suite twice plus a forced mid-suite kill, then `pgrep -f "troupe.cli engine"` finds zero test
     engines (the team's real engine excepted).
@@ -608,6 +616,7 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-060 → [~]: #115 adds the inode identity check and a shared `troupe.service reap <dir>`.
 - 2026-09-24 — Shipped: ENG-060 (#103) and ENG-040's #107 bullets marked [x]. #114's known gaps noted under ENG-040.
   SAFE-021's #107 sub-item stays [ ] until the protected-path freeze lifts (lead msg #1064).
 - 2026-09-24 — ENG-040: over-broad `doc_only_paths` patterns are rejected at load (#107, lead decision).

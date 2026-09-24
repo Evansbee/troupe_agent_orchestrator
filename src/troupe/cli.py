@@ -86,7 +86,7 @@ def cmd_up(args: argparse.Namespace) -> None:
     from .service import start_service
     root = config_mod.find_root() or cmd_init(args)
     cfg = config_mod.load(root)
-    start_service(cfg)
+    start_service(cfg, owner="up")
     from .gui.app import run_gui
     run_gui(cfg)
 
