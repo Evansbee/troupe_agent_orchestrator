@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import tomllib
+import math
+import os
+import tempfile
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import YAMLError
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,6 +16,14 @@ from .roles import get_role
 
 STATE_DIR = ".troupe"
 CONFIG_FILE = "troupe.toml"
+TEAM_FILE = "team.yaml"
+
+
+@dataclass
+class ProviderCfg:
+    provider: str
+    model: str = ""
+    level: str = ""
 
 
 @dataclass
@@ -23,6 +37,12 @@ class AgentCfg:
     idle_minutes: float | None = None  # override role default
     effort: str = ""  # claude --effort
     extra_args: list[str] = field(default_factory=list)
+
+    providers: list[ProviderCfg] = field(default_factory=list)
+
+    @property
+    def level(self) -> str:
+        return self.effort
 
     @property
     def idle_seconds(self) -> float:
@@ -56,6 +76,9 @@ class Config:
     budget: Budget = field(default_factory=Budget)
     backends: Backends = field(default_factory=Backends)
     git_autocommit: bool = True
+    provider_limits: dict = field(default_factory=dict)
+    team_data: dict = field(default_factory=dict, repr=False)
+    toml_data: dict = field(default_factory=dict, repr=False)
 
     @property
     def state_dir(self) -> Path:
@@ -81,7 +104,7 @@ class Config:
 
 
 DEFAULT_TOML = """\
-# troupe configuration — edit freely; restart `troupe up` to apply.
+# troupe configuration — edits here and in team.yaml reload automatically.
 
 [project]
 name = "{name}"
@@ -172,36 +195,220 @@ def find_root(start: Path | None = None) -> Path | None:
     return None
 
 
-def write_default(root: Path, name: str, local_model: str = "qwen/qwen3.8-27b") -> Path:
+def yaml_codec() -> YAML:
+    codec = YAML()
+    codec.indent(mapping=2, sequence=4, offset=2)
+    return codec
+
+
+def save_team(root: Path, document: dict, *, overwrite: bool = True) -> None:
+    """Atomically save a round-trip YAML document, retaining its comments."""
+    target = root / STATE_DIR / TEAM_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        yaml_codec().dump(document, stream)
+    try:
+        if overwrite:
+            os.replace(temporary, target)
+        else:
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def default_team(local_model: str | None) -> dict:
+    agents = CommentedSeq()
+    for role, count in (("lead", 1), ("pm", 1), ("spec", 1), ("designer", 1), ("builder", 2),
+                        ("qa", 1), ("gadfly", 1)):
+        level = "medium" if role in ("designer", "researcher", "gadfly") else "high"
+        codex = {"provider": "codex", "model": "", "level": level}
+        claude = {"provider": "claude", "model": "sonnet" if role in ("designer", "builder") else "opus", "level": level}
+        local = {"provider": "local", "model": local_model or "", "level": ""}
+        if role in ("researcher", "gadfly"):
+            providers = [local, codex] if local_model else [codex]
+        elif role in ("pm", "spec", "builder"):
+            providers = [codex, claude] + ([local] if role == "builder" and local_model else [])
+        else:
+            providers = [claude, codex]
+        for number in range(1, count + 1):
+            row = CommentedMap(id=f"{role}_{number}", role=role, providers=[dict(p) for p in providers])
+            if not local_model and role in ("builder", "researcher", "gadfly"):
+                row.yaml_set_comment_before_after_key("providers", before=
+                    "Local server unavailable. To enable local, insert this entry in preference order:\n"
+                    "- {provider: local, model: YOUR_MODEL, level: ''}")
+            agents.append(row)
+    return CommentedMap(agents=agents, provider_limits={"claude": {"five_hour": 50, "seven_day": 50}})
+
+
+def write_default(root: Path, name: str, local_model: str | None = None) -> Path:
     path = root / STATE_DIR / CONFIG_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_TOML.format(name=name, local_model=local_model))
+    # The legacy roster stays available for migration fixtures, never in new projects.
+    path.write_text(DEFAULT_TOML.split("# ── The team")[0].format(name=name, local_model=local_model or ""))
+    save_team(root, default_team(local_model), overwrite=False)
     return path
 
 
-def load(root: Path) -> Config:
-    raw = tomllib.loads((root / STATE_DIR / CONFIG_FILE).read_text())
-    proj = raw.get("project", {})
-    b = raw.get("budget", {})
-    be = raw.get("backends", {})
+def config_notice(root: Path, key: str, text: str) -> None:
+    from .store import Store
+    store = Store(root / STATE_DIR / "troupe.db")
+    with store.conn:
+        store.conn.execute("BEGIN IMMEDIATE")
+        if not store.kv_get(key):
+            store.event("system", "config", text, significant=False)
+            store.kv_set(key, True)
+
+
+def read_toml(root: Path) -> dict:
+    try:
+        return tomllib.loads((root / STATE_DIR / CONFIG_FILE).read_text())
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{CONFIG_FILE}: {e}") from e
+
+
+def read_team(root: Path) -> dict:
+    try:
+        document = yaml_codec().load((root / STATE_DIR / TEAM_FILE).read_text())
+        if not isinstance(document, dict):
+            raise ValueError("expected a mapping")
+        return document
+    except (OSError, ValueError, YAMLError) as e:
+        raise ValueError(f"{TEAM_FILE}: {e}") from e
+
+
+def migrate_team(root: Path, raw: dict) -> None:
+    if not (root / STATE_DIR / TEAM_FILE).exists():
+        if not raw.get("agents"):
+            raise ValueError("team.yaml: agents: no team or legacy [[agents]] found")
+        agents = []
+        for legacy in raw["agents"]:
+            row = dict(legacy)
+            row["provider"] = row.pop("backend", "claude")
+            row["level"] = row.pop("effort", "")
+            agents.append(row)
+        document = {"agents": agents}
+        parse_agents(document)
+        save_team(root, document, overwrite=False)
+        config_notice(root, "config.migrated_team", "Migrated troupe.toml [[agents]] to team.yaml")
+    if raw.get("agents"):
+        config_notice(root, "config.ignored_agents", "troupe.toml [[agents]] ignored; team.yaml defines the team")
+
+
+def nonnegative(value: object, field: str, file: str, agent: str = "config") -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{file}: {agent}: {field} must be a non-negative number")
+
+
+def parse_agents(document: dict) -> list[AgentCfg]:
+    rows = document.get("agents")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("team.yaml: agents must be a non-empty list")
+    reserved = {r.get("id") for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)}
+    seen = set()
     agents = []
-    for a in raw.get("agents", []):
-        get_role(a["role"])  # validate
-        agents.append(AgentCfg(
-            id=a["id"], role=a["role"], name=a.get("name", a["id"]), backend=a.get("backend", "claude"),
-            model=a.get("model", ""), enabled=a.get("enabled", True), idle_minutes=a.get("idle_minutes"),
-            effort=a.get("effort", ""), extra_args=list(a.get("extra_args", [])),
-        ))
-    ids = [a.id for a in agents]
-    if len(ids) != len(set(ids)):
-        raise ValueError("duplicate agent ids in troupe.toml")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("team.yaml: agent: expected a mapping")
+        role = row.get("role")
+        aid = row.get("id")
+        if aid is None:
+            number = 1
+            while f"{role}_{number}" in reserved | seen:
+                number += 1
+            aid = f"{role}_{number}"
+        def error(field: str, message: str) -> None:
+            raise ValueError(f"team.yaml: {aid}: {field}: {message}")
+        if not isinstance(aid, str) or not aid.strip():
+            error("id", "must be a non-empty string")
+        if aid in seen:
+            error("id", "duplicate id")
+        seen.add(aid)
+        try:
+            get_role(role)
+        except (KeyError, TypeError):
+            error("role", f"unknown role {role!r}")
+        entries = row.get("providers") if "providers" in row else [row]
+        if not isinstance(entries, list) or not entries:
+            error("providers", "must be a non-empty ordered list")
+        providers = []
+        unique = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                error("providers", "entry must be a mapping")
+            provider, model, level = entry.get("provider"), entry.get("model", ""), entry.get("level", "")
+            if provider not in ("claude", "codex", "local"):
+                error("provider", f"unknown provider {provider!r}")
+            if not isinstance(model, str):
+                error("model", "must be a string")
+            if level not in ("", "low", "medium", "high", "max"):
+                error("level", f"invalid level {level!r}")
+            if (provider, model) in unique:
+                error("providers", "duplicate provider/model")
+            unique.add((provider, model))
+            providers.append(ProviderCfg(provider, model, level))
+        if "idle_minutes" in row and row["idle_minutes"] is not None:
+            nonnegative(row["idle_minutes"], "idle_minutes", TEAM_FILE, aid)
+        if not isinstance(row.get("enabled", True), bool):
+            error("enabled", "must be boolean")
+        if not isinstance(row.get("name", aid), str):
+            error("name", "must be a string")
+        args = row.get("extra_args", [])
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            error("extra_args", "must be a list of strings")
+        first = providers[0]
+        agents.append(AgentCfg(aid, role, row.get("name", aid), first.provider, first.model,
+                               row.get("enabled", True), row.get("idle_minutes"), first.level, list(args), providers))
     if sum(a.role == "lead" for a in agents) != 1:
-        raise ValueError("a troupe needs exactly one agent with role = \"lead\"")
+        raise ValueError("team.yaml: agents: role: exactly one lead is required")
+    return agents
+
+
+def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = None) -> Config:
+    raw = read_toml(root) if toml_data is None else toml_data
+    if team_data is None:
+        migrate_team(root, raw)
+        team_data = read_team(root)
+    agents = parse_agents(team_data)
+    for section in ("project", "budget", "backends", "git"):
+        if not isinstance(raw.get(section, {}), dict):
+            raise ValueError(f"troupe.toml: {section}: expected a table")
+    for section in ("budget", "backends", "git"):
+        for key, value in raw.get(section, {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                nonnegative(value, f"{section}.{key}", CONFIG_FILE)
+    for key in Budget.__dataclass_fields__:
+        if key in raw.get("budget", {}):
+            nonnegative(raw["budget"][key], f"budget.{key}", CONFIG_FILE)
+    limits = team_data.get("provider_limits", {})
+    if not isinstance(limits, dict):
+        raise ValueError("team.yaml: provider_limits: expected a mapping")
+    for provider, windows in limits.items():
+        if provider not in ("claude", "codex", "local") or not isinstance(windows, dict):
+            raise ValueError(f"team.yaml: provider_limits.{provider}: invalid provider/windows")
+        for window, cap in windows.items():
+            nonnegative(cap, f"provider_limits.{provider}.{window}", TEAM_FILE)
+            if cap > 100:
+                raise ValueError(f"team.yaml: provider_limits.{provider}.{window}: maximum is 100")
     return Config(
-        root=root,
-        project=proj.get("name", root.name),
-        agents=agents,
-        budget=Budget(**{k: v for k, v in b.items() if k in Budget.__dataclass_fields__}),
-        backends=Backends(**{k: v for k, v in be.items() if k in Backends.__dataclass_fields__}),
+        root=root, project=raw.get("project", {}).get("name", root.name), agents=agents,
+        budget=Budget(**{k: v for k, v in raw.get("budget", {}).items() if k in Budget.__dataclass_fields__}),
+        backends=Backends(**{k: v for k, v in raw.get("backends", {}).items() if k in Backends.__dataclass_fields__}),
         git_autocommit=raw.get("git", {}).get("autocommit", True),
+        provider_limits=limits, team_data=team_data, toml_data=raw,
     )
+
+
+def load_runtime(root: Path) -> Config:
+    """Let tool servers use the engine's last good config while edits are invalid."""
+    try:
+        return load(root)
+    except (ValueError, TypeError, KeyError):
+        from .store import Store
+        snapshot = Store(root / STATE_DIR / "troupe.db").kv_get("config.last_good")
+        if not snapshot:
+            raise
+        return load(root, toml_data=snapshot["toml"], team_data=snapshot["team"])
