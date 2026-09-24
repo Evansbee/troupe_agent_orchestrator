@@ -17,7 +17,7 @@ def build_server(root: Path, agent_id: str) -> tuple[MCPServer, TeamAPI]:
     api = TeamAPI(cfg, Store(cfg.db_path), agent_id)
     server = MCPServer(
         "troupe",
-        instructions=f"Troupe team tools for agent '{agent_id}': mailbox, tasks, questions for the human, memory.",
+        instructions=f"Troupe team tools for agent '{api.names.name(agent_id)}': mailbox, tasks, questions for the human, memory.",
     )
     for fn in api.tools():
         server.add_tool(fn, structured_output=False)
