@@ -371,7 +371,7 @@ def run_foreground(cfg) -> bool:
         logger.propagate = False
         eng = Engine(cfg)
         old_handlers = {
-            sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)
+            sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
         }
         for sig in old_handlers:
             signal.signal(sig, lambda *_: eng.stop())
