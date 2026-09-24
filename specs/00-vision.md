@@ -45,7 +45,8 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    The team runs as a background service; the app is a window you open and close without stopping it,
    and every agent has a clear handle (`role_N@project`, e.g. `builder_2@troupe`) so it's obvious who is
    talking to whom.
-7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The GUI is a native macOS app (SwiftUI + Metal) that talks to each
+7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The primary interface is a per-project terminal UI (Python Textual/Rich);
+   a native macOS app (SwiftUI) comes later as the cross-project portfolio view. Both talk to each
    project's engine service over a local API. The team (provider, model and level per agent) is a
    live-editable `team.yaml`; budget and plumbing live in `troupe.toml`.
 
@@ -102,3 +103,4 @@ territories for parallel builders, reviewers on a different runtime than writers
 - 2026-09-23 — Principle 0 refined (human): protect job/reputation/family/life, keep agents independent, surface
   opportunities that help the human succeed.
 - 2026-09-24 — interface model (human): per-project TUI + PM as single contact + GUI as portfolio view.
+- 2026-09-24 — focus shift (human): TUI (Textual/Rich) first; Swift portfolio app deferred; raylib frozen; more Codex.
