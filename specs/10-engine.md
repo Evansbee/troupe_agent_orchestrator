@@ -4,7 +4,7 @@ Status legend: **[x]** implemented · **[ ]** not yet · **[~]** partial.
 Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
 
 ## Process model
-- **REQ-ENG-001 [~]** The engine runs as a background **service** per project, and the GUI is a window that
+- **REQ-ENG-001 [x]** The engine runs as a background **service** per project, and the GUI is a window that
   attaches to it. (#24) (Human: "run you as a service then have the UI be able to break in and see what's going on".)
   Today `troupe up` runs the engine in the GUI process and stops it on close; the new behavior is:
   - `troupe up` starts a detached service (`troupe engine` in its own session, surviving the terminal) if none is
@@ -15,14 +15,14 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
     With no service running, it shows "Engine offline" with a **Start team** button.
 - **REQ-ENG-002 [x]** All shared state lives in `.troupe/troupe.db` (SQLite, WAL). Engine, GUI, and every
   agent's MCP server are separate readers/writers of it. GUI→engine control goes through the `commands` table.
-- **REQ-ENG-003 [~]** Only one engine per project; a second `troupe up` attaches to it. (#24)
+- **REQ-ENG-003 [x]** Only one engine per project; a second `troupe up` attaches to it. (#24)
   - Exclusivity uses a lock on `.troupe/engine.lock` held for the service's lifetime, so two simultaneous `troupe up`
     still yield exactly one engine. `.troupe/engine.pid` records the pid, start time and troupe version.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
 - **REQ-ENG-005 [x]** Engine heartbeat (`kv.heartbeat`) every tick; GUI shows "Engine offline" when stale >5s.
-- **REQ-ENG-006 [ ]** Service control from the CLI. (#24)
+- **REQ-ENG-006 [~]** Service control from the CLI. (#24)
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
@@ -33,9 +33,9 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - `troupe reload` = graceful reload (REQ-ENG-009). `troupe status` shows the running service's version; a
     newer installed version is picked up automatically by ENG-009 (this replaces the earlier mismatch warning).
   - The GUI has a **Stop team** action (with confirmation) that goes through the `commands` table.
-- **REQ-ENG-007 [ ]** (#24) The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
+- **REQ-ENG-007 [x]** (#24) The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
   rotated at 10 MB and keeping 3 files. Log lines identify agents by handle (REQ-COM-005).
-- **REQ-ENG-008 [ ]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
+- **REQ-ENG-008 [x]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
 - **REQ-ENG-009 [ ]** (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
@@ -242,7 +242,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - The detection is a pure function of the diff and flag.
   - Test: a `store.py` schema change or a `pyproject.toml` dependency needs both approvals; a `gui/views.py`-only change
     merges on QA alone; an architect reject sends it back.
-- **REQ-ENG-045 [ ]** Milestones are first-class (human: Pulse should show the major work and how close the goal is).
+- **REQ-ENG-045 [x]** (#50) Milestones are first-class (human: Pulse should show the major work and how close the goal is).
   - Additive schema: a `milestones` table (`id, name, goal, sort_order, status active|done, created`) and
     `tasks.milestone_id`.
   - Tools:
@@ -257,7 +257,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
   - The first milestone is "Ready for a test project" (#1, #2, #3, #15, #20, #23, #24, #25, plus the lead's additions).
     The lead creates it with the tool, not a code seed.
   - Test: create, assign and filter; progress excludes cancelled tasks; non-lead edits return `ERROR:`.
-- **REQ-ENG-046 [ ]** The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
+- **REQ-ENG-046 [x]** (#50) The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
   columns or kv, exposed by the API), so Pulse (REQ-GUI-038) doesn't infer it.
   - `waiting_on` = `{kind, target, since, reset_at?, queue_position?}` or null. Kinds, in precedence order:
     - `human`: the agent's open question, or its task awaiting a human approval card. Target is `human`.
@@ -270,12 +270,14 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       the tick would launch.
     - `parked`: idle while owing work (today's derived diagnosis, REQ-GUI-002).
   - `since` = when the current kind began. It persists across ticks while the kind doesn't change.
+  - `waiting_on` is null while the agent has a run in progress (it's working, not waiting). The API serializes this
+    as `WaitingOn` with a `targets` list (REQ-API).
   - Mail: `mail_queued` = unread messages not yet delivered. `mail_reading` = messages delivered to the currently
     running run.
   - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
 ## The human's attention and requests
-- **REQ-ENG-047 [ ]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
+- **REQ-ENG-047 [x]** (#35; human: "we can then also notify when someone needs help") The service sends **needs-help**
   notifications, and they work with the GUI closed.
   - Events:
     - a new `ask_human` question or `propose_idea`, or an approval card (REQ-SAFE-020);

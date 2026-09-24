@@ -50,17 +50,17 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
     `status: "active"`, `comments: []`, `room: null`. Clients render them without special cases.
   - **Commands and events:** these return `unavailable` with `data: {req, task}` until the owning task ships. That
     task wires its method, fields and events into the API as part of its own acceptance (a test calling it over
-    the socket).
+    the socket), and marks its row below **live** in the same diff, like a REQ status marker.
     | method / data | owning REQ → task |
     |---|---|
     | `room_message`, `room` field | COM-024 → #4 |
-    | `stop_team`, `mark_seen human_last_seen` catch-up, `troupe start` | ENG-006, GUI-028 → #24 |
+    | `stop_team` (live), `mark_seen human_last_seen` catch-up, `troupe start` (live) | ENG-006, GUI-028 → #24 |
     | `reload`, `service.json`, Engine `reloading` | ENG-009/042, API-074 → #28 |
-    | `stop_now`, approval questions (`decision`) | SAFE-010/020 → #42 (wire in #48 if #42 has merged first) |
+    | `stop_now`, `resume`, approval questions (`decision`) | SAFE-010/020 → #57 (after #42 and #48) |
     | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
     | `comment_decision`, `comments`, `decisions_seen_at` | COM-035..037 → #27 |
     | `update_config` | ENG-019 + SAFE-021 → #5 |
-    | `milestones`, `milestone_id`, `waiting_on`, `mail_reading`, `milestone.changed` | ENG-045/046 → #50 |
+    | `milestones`, `milestone` command, `milestone_id`, `waiting_on`, `mail_reading`, `milestone.changed` | ENG-045/046 → #50 (live) |
   - **Must land in #48:**
     - transport, handshake, error codes and security (API-001..006, 010, 011);
     - `snapshot` and every read for data that exists in main;
@@ -96,10 +96,13 @@ Agent      id: str, handle, name, role, state: "idle"|"running", enabled: bool, 
            next run uses), fallback: bool (provider ≠ providers[0]), model: str, level: str?,
            chat_unread: int (chat from this agent the human hasn't read), mail_queued: int (mail to this agent not
            yet delivered), mail_reading: int (mail delivered to the running run; REQ-ENG-046), waiting_on: WaitingOn?, runs: int, tokens: int, cost: float, last_run_at: ts?
-WaitingOn  kind: "human"|"review"|"dependency"|"blocked"|"rate_limit"|"slot"|"providers"|"parked",
-           target: str|int? (question id | reviewer handle | task id | provider), since: ts, detail: str,
-           reset_at?: ts (rate_limit), queue_position?: int (slot). Null while running. If several apply, the
-           first in this order wins: rate_limit, providers, slot, human, review, dependency, blocked, parked.
+WaitingOn  REQ-ENG-046 is the source of truth; this is its serialization.
+           kind: "human"|"review"|"dependency"|"blocked"|"providers"|"rate_limit"|"slot"|"parked",
+           targets: [str|int] ("human" | reviewer handles | task ids | provider names; [] for slot/parked),
+           since: ts (start of the current kind), detail: str (e.g. blocked reason, question ids),
+           reset_at?: ts (providers, rate_limit), queue_position?: int (slot). Null while the agent has a run in
+           progress. Precedence when several apply (ENG-046): human > review > dependency > blocked > providers >
+           rate_limit > slot > parked.
 Task       id, title, description, acceptance, territory, status, priority: 0..3, role, assignee: str?,
            reviewer: str?, created_by, depends_on: [int], milestone_id: int?, branch: str?, worktree: str?,
            attempts, next_attempt_at: ts, result, review_notes, created: ts, updated: ts, notes_count: int,
@@ -126,8 +129,9 @@ Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: boo
            version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
            (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
-           throttled: str?, providers: [{provider, limited_until: ts?, windows: [{name: "5h"|"7d"|…,
-           used_pct: float, cap_pct: float?, resets_at: ts?}]}]
+           throttled: str?, providers: [{provider, limited_until: ts?, plan_type: str?, observed_at: ts?,
+           source: str?, windows: [{name: "five_hour"|"seven_day"|"window_<minutes>", window_minutes: int,
+           used_pct: float, cap_pct: float?, resets_at: ts?}]}]  (window names per REQ-BE-011)
 Seen       human_last_seen: ts?, decisions_seen_at: ts?
 ```
 
@@ -183,6 +187,7 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
   | `reload` ⟳ | — | graceful reload (REQ-ENG-009); `conflict` if one is running | `{accepted}` |
   | `create_task` | `title`, `description?`, `acceptance?`, `territory?`, `role` (default builder), `priority` (default 2), `depends_on?`, `milestone_id?` | status `ready`, `created_by` human (REQ-ENG-030) | `{task}` |
   | `update_task` | `id`, `fields` | see REQ-API-041 | `{task}` |
+  | `milestone` | `action: "create"\|"update"`, `id?` (update), `name?`, `goal?`, `order?`, `status?` (`active`\|`done`) | REQ-ENG-045 (the human is allowed, as the lead is) | `{milestone}` |
   | `add_task_note` | `id`, `text` | note; mailed to the assignee as "Note on #id", else an event | `{note}` |
   | `comment_decision` | `decision_id`, `body` | REQ-COM-035 comment + routing mail | `{comment}` |
   | `update_config` | `file: "team.yaml"\|"troupe.toml"`, `patch` (keys → values) | validated with REQ-ENG-019 rules, written preserving comments, counts as the human's approval for `[safety]` and `[git] check` (REQ-SAFE-021); invalid → `bad_request` naming the field | `{config}` |
@@ -303,3 +308,7 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
   up their methods (builder-2 msg #293).
 
 - 2026-09-24 — #48 implements the existing-data NDJSON API, Python client and CLI; staged domains follow API-006.
+- 2026-09-24 — API-006: owning tasks mark their staged row live; stop_now/resume/approvals move to #57.
+- 2026-09-24 — WaitingOn aligned to ENG-046 (precedence, plural `targets`, reset_at for providers too). Added the
+  `milestone` command (builder-2 msg #329).
+- 2026-09-24 — Usage windows use BE-011 names and carry plan/observed_at/source.

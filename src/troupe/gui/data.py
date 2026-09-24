@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
+import threading
 from pathlib import Path
 
 from ..config import Config
@@ -20,6 +20,16 @@ class Data:
         self.cfg = cfg
         self.store = Store(cfg.db_path)
         self.names = HandleBook(cfg.project, cfg.agents)
+        self.catchup = {}
+        self.catchup_cost = 0.0
+        self.catchup_detail = None
+        self._focused = False
+        self._focus_at = 0.0
+        self.new_help = []
+        self._help_event = None
+        self._seen_at = 0.0
+        self.service_action = None
+        self.service_error = ""
         self.last = 0.0
         self.agents: list[dict] = []
         self.agent_by_id: dict[str, dict] = {}
@@ -40,11 +50,57 @@ class Data:
         self._max_q = -1
         self.docs: list[Path] = []
         self._docs_at = 0.0
+        self._run_targets: dict[int, str] = {}
         self._runs_cache: dict[str, dict[int, dict]] = {}  # agent_id -> {run_id: row}; merge-only, never evicted
         self._runs_watched: set[str] = set()  # agents whose run history has been viewed; kept fresh by refresh()
         self._runs_exhausted: dict[str, bool] = {}  # agent_id -> True once its oldest run is loaded
         self._runs_older_limit: dict[str, int] = {}  # agent_id -> deepest "load older" depth actually fetched
         self._runs_older_pending: dict[str, int] = {}  # agent_id -> depth queued by load_older_runs, not yet fetched
+
+    def human_seen(self) -> None:
+        stamp = time.time()
+        self.store.kv_set("human_last_seen", max(stamp, self.store.kv_get("human_last_seen", 0) or 0))
+        self._seen_at = stamp
+
+    def dismiss_catchup(self) -> None:
+        self.catchup = {}
+        self.catchup_detail = None
+        self.human_seen()
+
+    def focus_changed(self, focused: bool) -> None:
+        stamp = time.time()
+        if focused and stamp - self._focus_at >= 1:
+            self.store.kv_set('gui_focused_at', stamp)
+            self._focus_at = stamp
+        elif not focused and self._focused:
+            self.store.kv_set('gui_focused_at', 0)
+        if focused and not self._focused:
+            since = self.store.kv_get("human_last_seen")
+            if since and stamp - since >= 600:
+                s = self.store
+                self.catchup = catchup_items(s.q("SELECT * FROM events WHERE ts>? ORDER BY id DESC", since),
+                    s.questions(None, limit=100000), s.q("SELECT * FROM runs WHERE ended>?", since),
+                    s.memories(limit=100000), since)
+                for rows in self.catchup.values():
+                    for row in rows:
+                        row["label"] = self.names.event_text(row["label"])
+                self.catchup_cost = s.scalar("SELECT sum(cost) FROM runs WHERE ended>?", since, default=0.0)
+        if focused and not self.catchup and stamp - self._seen_at >= 10:
+            self.human_seen()
+        self._focused = focused
+
+    def start_team(self) -> None:
+        if self.service_action and self.service_action.is_alive():
+            return
+        def start():
+            from ..service import start_service
+            try:
+                start_service(self.cfg)
+            except Exception as exc:
+                self.service_error = str(exc)
+        self.service_error = ""
+        self.service_action = threading.Thread(target=start, daemon=True)
+        self.service_action.start()
 
     def role_of(self, agent_id: str):
         a = self.agent_by_id.get(agent_id)
@@ -95,6 +151,10 @@ class Data:
         for event in self.events:
             event["text"] = self.names.event_text(event["text"])
         answer_event = s.max_event_id()
+        if self._help_event is not None:
+            self.new_help += s.q("SELECT * FROM events WHERE id>? AND id<=? AND kind='needs_help' ORDER BY id",
+                                self._help_event, answer_event)
+        self._help_event = answer_event
         if self._answer_event is not None:
             self.new_chat_answers += s.q(
                 "SELECT q.* FROM events e JOIN questions q ON e.ref='q:' || q.id "
@@ -126,6 +186,11 @@ class Data:
         # cache so it never evicts already-paged-in history — this is the only place runs are
         # fetched from the store, matching every other snapshot above; runs_for()/has_more_runs()/
         # load_older_runs() are all pure cache reads or queue writes, safe to call from draw code.
+        for run_id, agent_id in self._run_targets.items():
+            row = s.one("SELECT * FROM runs WHERE id=? AND agent=?", run_id, agent_id)
+            if row:
+                self._runs_cache.setdefault(agent_id, {})[run_id] = row
+        self._run_targets.clear()
         for agent_id in self._runs_watched:
             pending = self._runs_older_pending.pop(agent_id, None)
             if pending is not None:
@@ -181,6 +246,11 @@ class Data:
         cache = self._runs_cache.setdefault(agent_id, {})
         for row in rows[:limit]:  # the +1 was only to detect exhaustion; don't cache past the asked-for depth
             cache[row["id"]] = row
+
+    def request_run(self, agent_id: str, run_id: int) -> None:
+        """Queue an exact navigation target; refresh owns all database reads."""
+        self._runs_watched.add(agent_id)
+        self._run_targets[run_id] = agent_id
 
     def runs_for(self, agent_id: str) -> list[dict]:
         """Cached run history for an agent, newest first — a pure cache read with no store access,
@@ -257,12 +327,27 @@ class Data:
         self.refresh(force=True)
         return tid
 
-    def notify(self, title: str, body: str) -> None:
-        """macOS notification (best effort)."""
-        safe_t = title.replace('"', "'")[:80]
-        safe_b = body.replace('"', "'").replace("\n", " ")[:180]
-        try:
-            subprocess.Popen(["osascript", "-e", f'display notification "{safe_b}" with title "{safe_t}"'],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
-            pass
+
+
+def catchup_items(events: list[dict], questions: list[dict], runs: list[dict], memories: list[dict], since: float) -> dict:
+    """Select notable activity without depending on a window or mutable GUI state."""
+    groups = {key: [] for key in ('Merges', 'Rejected tasks', 'Failed checks', 'Blocked tasks', 'Failed runs', 'Decisions', 'Questions')}
+    for event in events:
+        if event['ts'] <= since:
+            continue
+        text = event['text'].lower()
+        group = ('Failed checks' if 'checks failed' in text else 'Rejected tasks' if 'rejected #' in text else
+                 'Blocked tasks' if 'blocked' in text and event['kind'] == 'task' else
+                 'Merges' if 'merged #' in text else None)
+        if group:
+            groups[group].append(dict(label=event['text'], ref=event['ref'], body=event['text']))
+    for run in runs:
+        if (run.get('ended') or 0) > since and run['status'] in ('failed', 'error'):
+            groups['Failed runs'].append(dict(label=f"{run['agent']} · run #{run['id']}", ref=f"run:{run['id']}", body=run['summary'], agent=run['agent']))
+    for memory in memories:
+        if memory['ts'] > since and memory['kind'] == 'decision':
+            groups['Decisions'].append(dict(label=memory['title'], ref=f"mem:{memory['id']}", body=memory['content']+'\n\n'+memory['rationale']))
+    for question in sorted(questions, key=lambda q: (q['status'] != 'open', -q['id'])):
+        if question['ts'] > since:
+            groups['Questions'].append(dict(label=question['question'], ref=f"q:{question['id']}", body=question['context']+'\n\n'+(question['answer'] or ''), agent=question['asker']))
+    return {key: rows for key, rows in groups.items() if rows}

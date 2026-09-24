@@ -29,7 +29,6 @@ PUSH_LIMIT = 8 * 1024 * 1024
 OUTPUT_LIMIT = 32 * 1024 * 1024
 STAGED = {
     "room_message": ("REQ-COM-024", 4),
-    "stop_team": ("REQ-ENG-006", 24),
     "reload": ("REQ-ENG-009", 28),
     "update_memory": ("REQ-COM-033", 8),
     "delete_memory": ("REQ-COM-033", 8),
@@ -57,6 +56,7 @@ PARAMS = {
     "seen": "",
     "config": "",
     "chat": "agent text idempotency_key",
+    "milestone": "action id name goal order status",
     "room_message": "text idempotency_key",
     "mark_chat_read": "agent",
     "answer_question": "id text decision",
@@ -216,12 +216,6 @@ class Data:
     def agents(self):
         s = self.s
         rows = {a["id"]: a for a in s.agents()}
-        queued = {
-            r["recipient"]: r["n"]
-            for r in s.q(
-                "SELECT recipient,count(*) n FROM messages WHERE read_at IS NULL GROUP BY recipient"
-            )
-        }
         unread = {
             r["sender"]: r["n"]
             for r in s.q(
@@ -235,6 +229,7 @@ class Data:
             )
         }
         names = HandleBook(self.cfg.project, self.cfg.agents)
+        waits = s.wait_states()
         out = []
         for cfg in self.cfg.agents:
             a = rows.get(cfg.id)
@@ -271,9 +266,9 @@ class Data:
                     model=a["model"],
                     level=cfg.level or None,
                     chat_unread=unread.get(a["id"], 0),
-                    mail_queued=queued.get(a["id"], 0),
-                    mail_reading=0,
-                    waiting_on=None,
+                    mail_queued=waits.get(a["id"], {}).get("mail_queued", 0),
+                    mail_reading=waits.get(a["id"], {}).get("mail_reading", 0),
+                    waiting_on=waits.get(a["id"], {}).get("waiting_on"),
                 )
             )
         return out
@@ -282,7 +277,7 @@ class Data:
         t = dict(row)
         if isinstance(t["depends_on"], str):
             t["depends_on"] = json.loads(t["depends_on"])
-        t["milestone_id"] = None
+        t.setdefault("milestone_id", None)
         t["notes_count"] = (
             counts.get(t["id"], 0)
             if counts is not None
@@ -483,7 +478,7 @@ class Data:
                 seen=self.seen(),
                 agents=self.agents(),
                 tasks=self.tasks(),
-                milestones=[],
+                milestones=s.milestones(),
                 questions=[self.question(q) for q in s.questions(limit=1000000)],
                 recent_messages=[self.message(m) for m in s.messages(limit)],
             )
@@ -500,7 +495,7 @@ class Data:
         if method == "agents":
             return dict(items=self.agents())
         if method == "milestones":
-            return dict(items=[])
+            return dict(items=s.milestones())
         if method == "task":
             return self.task(self.require("tasks", integer(p, "id", minimum=1)), True)
         if method == "tasks":
@@ -510,8 +505,9 @@ class Data:
             ):
                 raise APIError("bad_request", "status must be a list of task statuses")
             if p.get("milestone_id") is not None:
-                unavailable("REQ-ENG-046", 50)
-            return dict(items=[t for t in self.tasks() if t["status"] in status])
+                self.require('milestones', integer(p, 'milestone_id', minimum=1))
+            return dict(items=[t for t in self.tasks() if t['status'] in status and
+                               ('milestone_id' not in p or t['milestone_id'] == p['milestone_id'])])
         if method == "questions":
             status = p.get("status", "open")
             if status not in ("open", "answered", "dismissed", "all"):
@@ -649,13 +645,39 @@ class Data:
                 raise APIError("bad_request", "depends_on must be a list")
             for dep in p["depends_on"]:
                 self.require("tasks", integer({"id": dep}, "id", minimum=1))
-        if "milestone_id" in out:
-            if out.pop("milestone_id") is not None:
-                unavailable("REQ-ENG-046", 50)
+        if out.get("milestone_id") is not None:
+            self.require("milestones", integer(out, "milestone_id", minimum=1))
         return out
 
     def command(self, method, p):
         s = self.s
+        if method == 'milestone':
+            action = p.get('action')
+            if action not in ('create', 'update'):
+                raise APIError('bad_request', 'action must be create or update')
+            fields = {k: v for k, v in p.items() if k not in ('action', 'id')}
+            for key in ('name', 'goal'):
+                if key in fields:
+                    string(fields, key)
+            if 'name' in fields and not fields['name'].strip():
+                raise APIError('bad_request', 'name must be non-empty')
+            if 'order' in fields:
+                integer(fields, 'order', minimum=-(2**63))
+            if 'status' in fields and fields['status'] not in ('active', 'done'):
+                raise APIError('bad_request', 'status must be active or done')
+            if action == 'create':
+                if 'id' in p:
+                    raise APIError('bad_request', 'id is only valid for update')
+                if not fields.get('name'):
+                    raise APIError('bad_request', 'name is required')
+                mid = s.add_milestone(**fields)
+            else:
+                mid = integer(p, 'id', minimum=1)
+                self.require('milestones', mid)
+                s.update_milestone(mid, **fields)
+            return dict(milestone=s.milestone(mid))
+        if method == "stop_team":
+            return {"accepted": True}
         if method in STAGED:
             unavailable(*STAGED[method])
         if method in (
@@ -804,7 +826,7 @@ class Connection:
             for t in self.topics
         )
 
-    def enqueue(self, obj, push=False):
+    def enqueue(self, obj, push=False, after_send=None):
         if self.closed:
             return
         raw = (
@@ -816,9 +838,9 @@ class Connection:
         transport_bytes = self.writer.transport.get_write_buffer_size()
         if push and self.queued + transport_bytes + len(raw) > self.server.push_limit:
             self.queue = deque(
-                (data, ispush) for data, ispush in self.queue if not ispush
+                (data, ispush, callback) for data, ispush, callback in self.queue if not ispush
             )
-            self.queued = sum(len(data) for data, _ in self.queue)
+            self.queued = sum(len(data) for data, _, _ in self.queue)
             self.subscribed = False
             raw = (
                 json.dumps(
@@ -834,7 +856,7 @@ class Connection:
         if self.queued + transport_bytes + len(raw) > self.server.output_limit:
             self.close()
             return
-        self.queue.append((raw, push))
+        self.queue.append((raw, push, after_send))
         self.queued += len(raw)
         self.ready.set()
 
@@ -848,10 +870,12 @@ class Connection:
             while not self.closed:
                 await self.ready.wait()
                 while self.queue:
-                    raw, _ = self.queue.popleft()
+                    raw, _, callback = self.queue.popleft()
                     self.queued -= len(raw)
                     self.writer.write(raw)
                     await self.writer.drain()
+                    if callback:
+                        callback()
                 self.ready.clear()
         except (ConnectionError, OSError, asyncio.CancelledError):
             pass
@@ -890,7 +914,8 @@ class Connection:
                 rid = req.get("id") if isinstance(req, dict) else None
                 try:
                     result = self.server.request(self, req)
-                    self.enqueue(dict(id=rid, ok=True, result=result))
+                    after_send = (lambda: self.server.data.s.command("stop_team")) if req["method"] == "stop_team" else None
+                    self.enqueue(dict(id=rid, ok=True, result=result), after_send=after_send)
                 except APIError as e:
                     self.enqueue(dict(id=rid, ok=False, error=e.object()))
                     if e.code == "unsupported_version":
@@ -952,6 +977,7 @@ class APIServer:
         self._engine_state = None
         self._usage = None
         self._usage_at = 0
+        self._milestone_state = {}
 
     def log_exception(self, message: str) -> None:
         logging.exception(message)
@@ -1061,6 +1087,7 @@ class APIServer:
         sock.setblocking(False)
         self.data = Data(self)
         self.install_journal()
+        self._milestone_state = {m["id"]: m for m in self.data.s.milestones()}
         self._agent_state = {a["id"]: a for a in self.data.agents()}
         self._engine_state = self.data.engine_state()
         self._usage = self.data.usage()
@@ -1168,6 +1195,10 @@ class APIServer:
                 self._agent_state[a["id"]] = a
                 self._agent_sent[a["id"]] = stamp
                 self.publish("agent.state", dict(agent=a))
+        for milestone in s.milestones():
+            if milestone != self._milestone_state.get(milestone['id']):
+                self._milestone_state[milestone['id']] = milestone
+                self.publish('milestone.changed', dict(milestone=milestone))
         eng = d.engine_state()
         if {k: v for k, v in eng.items() if k != "heartbeat"} != {
             k: v for k, v in self._engine_state.items() if k != "heartbeat"
