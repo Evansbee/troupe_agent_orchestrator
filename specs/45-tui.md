@@ -26,9 +26,13 @@ deferred. The lead builds #66 in four slices:
 Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 
 ## Launch
-- **REQ-TUI-001 [x]** "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
+- **REQ-TUI-001 [~]** (Ctrl-C and the restart-resume guarantees below are new, 13:32; the rest shipped with #66.)
+  "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
   arguments (or `troupe tui`) in a project directory starts the project's engine **as a child of the TUI** and opens
   the TUI on its API.
+  - **The entrypoint** (human, 13:31: "start you with `troupe` and the TUI launches"): bare `troupe` in a
+    project directory is the primary way to run a team, and help/README/`troupe init` output point to it.
+    `troupe up` and `troupe gui` (the frozen raylib GUI) are secondary.
   - **Quit (`q`):** if runs are in flight, it first asks "N agents are working — stop them and quit? y/N". Quitting
     stops the engine and every agent run (process groups plus verified descendants). Interrupted runs are marked
     `interrupted` with their mail re-queued, so they **resume on the next start** (REQ-ENG-004).
