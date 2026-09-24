@@ -13,8 +13,8 @@ Code: `src/troupe/runners.py`.
 - **REQ-BE-004 [x]** Sessions resume across wakes; if resume fails before any output, retry fresh.
 - **REQ-BE-005 [x]** Every run's raw JSONL is saved to `.troupe/runs/<run>-<agent>.jsonl`.
 - **REQ-BE-006 [x]** Stop kills the whole process group.
-- **REQ-BE-007 [ ]** Fallback: if an agent's backend is unavailable (e.g. LM Studio down), fall back to a
-  configured alternative (`fallback_backend`, `fallback_model`).
+- **REQ-BE-007 [ ]** Superseded by REQ-BE-012: fallback now comes from each agent's ordered `providers` list, not
+  from `fallback_backend`/`fallback_model`.
 - **REQ-BE-008 [ ]** Local backend streaming + reasoning display.
 - **REQ-BE-009 [ ]** Cost for codex/local runs (token-based estimate with configurable prices).
 - **REQ-BE-010 [ ]** Per-agent `level` (from `team.yaml`, REQ-ENG-019) maps to each provider's reasoning control. (#20)
@@ -27,7 +27,61 @@ Code: `src/troupe/runners.py`.
     fields. The Settings view shows "not supported" next to level for local agents.
   - Test: argv built for each provider/level pair.
 
+## Provider usage caps and fallback (#38; human: "if we hit 50% (for example) claude usage, we can stop. Those agents
+should be able to move to codex or even local models as defined in the setup yaml file. Ordered by preference.")
+- **REQ-BE-011 [ ]** Usage tracking and caps.
+  - `team.yaml` `provider_limits` = a percent cap per provider window, e.g. `claude: {five_hour: 50, seven_day: 50}`,
+    `codex: {five_hour: 70, weekly: 60}`. An omitted window, or `local`, means uncapped.
+  - The engine tracks each provider's used % per window from what the backend reports: claude from `rate_limit`
+    events (REQ-BE-001), codex from its rate-limit/token events if they carry a used percent.
+  - A provider that reports nothing is treated as uncapped, with a one-time event saying so. Local is never capped.
+  - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
+  - Test: parsing each backend's usage events into per-window %, and cap comparison.
+- **REQ-BE-012 [ ]** Provider selection at each wake.
+  - A provider is **available** when it is under all its caps, not rate-limited (REQ-ENG-016), and up. Up means its
+    CLI is present and, for local, the server answers.
+  - Each run starts on the first available entry in the agent's `providers` list (REQ-ENG-019).
+  - A run in flight is never killed when a cap is crossed or a provider goes down.
+  - **Switching** providers starts a fresh session. The first wake prompt on the new provider gets a **Continuity**
+    section: current task brief, the agent's last run's final text, recent mail and private notes.
+  - When the preferred provider is available again (its window reset, the server is back), the agent returns to it
+    at its next wake, again with a Continuity section.
+  - **All unavailable:** the agent doesn't run. Its wait state is `providers`, with the earliest reset time
+    (REQ-ENG-046), and a needs-help notification fires (task #35).
+  - **Reviewer diversity:** for QA and architect reviews, pick the first available entry whose provider differs from
+    the one that wrote the task's last commit. If none differs, use the first available entry.
+  - **Visibility:**
+    - a feed event on every switch, e.g. "builder_1@troupe → codex (claude at 51% of 5h cap)";
+    - the top-bar usage meters draw the cap line;
+    - the agent's model chip shows the provider it's actually on, marked "fallback" when that isn't its first choice.
+  - Test:
+    - claude at 51% against a 50% cap moves the next run of a `[claude, codex]` agent to codex and logs the event;
+    - an in-flight run isn't killed;
+    - the agent is back on claude once usage is under the cap;
+    - with every provider out, the agent waits with a reset time;
+    - rate-limited and down providers trigger the same fallback;
+    - the Continuity section appears on the first run after a switch;
+    - reviewer diversity.
+
+## Web tools for the local backend (#41)
+- **REQ-BE-013 [ ]** The local tool loop gains `web_search(query, n=8)` → title/url/snippet list and
+  `web_fetch(url, max_chars)` → readable text.
+  - HTML is stripped to text without a heavy new dependency (httpx is already present).
+  - Results carry the untrusted-content marker (REQ-SAFE-002).
+  - Provider is set in `troupe.toml` `[research]`: `search = "duckduckgo" | "searxng" | "brave"`, plus `url` and
+    `api_key`. The default is keyless DuckDuckGo HTML, with a polite rate limit (≥1 s between requests) and an honest
+    user-agent.
+  - Enabled only for roles whose sandbox profile allows network and that need it: researcher, and pm/gadfly when
+    they're on local.
+  - Test: mocked httpx for both tools and each search provider's parser, plus a live test marked skip-if-offline.
+
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — rate-limit handling is specified in REQ-ENG-016 (runners detect it, the engine backs off).
 - 2026-09-23 — BE-010 level mapping (claude --effort, codex model_reasoning_effort, local ignored).
+- 2026-09-23 — BE-011/012 provider caps and ordered fallback (human; #38), absorbing BE-007. BE-013 local web tools
+  (researcher, #41).
+
+## Open questions
+- Does `codex exec --json` report a used percent per window? (The #38 builder checks. Until then codex counts as
+  uncapped, per BE-011.)
