@@ -402,14 +402,21 @@ class Data:
     def message(row):
         return dict(row, room=None)
 
-    @staticmethod
-    def question(row):
+    def question(self, row):
         q = dict(row)
         if isinstance(q["options"], str):
             q["options"] = json.loads(q["options"])
         if q["kind"] == "safety":
             q["kind"] = "approval"
-            q["approval"] = dict(task_id=q["task_id"], branch=None, paths=[])
+            approval = dict(task_id=q["task_id"], branch=None, paths=[])
+            if q["task_id"] is None:
+                # Only the current baseline request has comparable config; other safety
+                # approvals (including held patches) must retain their own context.
+                record = self.s.kv_get("safety.config")
+                if record and record.get("qid") == q["id"]:
+                    approval["previous"] = self.s.kv_get("safety.approved")
+                    approval["proposed"] = record.get("payload")
+            q["approval"] = approval
         return q
 
     @staticmethod

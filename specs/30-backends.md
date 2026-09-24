@@ -8,7 +8,8 @@ Code: `src/troupe/runners.py`.
   apply as specified by REQ-SAFE-050/051; Claude Bash still lacks an OS write boundary (#84).
 - **REQ-BE-002 [x]** `codex`: `codex exec --json --sandbox workspace-write -c approval_policy=never -c mcp_servers.troupe…`
   (`exec resume <thread>` for continuity); role instructions prepended to the first prompt of a session.
-  Role roots, network policy and the PreToolUse guard follow REQ-SAFE-050/051. Test: launch argv for both
+  Role roots, network policy and the PreToolUse guard follow REQ-SAFE-050/051. troupe's own MCP tools are
+  pre-approved (only that server), and nothing under `.git` is writable; `complete_task` commits (SAFE-050, #96). Test: launch argv for both
   backends uses these permission settings and contains neither former permission/sandbox bypass flag
   (`tests/test_sandbox.py`).
 - **REQ-BE-003 [x]** `local`: OpenAI-compatible `/chat/completions` with a native tool loop: troupe tools +
@@ -79,8 +80,8 @@ should be able to move to codex or even local models as defined in the setup yam
     If either is unset it falls back to `claude_cap_percent` (default 50), so older configs keep working. Troupe's own
     values are the human's choice (question #18): **5h = 80, 7d = 50**.
   - Each window is checked against its own cap. If either window's latest Claude usage is ≥ its cap, no new
-    **autonomous** runs start for claude-backed agents, and "capped until" is the reset time of the window that
-    tripped. Codex and local agents are unaffected, and in-flight runs finish.
+    **autonomous** runs start for claude-backed agents until the window that tripped resets; displays say
+    "capped · resets in 4h" (countdown copy rule, REQ-ENG-016). Codex and local agents are unaffected, and in-flight runs finish.
   - The API exposes `cap_pct` per window (REQ-API Usage).
   - Chat with the human still runs, since they're present and can decide, but it's labeled as over the cap. This
     differs from real rate limits (REQ-ENG-016), which block chat, because the cap is troupe's own seatbelt.
@@ -179,6 +180,7 @@ should be able to move to codex or even local models as defined in the setup yam
   - Test: mocked httpx for both tools and each search provider's parser, plus a live test marked skip-if-offline.
 
 ## Changelog
+- 2026-09-24 — BE-002: troupe MCP pre-approval, no `.git` roots (#96). BE-016 cap display uses countdown copy (#105).
 - 2026-09-24 — BE-001/002 launch commands aligned with shipped #43 and SAFE-050; retained the OS-boundary gap.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — rate-limit handling is specified in REQ-ENG-016 (runners detect it, the engine backs off).
