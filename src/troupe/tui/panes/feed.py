@@ -48,6 +48,7 @@ class FeedPane(Container):
         Binding("d", "toggle_decisions", "Decisions only", show=True),
         Binding("[", "prev_agent", "Prev agent filter", show=False),
         Binding("]", "next_agent", "Next agent filter", show=False),
+        Binding("r", "retry", "Retry", show=False),
     ]
 
     def __init__(self, client: Any, **kwargs: Any) -> None:
@@ -65,13 +66,22 @@ class FeedPane(Container):
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        agents = await self.client.call("agents")
-        self._agents_by_id = {a["id"]: a for a in agents["items"]}
-        messages = await self.client.call("messages", kind="msg", limit=MAX_ITEMS)
-        self._messages = list(reversed(messages["items"]))  # API returns newest-first
-        decisions = await self.client.call("memories", kind="decision", limit=MAX_ITEMS)
-        self._decisions = list(reversed(decisions["items"]))
+        # #108: see chat.py's load() for why this can no longer let errors propagate.
+        try:
+            agents = await self.client.call("agents")
+            self._agents_by_id = {a["id"]: a for a in agents["items"]}
+            messages = await self.client.call("messages", kind="msg", limit=MAX_ITEMS)
+            self._messages = list(reversed(messages["items"]))  # API returns newest-first
+            decisions = await self.client.call("memories", kind="decision", limit=MAX_ITEMS)
+            self._decisions = list(reversed(decisions["items"]))
+        except Exception as e:
+            self.query_one(RichLog).clear()
+            self.query_one(RichLog).write(f"couldn't load: {e or type(e).__name__} (r to retry)")
+            return
         self._repaint()
+
+    async def action_retry(self) -> None:
+        await self.load()
 
     def on_troupe_event(self, event: dict) -> None:
         name = event["event"]
@@ -90,7 +100,10 @@ class FeedPane(Container):
             self.app.call_later(self._refresh_agents)
 
     async def _refresh_agents(self) -> None:
-        agents = await self.client.call("agents")
+        try:
+            agents = await self.client.call("agents")
+        except Exception:
+            return  # a transient failure here just means stale handles until the next event/retry
         self._agents_by_id = {a["id"]: a for a in agents["items"]}
         self._repaint()
 

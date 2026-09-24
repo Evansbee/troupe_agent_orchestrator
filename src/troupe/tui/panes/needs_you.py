@@ -102,6 +102,7 @@ class NeedsYouPane(Widget):
         Binding("y", "confirm_yes", "Confirm reject", show=False),
         Binding("n", "confirm_no", "Cancel", show=False),
         Binding("escape", "cancel_answer", "Cancel", show=False),
+        Binding("r", "retry", "Retry", show=False),
     ]
 
     answering: reactive[bool] = reactive(False)
@@ -134,8 +135,16 @@ class NeedsYouPane(Widget):
 
     # ── loading + live updates ───────────────────────────────────────────
     async def load(self) -> None:
-        result = await self.client.call("questions", timeout=CALL_TIMEOUT, status="open", limit=1000)
+        # #108: a load failure here must not crash the app -- see chat.py's load() for why.
+        try:
+            result = await self.client.call("questions", timeout=CALL_TIMEOUT, status="open", limit=1000)
+        except Exception as e:
+            self.query_one("#ny-status", Static).update(f"couldn't load: {e or type(e).__name__} (r to retry)")
+            return
         await self._set_cards(result.get("items", []))
+
+    async def action_retry(self) -> None:
+        await self.load()
 
     async def _set_cards(self, items: list[dict]) -> None:
         list_view = self.query_one("#ny-cards", ListView)

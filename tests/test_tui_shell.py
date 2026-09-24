@@ -237,6 +237,67 @@ def test_live_resize_collapses_and_restores_on_the_same_event(project):
     asyncio.run(scenario())
 
 
+def test_tasks_pane_load_failure_shows_inline_error_and_app_keeps_running(project):
+    """#108: a pane's load() failing (a dropped connection, an oversized response, whatever) must
+    not take the rest of the TUI down with it -- app.py gathers every pane's load() together, so an
+    uncaught exception here used to crash the whole app."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES,
+                               errors={"tasks": ("internal", "boom")})
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tasks_pane = app._panes[1]
+                assert "couldn't load: boom" in tasks_pane.content.plain
+                assert "r to retry" in tasks_pane.content.plain
+                # the rest of the app is unaffected: Team still loaded fine
+                assert any(a["handle"] == "builder_1@t" for a in app._panes[0]._agents)
+                assert not app._exit
+
+                del server.errors["tasks"]
+                app.set_focus(tasks_pane)
+                await pilot.press("r")
+                await _wait_until(lambda: tasks_pane._tasks)
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_any_pane_load_failure_is_survivable_not_just_tasks(project):
+    """The base Pane class (panes/__init__.py), not just TasksPane, catches a load() failure --
+    live-testing #108's fix against a realistically sized seeded project (300 tasks/8000 events/
+    700 mail) surfaced the exact same crash from TeamPane's `agents` call timing out under load."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES,
+                               errors={"agents": ("internal", "team unavailable")})
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                team_pane = app._panes[0]
+                assert "couldn't load: team unavailable" in team_pane.content.plain
+                # the rest of the app is unaffected: Tasks still loaded fine, app still running
+                assert any(t["title"] == "TUI slice A" for t in app._panes[1]._tasks)
+                assert not app._exit
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_empty_tasks_pane_shows_one_line_not_squashed_into_the_glyph_column(project):
     cfg, _store = project
 
@@ -425,3 +486,36 @@ def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
             await server.stop()
 
     asyncio.run(scenario())
+
+
+def test_run_tui_exits_nonzero_when_the_app_panicked(project, monkeypatch):
+    """#108: Textual's own crash handling catches an unhandled exception, prints it, and returns
+    normally from App.run() with a non-zero return_code -- it never raises or exits the process on
+    its own (its own docstring's example is `sys.exit(app.return_code)`). Without this, a TUI that
+    crashed on startup looked exactly like a clean exit to anything checking the process."""
+    from troupe.tui.app import TroupeApp, run_tui
+
+    cfg, _store = project
+
+    def fake_run(self, **kwargs):
+        self._return_code = 1
+
+    monkeypatch.setattr(TroupeApp, "run", fake_run)
+    try:
+        run_tui(cfg, owns_engine=True)
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("run_tui did not exit non-zero after a panicked app")
+
+
+def test_run_tui_exits_cleanly_when_the_app_did_not_panic(project, monkeypatch):
+    from troupe.tui.app import TroupeApp, run_tui
+
+    cfg, _store = project
+
+    def fake_run(self, **kwargs):
+        pass  # return_code stays None: a normal quit
+
+    monkeypatch.setattr(TroupeApp, "run", fake_run)
+    run_tui(cfg, owns_engine=True)  # must not raise SystemExit
