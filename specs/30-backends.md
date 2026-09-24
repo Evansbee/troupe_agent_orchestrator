@@ -121,21 +121,46 @@ should be able to move to codex or even local models as defined in the setup yam
     - the Continuity section appears on the first run after a switch;
     - reviewer diversity.
 
-- **REQ-BE-014 [ ]** (#52; human: "you really need to dig in on how to get the codex usage numbers") Codex usage.
-  - The source to verify first: the `token_count` events' `rate_limits` object in Codex's session rollout files
-    (`~/.codex/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl`, for the thread ids troupe stores as codex sessions).
-    It has `primary` and `secondary` windows, each with `used_percent`, `window_minutes` and `resets_at`, plus
-    `plan_type` and `rate_limit_reached_type`.
-  - Other sources to check: CLI status commands, newer `--json` event types, and the app-server protocol. The builder
-    records which sources exist, which one is used, why, and the fallback, in `docs/codex-usage.md` and in this REQ.
-  - `src/troupe/usage.py` reads it after each codex run and on a timer (at most once a minute). It stores kv
-    `usage:codex` in the same shape as Claude's usage (used % per window, window length, reset time, plan), which
-    feeds BE-011 caps.
-  - The top bar shows Codex meters next to Claude's, reading kv only.
-  - `rate_limit_reached_type` set, or `used_percent ≥ 100`, marks codex limited until `resets_at` (REQ-ENG-016).
-  - Privacy (Principle 0): only the `rate_limits` and `token_count` fields are read. Conversation content in `~/.codex`
-    is never copied (a test asserts it).
-  - Test: fixture rollout files for primary only, primary + secondary, a missing file, and malformed lines.
+- **REQ-BE-014 [x]** (#52; human: "you really need to dig in on how to get the codex usage numbers") Codex usage.
+  - Sources checked (see `docs/codex-usage.md` for the full writeup): `codex exec --json` stdout does not carry
+    `rate_limits` (only per-run token totals); the CLI has no `usage`/`status` subcommand (codex-cli 0.156.1).
+    The session rollout files (`<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl`, thread id = the
+    session id troupe already stores per codex agent) do carry it, in each `token_count` event's
+    `payload.rate_limits`: `primary`/`secondary` windows with `used_percent`, `window_minutes`, `resets_at`, plus
+    `plan_type` and `rate_limit_reached_type`. `codex app-server --stdio`'s `account/rateLimits/read` JSON-RPC
+    method returns the same shape (camelCase) read-only, with no completed run needed and no model quota spent.
+  - Used: the app-server RPC is primary (read-only, 5s timeout, process torn down immediately after the one
+    response — never left running). Rollout-file parsing (bounded to each file's last 4MB) is the fallback when the
+    RPC is unavailable, times out, or errors.
+  - **Isolated CODEX_HOME integration (BE-015, #62):** since each codex agent runs under its own
+    `.troupe/codex-home/<agent>` rather than a shared `~/.codex`, both readers respect that. The post-run hook and
+    the rollout fallback look in the specific agent's `codex_home_dir(cfg, agent.id)/sessions`, never a different
+    agent's home or the human's real `~/.codex`; multiple codex agents' latest samples are merged by
+    `observed_at`. The app-server RPC subprocess is launched with `CODEX_HOME` set to a codex agent's isolated
+    home (built/refreshed via `ensure_codex_home` first, so its `[features]` allowlist is always in place before
+    the read happens) — it never inherits the engine process's own environment's `CODEX_HOME` or the human's
+    `~/.codex`. Same account, since `auth.json` is symlinked identically into every agent's home; only the
+    config differs.
+  - `src/troupe/usage.py` reads it after each codex run (`engine.py`'s `_run`, right after the runner returns —
+    kept out of `runners.py` since that file is protected under REQ-SAFE-020 and this plumbing doesn't need to
+    live there) and on a timer off the engine's own loop, at most once a minute, only while a codex agent is
+    configured. It stores kv `usage:codex` in
+    the same shape as Claude's usage (used % per window, window length, reset time, plan, plus `observed_at`/
+    `source`), which feeds BE-011 caps. A newer-observed sample never overwrites a fresher cached one.
+  - The top bar shows Codex meters next to Claude's, reading kv only (no file I/O in draw code); a meter is marked
+    stale if its sample is older than 120s. `api.py`'s `Data.usage()` also serializes `usage:codex`'s canonical
+    per-window fields (`used_percent`/`window_minutes`/`resets_at`) plus `plan`/`age`/`source` for the codex
+    provider entry — no new API method, just an enrichment of the existing `usage` read.
+  - `rate_limit_reached_type` set, or `used_percent ≥ 100`, marks codex limited until `resets_at` (REQ-ENG-016); a
+    missing reset falls back to `observed_at + 900s` so a stale reached-state can't wedge the backend forever.
+  - Privacy (Principle 0): only the `rate_limits` and `token_count` fields are read, through an explicit allowlist
+    (`usage.normalize`) that drops `credits` and any other nested field before it reaches disk. Conversation content
+    is never copied (tests assert it).
+  - Test (`tests/test_codex_usage.py`): fixture rollout files for primary only, primary + secondary, a missing
+    file, malformed lines, the app-server RPC handshake (allowlisted response, timeout reaps the child process),
+    the post-run hook, the minute timer's RPC-then-fallback order, stale/missing-data cache retention, the RPC
+    subprocess's `CODEX_HOME` env matching the agent's isolated home rather than an inherited/real one, and the
+    post-run hook ignoring a rollout sitting under a different agent's isolated home.
 
 ## Web tools for the local backend (#41)
 - **REQ-BE-013 [ ]** The local tool loop gains `web_search(query, n=8)` → title/url/snippet list and
@@ -156,11 +181,15 @@ should be able to move to codex or even local models as defined in the setup yam
 - 2026-09-23 — BE-011/012 provider caps and ordered fallback (human; #38), absorbing BE-007. BE-013 local web tools
   (researcher, #41).
 - 2026-09-23 — BE-014 Codex usage from rollout `rate_limits` (#52, human request).
+- 2026-09-24 — BE-014 implemented: app-server RPC primary source, rollout-file fallback, top-bar meters, BE-011/
+  ENG-016 wiring (#52).
 - 2026-09-24 — BE-011 shared window names (five_hour/seven_day/window_<minutes>) and stale-sample rule (#52/#38).
 - 2026-09-24 — BE-015 isolated CODEX_HOME for agents (#62).
 - 2026-09-24 — BE-016 MVP Claude cap (#72).
 - 2026-09-24 — BE-016 split into per-window caps (5h/7d); troupe's values 80/50 (human, question #18).
+- 2026-09-24 — BE-014 integrated with BE-015: both the app-server RPC and the rollout-file fallback now read
+  through each codex agent's isolated CODEX_HOME (#52), never the human's ~/.codex.
 
 ## Open questions
-- Codex usage source: `codex exec --json` stdout appears not to carry limits, but the session rollout files do (#52
-  verifies this; BE-014). Until #52 ships, codex counts as uncapped, per BE-011.
+- None outstanding for backends. (Codex usage source resolved by #52/BE-014: app-server RPC primary, rollout-file
+  fallback; see `docs/codex-usage.md`.)

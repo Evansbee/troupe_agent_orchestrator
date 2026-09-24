@@ -65,6 +65,16 @@ additionally shows the file list and +/− counts inline, with "Open full diff" 
 options rather than a separate control — everything actionable goes through the same `a`+number
 pattern, no special-cased UI for this one card type.
 
+**Safety-baseline approval cards (REQ-SAFE-021) have two distinct cases** — never interpolate a bare
+`null`/`None` when the "previous" side doesn't exist (#85):
+- **First baseline** (nothing to compare against): `[dim]baseline:[/dim] first approval — nothing to
+  compare against yet`, then list what's actually in it the same way protected paths already render
+  (`[dim]protected:[/dim] roles.py, runners.py, ...`, `[dim]check:[/dim] uv run pytest`) — the human
+  is establishing the starting point, so show them the point, not a diff against nothing.
+- **Changed baseline** (a real previous value exists): summarize as changed fields, same +/− spirit
+  as the task-diff approval card — e.g. `[dim]changed:[/dim] protected paths +2 −0`, or a clean
+  before→after for a scalar field, `[dim]changed:[/dim] check: "true" → "uv run pytest"`.
+
 ## Chat pane (#68)
 
 Sender name in role color, message text plain, most recent at the bottom (sticky-to-bottom, same
