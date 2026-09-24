@@ -35,7 +35,8 @@ why. Until then, anything that blocks that end-to-end use or hides agent activit
    The team runs as a background service; the app is a window you open and close without stopping it,
    and every agent has a clear handle (`role_N@project`, e.g. `builder_2@troupe`) so it's obvious who is
    talking to whom.
-7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The team (provider, model and level per agent) is a
+7. **Local-first & hackable.** Plain files + one SQLite DB in `.troupe/`. Python + uv. The GUI is a native macOS app (SwiftUI + Metal) that talks to each
+   project's engine service over a local API. The team (provider, model and level per agent) is a
    live-editable `team.yaml`; budget and plumbing live in `troupe.toml`.
 
 ## The team (roles)
@@ -75,3 +76,5 @@ territories for parallel builders, reviewers on a different runtime than writers
 - 2026-09-23 — engine runs as a service (GUI attaches/detaches, "while you were away" catch-up); agent
   handles `role_N@project_name` (human).
 - 2026-09-23 — added the Architect role (human): sustainability owner; gates only risky changes.
+- 2026-09-23 — GUI goes native: SwiftUI app in `mac/`, client of a per-project local engine API
+  (`specs/50-api.md`); raylib GUI retired at parity (human chose "commit now").
