@@ -29,7 +29,7 @@ font renders reliably (no emoji, no font-fallback risk):
 | Waiting on human | `?` | `T.YELLOW`/gold | "waiting: you" |
 | Waiting on review | `→` | role color | "waiting: qa_1" |
 | Blocked / dependency | `✕` | role color | "blocked: #14" |
-| Rate-limited / providers | `‡` | `T.ORANGE` (rate_limit) / `T.RED` (providers) | "limited: claude, resets 14:05" |
+| Rate-limited / providers | `‡` | `T.ORANGE` (rate_limit) / `T.RED` (providers) | "limited: claude, back in 4h" (relative countdown, `design/system.md` #105) |
 | Queued for a slot | `…` + number | dim | "queued #3" |
 | Parked (owes work) | `!` | `T.ORANGE` | "parked" |
 | Merged / done | `✓` | `T.GREEN` | "merged" |
