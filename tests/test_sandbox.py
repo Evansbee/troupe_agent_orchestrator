@@ -11,12 +11,13 @@ from pathlib import Path
 
 import pytest
 
+from troupe import gitops
 from troupe.config import AgentCfg
-from troupe.runners import ClaudeRunner, CodexRunner, FileTools, RunSpec, child_env
+from troupe.runners import ClaudeRunner, CodexRunner, FileTools, RunSpec, child_env, codex_config_toml
 from troupe.sandbox import DEFAULT_ROLE_PROFILES, OTHERS_PROFILE, parse_role_profiles, role_profile, writable_roots
 from troupe.sandbox import macos as sandbox_macos
 from troupe.sandbox.claude import permission_args
-from troupe.sandbox.codex import extra_add_dirs, hooks_toml, sandbox_args
+from troupe.sandbox.codex import extra_add_dirs, git_writable_roots, hooks_toml, sandbox_args
 
 
 # ── grep test (REQ-SAFE-050 AC1) ─────────────────────────────────────────────
@@ -199,6 +200,98 @@ def test_codex_runner_argv_uses_sandbox_not_dangerous_flag(project, monkeypatch,
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
     assert "workspace-write" in args
     assert "approval_policy=never" in args
+
+
+# ── #96: MCP approval + git-worktree writable roots ─────────────────────────
+def test_codex_config_toml_approves_troupes_own_mcp_server():
+    from troupe.config import Config
+    cfg = Config(root=Path("/proj"), project="p", agents=[])
+    toml = codex_config_toml(cfg, AgentCfg("builder-1", "builder", "Builder", "codex"))
+    assert 'default_tools_approval_mode = "approve"' in toml
+    assert toml.index("[mcp_servers.troupe]") < toml.index('default_tools_approval_mode = "approve"') < \
+           toml.index("[mcp_servers.troupe.env]")
+
+
+@pytest.mark.parametrize("role", ["builder", "qa"])
+def test_codex_runner_argv_pre_approves_only_troupes_mcp_server(project, monkeypatch, tmp_path, role):
+    """#96: found live (task summary transcript) that codex's `AppToolApproval` values (auto/prompt/
+    writes) all still hit "MCP tool call requires approval, but approval policy is never" under
+    approval_policy=never — only the literal "approve" actually lets a troupe tool call through.
+    REQ-BE-015 configures no other MCP server, so this can't reach anything else."""
+    cfg, _ = project
+    a = AgentCfg(f"{role}-1", role, role.title(), "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["args"] = args
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", cfg.root, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    assert "mcp_servers.troupe.default_tools_approval_mode=approve" in seen["args"]
+
+
+def test_git_writable_roots_for_a_real_task_worktree(project):
+    """#96: verified live against a real codex sandbox (task summary) — a commit in the worktree
+    succeeds with exactly these roots, and `git update-ref refs/heads/main` still fails inside the
+    same sandbox (main isn't a descendant of refs/heads/troupe/)."""
+    cfg, _ = project
+    branch, path = gitops.create_worktree(cfg.root, cfg.root / ".troupe" / "worktrees", 1, "a task")
+    roots = git_writable_roots(path)
+    git_dir = Path(gitops.git(path, "rev-parse", "--git-dir"))
+    common_dir = Path(gitops.git(path, "rev-parse", "--git-common-dir"))
+    assert roots == [
+        git_dir,
+        common_dir / "objects",
+        common_dir / "refs" / "heads" / "troupe",
+        common_dir / "logs" / "refs" / "heads" / "troupe",
+    ]
+    assert (common_dir / "refs" / "heads" / "main") not in roots
+    assert not str(common_dir / "refs" / "heads" / "main").startswith(str(common_dir / "refs" / "heads" / "troupe"))
+
+
+def test_git_writable_roots_empty_for_the_main_checkout(project):
+    """The main checkout's own git-dir already sits inside its writable cwd (REQ-SAFE-051's
+    non-worktree roles) — adding the *entire* common .git on top would be far broader than #96's
+    narrow intent, so this is a deliberate no-op, not an oversight."""
+    cfg, _ = project
+    assert git_writable_roots(cfg.root) == []
+
+
+def test_git_writable_roots_empty_when_not_a_git_repo(tmp_path):
+    assert git_writable_roots(tmp_path) == []
+
+
+@pytest.mark.parametrize("role", ["builder", "qa"])
+def test_codex_runner_argv_includes_git_writable_roots_for_a_worktree_cwd(project, monkeypatch, tmp_path, role):
+    cfg, _ = project
+    branch, wt = gitops.create_worktree(cfg.root, cfg.root / ".troupe" / "worktrees", 2, "another task")
+    a = AgentCfg(f"{role}-1", role, role.title(), "codex")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "auth.json").write_text("{}")
+    runner = CodexRunner()
+    seen = {}
+
+    async def fake_stream(args, spec, prompt, callback):
+        seen["args"] = args
+        callback({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+        return 0, ""
+
+    monkeypatch.setattr(runner, "_stream", fake_stream)
+    spec = RunSpec(cfg, a, "system", "prompt", wt, None, Path("unused"))
+    asyncio.run(runner.run(spec, lambda kind, text: None))
+    args = seen["args"]
+    common_dir = Path(gitops.git(wt, "rev-parse", "--git-common-dir"))
+    assert "--add-dir" in args and str(common_dir / "objects") in args
+    assert str(common_dir / "refs" / "heads" / "troupe") in args
+    assert str(common_dir / "refs" / "heads" / "main") not in args
 
 
 # ── claude sandbox args ───────────────────────────────────────────────────
