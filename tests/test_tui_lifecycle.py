@@ -12,7 +12,7 @@ ENGINE_IDLE = dict(state="live", stopped=False, paused=False, throttled=None, he
 ENGINE_BUSY = dict(ENGINE_IDLE, running_runs=2)
 
 
-async def _wait_until(predicate, timeout=2.0):
+async def _wait_until(predicate, timeout=5.0):  # #71: generous default under load
     import time
     deadline = time.monotonic() + timeout
     while not predicate():

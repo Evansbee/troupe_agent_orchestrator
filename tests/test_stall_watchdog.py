@@ -271,11 +271,14 @@ def test_stall_through_real_stream_unsticks_a_pipe_held_by_a_reparented_grandchi
         await engine.launch(Wake(0, a, "messages"))
         runner = engine.running[a.id][0]
         await _wait_for(lambda: runner.proc is not None)
-        await asyncio.sleep(0.5)  # real time: let it print its line and finish forking
+        # #71: real fork/exec/signal-delivery time, not something to poll for (there's no
+        # in-process observable to wait on) — widened from the original 0.5s for extra margin
+        # under load.
+        await asyncio.sleep(1.0)  # real time: let it print its line and finish forking
 
         clock["t"] += 5  # past stall_minutes
         engine.watchdog_sweep()
-        await asyncio.sleep(0.5)  # real time: let the SIGKILL actually land
+        await asyncio.sleep(1.0)  # real time: let the SIGKILL actually land
         assert a.id in engine.running  # still stuck: the reparented grandchild still holds the pipe
 
         clock["t"] += 25  # past the pipe-unstick grace period

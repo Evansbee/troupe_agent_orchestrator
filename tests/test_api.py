@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import socket
 import stat
@@ -306,8 +307,15 @@ for i in range(50):
         ]
         c.call("unsubscribe")
         error(c, "subscribe", dict(since_seq=server.seq + 1), "resync_required")
-        server.loop.call_soon_threadsafe(server.ring.clear)
-        time.sleep(0.02)
+        # #71: call_soon_threadsafe only *schedules* the clear on the server's own thread/loop; a
+        # fixed sleep raced that thread actually running it. Wait on a future that only resolves
+        # once the clear has genuinely executed, so this is exact rather than a timing guess.
+        cleared = concurrent.futures.Future()
+        def clear_and_signal():
+            server.ring.clear()
+            cleared.set_result(None)
+        server.loop.call_soon_threadsafe(clear_and_signal)
+        cleared.result(timeout=5)
         error(c, "subscribe", dict(since_seq=0), "resync_required")
 
 
@@ -394,8 +402,13 @@ def test_slow_consumer_resync_and_engine_independence(api):
         for _ in range(20):
             s.send("human", "builder-1", "x" * 1024)
         s.conn.commit()
-        time.sleep(0.2)
-        # The queue is discarded before the writer gets a chance to drain it.
+        # #71: the server thread must actually notice the backpressure and flip `subscribed` to
+        # False before the queue is genuinely "discarded before the writer gets a chance to drain
+        # it" — a fixed sleep raced that; poll the real post-condition instead (also asserted
+        # below, so this just makes the wait exact rather than a timing guess).
+        deadline = time.monotonic() + 5
+        while next(iter(server.connections)).subscribed and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert c.event()["event"] == "resync_required"
         assert c.call("ping")["pong"]
         assert not next(iter(server.connections)).subscribed
@@ -492,7 +505,9 @@ def test_cli_and_engine_lifecycle(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(engine, "tick", tick)
     monkeypatch.setattr("troupe.engine.TICK", 0.05)
     thread = engine.start_thread()
-    deadline = time.time() + 1
+    # #71: the engine's own background thread must start and set up its API server before this
+    # is ready — a real OS-scheduling race, widened from the original 1s budget.
+    deadline = time.time() + 10
     while not getattr(engine, "api", None) or not engine.api._ready.is_set():
         assert time.time() < deadline
         time.sleep(0.005)
@@ -527,7 +542,11 @@ def test_default_backpressure_threshold(api):
                 "x" * (1024 * 1024),
             )
         s.conn.commit()
-        time.sleep(0.3)
+        # #71: poll the real backpressure post-condition instead of a fixed sleep (see
+        # test_slow_consumer_resync_and_engine_independence for why).
+        deadline = time.monotonic() + 5
+        while next(iter(server.connections)).subscribed and time.monotonic() < deadline:
+            time.sleep(0.02)
         event = c.event()
         assert event["event"] == "resync_required"
         assert c.call("ping")["pong"]
