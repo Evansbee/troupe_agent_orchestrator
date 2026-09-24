@@ -818,7 +818,10 @@ def agent_view(app: "App", r: Rect) -> None:
     buttons_w = sum(ui.button_w(label) + 8 for _, label, _ in buttons)
     pill_limit = head.r - 16 - buttons_w - 16
 
-    nx = tx + ui.text(tx, head.y + 20, d.name_of(a["id"]), 21, T.TEXT, "bold") + 12
+    # the name itself needs the same budget as the pills below it — pill_limit already accounts for
+    # the button block (Stop included when running), but an unbudgeted name was still drawn at full
+    # width and overlapped the buttons directly once it alone exceeded that space (QA repro on #23).
+    nx = tx + ui.text_fit(tx, head.y + 20, d.name_of(a["id"]), max(40.0, pill_limit - tx), 21, T.TEXT, "bold") + 12
     for label, pcol in ((role.title, col), (a["backend"] + (f" · {a['model']}" if a["model"] else ""), T.TEXT_DIM),
                         (state, T.GREEN if state == "working" else T.TEXT_FAINT)):
         pw = ui.measure(label, 11, "med") + 16
