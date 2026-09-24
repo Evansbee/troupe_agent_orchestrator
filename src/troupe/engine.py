@@ -176,13 +176,20 @@ class Engine(MergeGateMixin):
         from .api import APIServer
         from .notify import Notifier
 
+        from .usage import monitor
+
+        usage_task = None
         self.api = APIServer(self.cfg, self)
         notifier_task = None
         try:
             self.api.start()
+            usage_task = asyncio.create_task(monitor(self))
             notifier_task = asyncio.create_task(Notifier(self.store).run(self))
             await self._serve()
         finally:
+            if usage_task:
+                usage_task.cancel()
+                await asyncio.gather(usage_task, return_exceptions=True)
             if notifier_task:
                 notifier_task.cancel()
                 await asyncio.gather(notifier_task, return_exceptions=True)
@@ -810,6 +817,20 @@ class Engine(MergeGateMixin):
             fields["session_id"] = res.session_id
             fields["session_runs"] = (row.get("session_runs") or 0) + 1
         s.set_agent(a.id, **fields)
+
+        if a.backend == "codex":
+            # Must come after end_run()/set_agent() above, not between running.pop() (in the
+            # finally above) and end_run(): this awaits (a thread hop), and #61's
+            # sweep_zombie_runs() runs every tick — if a tick landed while this run's row was
+            # still 'running' but its agent already missing from self.running, the sweep would
+            # flip it to interrupted and requeue its mail, which _run would then silently
+            # overwrite. Placed here, the run row and agent fields are already finalized before
+            # the first await, so every path below (limited, failed, ok) still passes through it.
+            from .runners import codex_home_dir
+            from .usage import apply_usage, rollout_usage
+            sample = await asyncio.to_thread(
+                rollout_usage, [res.session_id] if res.session_id else [], codex_home_dir(self.cfg, a.id))
+            apply_usage(s, sample, self.record_limit)
 
         if limited:
             s.mark_unread([m["id"] for m in msgs])
