@@ -80,7 +80,7 @@ class Data:
                 s = self.store
                 self.catchup = catchup_items(s.q("SELECT * FROM events WHERE ts>? ORDER BY id DESC", since),
                     s.questions(None, limit=100000), s.q("SELECT * FROM runs WHERE ended>?", since),
-                    s.memories(limit=100000), since)
+                    s.memories(limit=100000, include_superseded=True), since)
                 for rows in self.catchup.values():
                     for row in rows:
                         row["label"] = self.names.event_text(row["label"])
@@ -162,7 +162,7 @@ class Data:
                 self._answer_event, answer_event)
         self._answer_event = answer_event
         self.messages = s.messages(limit=600)
-        self.memories = s.memories(limit=400)
+        self.memories = s.memories(limit=400, include_superseded=True)
         self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
                                                        "limit.claude", "limit.codex", "limit.local",
                                                        "config_error.team.yaml", "config_error.troupe.toml")}
@@ -326,6 +326,14 @@ class Data:
         tid = self.store.add_task(title, description, status="ready", priority=priority, role=role, created_by="human")
         self.refresh(force=True)
         return tid
+
+    def set_memory(self, memory_id: int, **fields) -> None:
+        self.store.update_memory(memory_id, actor="human", **fields)
+        self.refresh(force=True)
+
+    def delete_memory(self, memory_id: int) -> None:
+        self.store.delete_memory(memory_id, actor="human")
+        self.refresh(force=True)
 
 
 

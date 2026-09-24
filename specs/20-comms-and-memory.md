@@ -88,12 +88,12 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 - **REQ-COM-030 [x]** `remember(kind=decision|note|fact|idea|preference, rationale=…)`; team-visible unless
   `private`. Recent decisions are injected into every wake prompt.
 - **REQ-COM-031 [x]** `recall(query)` searches memories and answered questions.
-- **REQ-COM-032 [ ]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
+- **REQ-COM-032 [x]** Supersede: `remember(..., supersedes=<id>)` marks memory `<id>` superseded by the new one. (#8)
   - Superseded memories are excluded from wake prompts and `recall` results by default (`recall(...,
     include_superseded=True)` shows them); they are never deleted.
   - Superseding a nonexistent id, or one already superseded, returns `ERROR:` with the current successor's id.
   - The Memory view shows superseded items struck through with a link to their successor.
-- **REQ-COM-033 [ ]** Human memory controls in the Memory view. (#8)
+- **REQ-COM-033 [x]** Human memory controls in the Memory view. (#8)
   - Pin: pinned memories appear in every wake prompt regardless of age, before recent decisions. Pinning does not
     un-supersede.
   - Edit (title, content, rationale) and delete (with confirmation). Only the human can pin, edit or delete;

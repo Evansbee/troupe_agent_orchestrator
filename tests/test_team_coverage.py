@@ -91,3 +91,32 @@ def test_memory_visibility_rationale_and_answer_search(project):
     store.answer(qid, "SQLite")
     assert "answered question" in lead.recall("storage sqlite")
     assert "SQLite" in lead.recall("storage sqlite")
+
+
+def test_gui_data_pin_edit_delete_memory(project):
+    cfg, store = project
+    mid = store.remember("lead", "Decision", content="body", rationale="why")
+    d = Data(cfg)
+    d.set_memory(mid, pinned=True)
+    assert store.memory(mid)["pinned"] == 1
+    d.set_memory(mid, title="Edited title")
+    assert store.memory(mid)["title"] == "Edited title"
+    d.delete_memory(mid)
+    assert store.memory(mid) is None
+
+
+def test_supersede_hides_from_recall_by_default(project):
+    cfg, store = project
+    lead = TeamAPI(cfg, store, "lead")
+    lead.remember("Old decision", rationale="v1")
+    old_id = store.memories(limit=1)[0]["id"]
+    result = lead.remember("New decision", rationale="v2", supersedes=old_id)
+    assert not result.startswith("ERROR")
+    new_id = store.memories(limit=1)[0]["id"]
+    assert "Old decision" not in lead.recall("Old decision")
+    shown = lead.recall("Old decision", include_superseded=True)
+    assert "Old decision" in shown
+    assert f"[superseded by #{new_id}]" in shown
+    err = lead.remember("Another", supersedes=old_id)
+    assert err == f"ERROR: memory #{old_id} is already superseded by #{new_id}."
+    assert lead.remember("x", supersedes=999999).startswith("ERROR: memory #999999 not found")

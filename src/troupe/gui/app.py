@@ -37,6 +37,8 @@ class App:
         self.run_view = "Transcript"
         self.mail_filter: str | None = None
         self.mem_filter: str | None = None
+        self.mem_editing: int | None = None
+        self.mem_confirm_delete: int | None = None
         self.doc_sel: str | None = None
         self.expanded: set[str] = set()
         self.toasts: list[tuple[float, str, tuple]] = []

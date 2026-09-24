@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS questions(
 );
 CREATE TABLE IF NOT EXISTS memories(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, agent TEXT, kind TEXT DEFAULT 'decision',
-  title TEXT, content TEXT DEFAULT '', rationale TEXT DEFAULT '', scope TEXT DEFAULT 'team'
+  title TEXT, content TEXT DEFAULT '', rationale TEXT DEFAULT '', scope TEXT DEFAULT 'team',
+  pinned INTEGER DEFAULT 0, superseded_by INTEGER
 );
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, agent TEXT, kind TEXT, text TEXT,
@@ -145,6 +146,11 @@ class Store:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
             if "system" not in run_columns:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
+            memory_columns = {r["name"] for r in self.q("PRAGMA table_info(memories)")}
+            if "pinned" not in memory_columns:
+                self.conn.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0")
+            if "superseded_by" not in memory_columns:
+                self.conn.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -391,15 +397,22 @@ class Store:
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",
-                 scope: str = "team") -> int:
+                 scope: str = "team", supersedes: int | None = None) -> int:
         mid = self.x("INSERT INTO memories(ts,agent,kind,title,content,rationale,scope) VALUES(?,?,?,?,?,?,?)",
                      now(), agent, kind, title, content, rationale, scope)
-        self.event(agent, "memory", f"{agent} recorded {kind}: {title[:120]}", ref=f"mem:{mid}",
+        if supersedes is not None:
+            self.x("UPDATE memories SET superseded_by=? WHERE id=?", mid, supersedes)
+        self.event(agent, "memory", f"{agent} recorded {kind}: {title[:120]}"
+                   + (f" (supersedes #{supersedes})" if supersedes is not None else ""), ref=f"mem:{mid}",
                    significant=scope == "team")
         return mid
 
+    def memory(self, memory_id: int) -> dict | None:
+        return self.one("SELECT * FROM memories WHERE id=?", memory_id)
+
     def memories(self, agent: str | None = None, query: str = "", kind: str = "", limit: int = 50,
-                 include_private_of: str | None = None) -> list[dict]:
+                 include_private_of: str | None = None, include_superseded: bool = False,
+                 pinned_only: bool = False) -> list[dict]:
         sql = "SELECT * FROM memories WHERE 1=1"
         args: list[Any] = []
         if agent:
@@ -411,12 +424,34 @@ class Store:
         if include_private_of is not None:
             sql += " AND (scope='team' OR agent=?)"
             args.append(include_private_of)
+        if not include_superseded:
+            sql += " AND superseded_by IS NULL"
+        if pinned_only:
+            sql += " AND pinned=1"
         for word in query.split():
             sql += " AND (title LIKE ? OR content LIKE ? OR rationale LIKE ?)"
             args += [f"%{word}%"] * 3
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         return self.q(sql, *args)
+
+    def update_memory(self, memory_id: int, actor: str = "human", **fields) -> None:
+        """Human-only: pin/unpin and edit title, content or rationale. Never un-supersedes."""
+        if not fields:
+            return
+        if fields.keys() - {"pinned", "title", "content", "rationale"}:
+            raise ValueError("Invalid memory field")
+        if "pinned" in fields:
+            fields["pinned"] = int(bool(fields["pinned"]))
+        self.x("UPDATE memories SET " + ",".join(f"{key}=?" for key in fields) + " WHERE id=?",
+               *fields.values(), memory_id)
+        self.event(actor, "memory", f"{actor} updated memory #{memory_id}", ref=f"mem:{memory_id}",
+                   significant=False)
+
+    def delete_memory(self, memory_id: int, actor: str = "human") -> None:
+        self.x("DELETE FROM memories WHERE id=?", memory_id)
+        self.event(actor, "memory", f"{actor} deleted memory #{memory_id}", ref=f"mem:{memory_id}",
+                   significant=False)
 
     # ── runs ──────────────────────────────────────────────────────────────
     def start_run(self, agent: str, reason: str, task_id: int | None, cwd: str, chat: bool,
