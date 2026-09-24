@@ -175,6 +175,24 @@ def cmd_say(args: argparse.Namespace) -> None:
     print(f"→ {args.agent}")
 
 
+def cmd_concerns(args: argparse.Namespace) -> None:
+    """Read-only: list filed concerns (REQ-COM-029). Human-only — agents are blocked from running
+    this via safety.guard(); #84 covers same-uid bypass for real."""
+    from .team import ago
+    cfg = config_mod.load(require_root())
+    s = Store(cfg.db_path)
+    names = HandleBook(cfg.project, cfg.agents)
+    rows = s.concerns()
+    if not rows:
+        print("No concerns filed.")
+        return
+    for c in rows:
+        print(f"#{c['id']} ({ago(c['ts'])}) {names.name(c['reporter'])} [{c['status']}]")
+        print(f"  {c['reason']}")
+        if c['evidence']:
+            print(f"  evidence: {c['evidence']}")
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     root = config_mod.find_root()
     cfg = config_mod.load(root) if root else None
@@ -225,11 +243,12 @@ def main() -> None:
     p.add_argument("method")
     p.add_argument("params", nargs="?", default="{}")
     sub.add_parser("doctor", help="check backends are available")
+    sub.add_parser("concerns", help="list filed concerns (human-only; REQ-COM-029)")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "tui": cmd_tui, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui,
                 "status": cmd_status, "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start,
                 "stop": cmd_stop, "resume": cmd_resume, "restart": cmd_restart, "projects": cmd_projects,
-                "ps": cmd_projects}
+                "ps": cmd_projects, "concerns": cmd_concerns}
     handlers.get(args.cmd or "tui", cmd_tui)(args)
 
 

@@ -112,6 +112,10 @@ def guard(tool: str, args: dict, cwd: Path, settings: dict) -> str | None:
         return 'Unparseable shell command'
     if re.search(r'\$\{?[A-Z_]*(?:TOKEN|PASSWORD|SECRET|API_KEY)[A-Z_]*', command):
         return 'Expanding secret environment variables into tool output or requests'
+    if any(Path(w).name == 'troupe' for w in words) and 'concerns' in words:
+        # #65/REQ-COM-029: the concerns board is human-only. Same-uid agents could still reach the
+        # CLI directly (shell command inspection isn't a kernel boundary); #84 covers that for real.
+        return 'The concerns board is human-only'
     if re.search(r'\bsecurity\s+find-\S*password\b|\bprintenv\b|\benv(?:\s+-[0u]+)*\s*(?:$|[|;>])', command):
         return 'Dumping credentials or environment secrets'
     if re.search(r'\btroupe\.db\b|\bapi\.sock\b', command):

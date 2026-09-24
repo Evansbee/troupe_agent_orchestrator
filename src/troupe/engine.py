@@ -27,6 +27,8 @@ from .team import ago, fmt_message, fmt_task_full, fmt_task_line
 TICK = 1.0
 MESSAGE_DEBOUNCE = 2.0  # let bursts of mail land before waking someone
 CHAT_DEBOUNCE = 0.4
+ESCALATION_TIMEOUT_MINUTES = 30  # REQ-COM-029: auto-forward an unhandled escalation after this long
+ESCALATION_URGENT_TIMEOUT_MINUTES = 5  # ...for urgency="urgent"
 
 
 @dataclass
@@ -251,6 +253,7 @@ class Engine(MergeGateMixin):
         if self._merge_task is None:
             self._merge_task = asyncio.create_task(asyncio.to_thread(self.process_approved))
         self.watchdog_sweep()
+        self.escalation_sweep()
         self.sweep_zombie_runs()
         paused = bool(s.kv_get("paused", False))
         if not paused:
@@ -515,6 +518,18 @@ class Engine(MergeGateMixin):
         self.store.event("system", "providers",
                          f"Claude usage cap engaged: {label} at {pct:.0f}% >= {cap:.0f}% — new autonomous claude "
                          f"runs paused until {time.strftime('%H:%M', time.localtime(until))} (chat still works)")
+
+    def escalation_sweep(self) -> None:
+        """REQ-COM-029: an escalation the PM hasn't triaged (forward_to_human/answer_escalation/
+        batch_to_human) within the timeout auto-forwards to the human anyway — a busy or down PM
+        can't bury it. Urgent escalations get a shorter timeout."""
+        pm = next((a for a in self.cfg.agents if a.role == "pm"), None)
+        pm_id = pm.id if pm else "pm"
+        t = now()
+        for esc in self.store.escalations(status="open"):
+            timeout = ESCALATION_URGENT_TIMEOUT_MINUTES if esc["urgency"] == "urgent" else ESCALATION_TIMEOUT_MINUTES
+            if t - esc["ts"] >= timeout * 60:
+                self.store.auto_forward_escalation(esc["id"], pm_id)
 
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:

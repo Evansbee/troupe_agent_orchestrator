@@ -3,10 +3,14 @@
 Code: `src/troupe/runners.py`.
 
 - **REQ-BE-001 [x]** `claude`: `claude -p --output-format stream-json --verbose --append-system-prompt …
-  --mcp-config … --dangerously-skip-permissions [--strict-mcp-config] [--model] [--effort] [--resume <session>]`,
-  prompt on stdin. Parses init/assistant/user/result/rate_limit events.
-- **REQ-BE-002 [x]** `codex`: `codex exec --json --dangerously-bypass-approvals-and-sandbox -c mcp_servers.troupe…`
+  --mcp-config … --permission-mode auto --permission-prompts none [--strict-mcp-config] [--model] [--effort] [--resume <session>]`,
+  prompt on stdin. Parses init/assistant/user/result/rate_limit events. Role roots and the PreToolUse guard
+  apply as specified by REQ-SAFE-050/051; Claude Bash still lacks an OS write boundary (#84).
+- **REQ-BE-002 [x]** `codex`: `codex exec --json --sandbox workspace-write -c approval_policy=never -c mcp_servers.troupe…`
   (`exec resume <thread>` for continuity); role instructions prepended to the first prompt of a session.
+  Role roots, network policy and the PreToolUse guard follow REQ-SAFE-050/051. Test: launch argv for both
+  backends uses these permission settings and contains neither former permission/sandbox bypass flag
+  (`tests/test_sandbox.py`).
 - **REQ-BE-003 [x]** `local`: OpenAI-compatible `/chat/completions` with a native tool loop: troupe tools +
   `read_file/list_files/search_files` (+ `write_file` except gadfly/qa), scoped to the cwd; compact history
   persisted in kv as the "session".
@@ -175,6 +179,7 @@ should be able to move to codex or even local models as defined in the setup yam
   - Test: mocked httpx for both tools and each search provider's parser, plus a live test marked skip-if-offline.
 
 ## Changelog
+- 2026-09-24 — BE-001/002 launch commands aligned with shipped #43 and SAFE-050; retained the OS-boundary gap.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — rate-limit handling is specified in REQ-ENG-016 (runners detect it, the engine backs off).
 - 2026-09-23 — BE-010 level mapping (claude --effort, codex model_reasoning_effort, local ignored).
@@ -193,3 +198,6 @@ should be able to move to codex or even local models as defined in the setup yam
 ## Open questions
 - None outstanding for backends. (Codex usage source resolved by #52/BE-014: app-server RPC primary, rollout-file
   fallback; see `docs/codex-usage.md`.)
+
+## Out of scope
+- The OS boundary for the engine's database and socket is tracked separately in #84 and REQ-SAFE-050.

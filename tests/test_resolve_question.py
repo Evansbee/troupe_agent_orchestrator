@@ -13,15 +13,17 @@ from troupe.team import TeamAPI
 
 
 def test_chat_answer_closes_card_and_is_recalled_without_mail(project):
+    """#65: only the PM asks the human directly (everyone else escalates), so this exercises the
+    PM's own direct question, not a routed one."""
     cfg, store = project
-    api = TeamAPI(cfg, store, "builder-1")
+    api = TeamAPI(cfg, store, "pm")
     data = Data(cfg)
     data.refresh(force=True)
     assert "inbox" in api.ask_human("Choose storage?", options=["SQLite", "Postgres"])
     qid = store.questions()[0]["id"]
     data.refresh(force=True)
     assert [q["id"] for q in data.questions] == [qid]
-    store.send("human", "builder-1", "SQLite, please", kind="chat")
+    store.send("human", "pm", "SQLite, please", kind="chat")
     before = len(store.messages())
     assert not api.resolve_question(qid, "SQLite, please").startswith("ERROR:")
     assert len(store.messages()) == before

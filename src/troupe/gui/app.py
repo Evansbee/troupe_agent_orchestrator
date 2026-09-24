@@ -118,7 +118,6 @@ class App:
             for m in d.new_messages:
                 if m["recipient"] == "human" and m["kind"] == "needs_help":
                     self.toast(m["body"][:100], T.RED)
-                    d.notify("troupe · Safety needs attention", m["body"])
                 if m["recipient"] == "human" and m["kind"] == "chat" and m["sender"] != self.chat_with_visible():
                     self.toast(f"{d.name_of(m['sender'])}: {m['body'][:90]}", d.color_of(m["sender"]))
             d.new_messages = []

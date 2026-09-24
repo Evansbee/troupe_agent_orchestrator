@@ -31,7 +31,8 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 
 ## Mailboxes
 - **REQ-COM-010 [x]** `send_message(to=…)` accepts an agent id (or handle, REQ-COM-005), a role (fan-out to all of that role),
-  `team`, or `human`. Every message is an event in the activity feed and wakes the recipient.
+  `team`, or `human`. Ordinary mail is an event in the activity feed; wake eligibility follows COM-013 and
+  ENG-049. Non-PM mail addressed to `human` is an escalation under COM-027.
 - **REQ-COM-011 [x]** Messages are marked read when delivered in a wake prompt (or via `check_inbox`).
 - **REQ-COM-012 [ ]** Threads: group messages by `reply_to` chains in the Mail view.
 - **REQ-COM-013 [x]** (#46) FYI mail: `send_message(..., fyi=True)` (additive column).
@@ -52,12 +53,18 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
       digest.
 
 ## The human
-- **REQ-COM-020 [x]** Live chat: the human can talk to any agent; replies arrive as the agent's final text.
-- **REQ-COM-021 [x]** `ask_human` puts a question card in "Needs you" with options + free-text reply; the
-  answer is delivered to the asker as mail. Max 4 open questions per agent.
-- **REQ-COM-022 [x]** `propose_idea` = question with options Yes / No / Later / Sort of.
+- **REQ-COM-020 [x]** Live chat is with the PM; replies arrive as the PM's final text. COM-029 supersedes the
+  earlier any-agent chat model, including the frozen GUI's legacy partner list.
+- **REQ-COM-021 [x]** A PM `ask_human` call puts a question card in "Needs you" with options + free-text reply;
+  the answer is delivered to the asker as mail. Max 4 open questions per agent. Other agents' calls create
+  escalations (COM-027); forwarded cards route answers under COM-028.
+- **REQ-COM-022 [x]** `propose_idea` = question with options Yes / No / Later / Sort of, subject to the same
+  PM routing (COM-027/028).
 - **REQ-COM-023 [x]** Dismissing a question tells the asker to use their judgment.
-- **REQ-COM-024 [ ]** A "Team" chat room: one conversation between the human and the whole team. (#4)
+- **REQ-COM-024 [ ]** **Superseded by COM-029's PM-only human contact decision.** The former team-room design
+  below is historical context for #4, not authorized implementation scope. The lead must reconcile #4's backlog
+  brief with that decision before dispatch.
+  Former design: a "Team" chat room, one conversation between the human and the whole team.
   - "Team" is the first entry in the Chat partner list. Room messages are stored with a room marker so they
     appear only in the room thread, not in 1:1 chats.
   - Routing: `@<agent-id>` or `@<role>` mentions wake exactly those agents; `@all` wakes everyone enabled;
@@ -96,13 +103,13 @@ REQ-COM-045/046, `milestone` REQ-ENG-045).
 Human, 2026-09-24: "all communications should go through [the PM]. I don't like lead talking to me; he talks to you,
 then you figure out if he should know it or if you need my involvement." Made firm (2026-09-24, via pm): **the human
 interacts only with the PM**, and no agent, the lead included, bypasses it.
-- **REQ-COM-027 [ ]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
+- **REQ-COM-027 [x]** Escalations. When any agent other than the PM calls `ask_human`, `propose_idea` or
   `send_message(to="human")`, the call **always** creates an **escalation** in the PM's inbox instead of a Needs-you
   card or human mail. There are no agent-side exceptions.
   - An escalation records the original text, options, context, task, sender handle and urgency (`normal |
     urgent`). It's stored in an additive `escalations` table.
   - The caller gets a normal, non-blocking result: "Escalated to pm_1@troupe; the answer will arrive in your mailbox".
-- **REQ-COM-028 [ ]** PM triage tools:
+- **REQ-COM-028 [x]** PM triage tools:
   - `forward_to_human(escalation_id, question, options, context)` creates the Needs-you card, credited "via pm_1
     from lead_1". The answer is delivered to the **original asker and the PM**.
   - `answer_escalation(escalation_id, answer, rationale)` resolves it from existing decisions or memory with no
@@ -112,7 +119,10 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   - The PM prompt gives the triage duty: answer what's already decided, batch what isn't urgent, frame everything
     with options, and never sit on anything. Every agent's charter says to reach the human through the PM. The
     `roles.py` change is protected, so the human approves it.
-- **REQ-COM-029 [ ]** Nothing can be buried: bypass and auto-forward.
+- **REQ-COM-029 [~]** Nothing can be buried: bypass and auto-forward. Storage + PM-invisibility
+  shipped (#65: escalation bypass, auto-forward timer, report_concern, the content-free notification
+  and `troupe concerns` CLI); the whistleblower board's human-facing UI and Raise / Suppress / Kill /
+  Reply actions are #78.
   - **Direct to the human: only engine-generated items, which aren't agent speech.** None of them can be filtered by
     any agent:
     - safety approval cards (REQ-SAFE-020/021);
@@ -274,6 +284,8 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
   non-architect gets `ERROR:`.
 
 ## Changelog
+- 2026-09-24 — COM-010/020..024 reconciled with shipped #65 and the human's PM-only contact decision;
+  identified the remaining FYI precedence question for PM/lead resolution.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for COM-024/025/032/033 (from backlog #4,#8,#12). Team room with no @mention
   wakes lead + pm only; other agents see it next time they wake.
@@ -297,3 +309,6 @@ interacts only with the PM**, and no agent, the lead included, bypasses it.
 - 2026-09-24 — COM-029: the whistleblower board replaces the interim report_concern safety notice (human answer to #17;
   task #78).
 - 2026-09-24 — COM-029: interim concern notifier plus the `troupe concerns` CLI until #78 (lead decision #207).
+- 2026-09-24 — COM-027/028 marked [x], COM-029 marked [~] (#65 shipped: escalation bypass, PM triage tools, auto-forward,
+  report_concern's storage + content-free notification + `troupe concerns` CLI; the board UI and Raise/Suppress/Kill/
+  Reply actions remain #78).
