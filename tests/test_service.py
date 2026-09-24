@@ -1,5 +1,8 @@
 import asyncio
+import atexit
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +22,50 @@ from troupe.service import (
 )
 from troupe.store import Store
 
+# ── #103: engines must never outlive the test session, no matter how a test ends ───────────────
+# `start_service` spawns a fully detached process (start_new_session=True) so nothing else in the
+# process tree notices if the test that owns it dies without running its own teardown — a raised
+# exception still hits `project`'s `finally` below, but pytest being OOM-killed or SIGTERM'd (e.g.
+# `timeout 60 uv run pytest tests/test_service.py`) skips Python-level cleanup entirely. This
+# module-level registry plus the atexit/SIGTERM hooks below are the session-wide backstop: every
+# engine this session might have spawned gets reaped by its recorded pid, independent of whichever
+# specific test spawned it or whether that test's own fixture teardown ever ran.
+_SPAWNED_STATE_DIRS: set[Path] = set()
+
+
+def _kill_engine_by_pid_file(state_dir: Path) -> None:
+    """Kill whatever `engine.pid` currently names, unconditionally — never gated on
+    `service_status()`, which depends on files (the lock, the pid record) that a half-torn-down
+    temp project can no longer reliably provide. Never raises: this runs from `finally`, atexit and
+    a signal handler, none of which can afford to."""
+    try:
+        record = json.loads((state_dir / "engine.pid").read_text())
+    except (OSError, ValueError):
+        return
+    pid = record.get("pid") if isinstance(record, dict) else record if isinstance(record, int) else None
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _reap_all_spawned_engines() -> None:
+    for state_dir in list(_SPAWNED_STATE_DIRS):
+        _kill_engine_by_pid_file(state_dir)
+
+
+atexit.register(_reap_all_spawned_engines)
+
+
+def _on_sigterm(signum, frame):
+    _reap_all_spawned_engines()
+    os._exit(143)  # 128 + SIGTERM; skip the rest of atexit, we've already done the part that matters
+
+
+signal.signal(signal.SIGTERM, _on_sigterm)
+
 
 @pytest.fixture
 def project(monkeypatch):
@@ -36,8 +83,38 @@ def project(monkeypatch):
             "agents:\n  - id: builder-1\n    role: builder\n    provider: local\n    enabled: false\n  - id: lead\n    role: lead\n    provider: local\n    enabled: false\n"
         )
         cfg = config.load(root)
-        yield cfg
-        stop_service(cfg, timeout=2)
+        _SPAWNED_STATE_DIRS.add(state)
+        # #103: every engine this fixture spawns exits on its own if this test process (the
+        # closest thing a spawned-with-start_new_session=True engine has to a "parent" that would
+        # otherwise reap it) is gone — a second, independent backstop alongside the root-disappears
+        # check, since it also covers pytest itself being OOM-killed or SIGKILL'd, where no
+        # Python-level cleanup on this side runs at all.
+        monkeypatch.setenv("TROUPE_EXIT_WITH_PARENT_PID", str(os.getpid()))
+        try:
+            yield cfg
+        finally:
+            if state.is_dir():  # a test may have deleted it itself (e.g. the root-disappears test)
+                stop_service(cfg, timeout=2)
+            _kill_engine_by_pid_file(state)  # #103: unconditional fallback, see module docstring
+            _SPAWNED_STATE_DIRS.discard(state)
+
+
+def test_kill_engine_by_pid_file_kills_by_recorded_pid(tmp_path):
+    """#103: the fixture's fallback reads engine.pid and kills that pid directly — no
+    service_status() involved, so it works even when that classification can't be trusted (the
+    exact situation a half-torn-down temp project leaves behind)."""
+    state_dir = tmp_path / ".troupe"
+    state_dir.mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (state_dir / "engine.pid").write_text(json.dumps({"pid": proc.pid}))
+        _kill_engine_by_pid_file(state_dir)
+        proc.wait(timeout=5)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def invoke(cfg, *args):
@@ -327,6 +404,55 @@ def test_forced_stop_marks_runs_and_requeues_checkpoint(project):
     assert s.runs()[0]["status"] == "interrupted"
     assert s.one("SELECT read_at FROM messages WHERE id=?", mid)["read_at"] is None
     assert not (cfg.state_dir / "engine.pid").exists()
+
+
+def _wait_for_child_exit(pid: int, timeout: float) -> bool:
+    """True once `pid` — a direct child of this test process, via start_service's subprocess.Popen
+    — has exited. Reaps it via waitpid rather than checking `os.kill(pid, 0)`: a kill-0 check can't
+    tell a real orphan from our own not-yet-reaped zombie (still "alive" by that check even once the
+    engine has fully exited), and under this session's process churn a bare pid can even get reused
+    by an unrelated process before a naive poll notices — waitpid is scoped to actual parent/child
+    relationships, so neither failure mode applies."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True  # already reaped (e.g. by Popen's own bookkeeping) — gone either way
+        if reaped_pid == pid:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_engine_exits_when_its_project_root_disappears(project):
+    """#103's product-side fix: a detached engine (start_new_session=True) has nothing else
+    watching for its project to vanish out from under it, which is exactly how test runs orphaned
+    dozens of these processes on the human's laptop once their /tmp project dirs were cleaned up
+    around them mid-run."""
+    cfg = project
+    pid = start_service(cfg)["pid"]
+    shutil.rmtree(cfg.root)
+    assert _wait_for_child_exit(pid, 10)
+
+
+def test_engine_exits_when_its_spawning_process_is_gone(project, monkeypatch, tmp_path):
+    """The second #103 backstop: TROUPE_EXIT_WITH_PARENT_PID catches the case the root-disappears
+    check can't — the spawning process (in production, nothing sets this; in tests, pytest itself)
+    dying without its directory going anywhere, e.g. an OOM SIGKILL that skips every bit of
+    Python-level cleanup on the test side."""
+    fake_parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    monkeypatch.setenv("TROUPE_EXIT_WITH_PARENT_PID", str(fake_parent.pid))
+    cfg = project
+    try:
+        pid = start_service(cfg)["pid"]
+        fake_parent.terminate()
+        fake_parent.wait(timeout=5)
+        assert _wait_for_child_exit(pid, 10)
+    finally:
+        if fake_parent.poll() is None:
+            fake_parent.kill()
+            fake_parent.wait(timeout=5)
 
 
 @pytest.mark.parametrize('newer_runs', [1, 205])
