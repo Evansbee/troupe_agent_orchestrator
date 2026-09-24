@@ -1,6 +1,6 @@
 # The first test project: proving troupe is "finished"
 
-Owner: PM. Status: draft, waiting for the "Ready for a test project" milestone and the human's pick.
+Owner: PM. Status: DECIDED (2026-09-24): A "Links" benchmark first (docs/benchmarks/links.md), then B (the human's own). Starts when milestone #1 completes.
 
 ## Why
 The vision says troupe is finished when the human can point it at an empty directory, describe a project,
