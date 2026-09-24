@@ -20,6 +20,9 @@ and the human reinstalls, so a bug you introduce won't break the session you're 
 - Verify GUI changes **visually**: `TROUPE_SHOT=/tmp/shot.png TROUPE_TAB=Board uv run troupe gui` renders
   about 90 frames against the current directory's `.troupe` and saves a PNG you can look at. Run it from a
   directory that has a `.troupe/` (for example the main checkout).
+- `uv run python scripts/launch_smoke.py` — REQ-ENG-059: boots a real fresh project (fake backends) and
+  actually launches the GUI and TUI, asserting no traceback; required after any `gui/` or `tui/` change
+  (the merge gate runs it automatically for those paths).
 
 ## Conventions
 - Python 3.12, type hints, small functions, no new dependencies without a reason in your task summary.

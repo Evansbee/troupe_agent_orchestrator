@@ -42,9 +42,24 @@ def hooks_toml() -> str:
 
 def extra_add_dirs(writable_roots: list[Path], primary_cwd: Path) -> list[str]:
     """--add-dir args for writable roots other than the primary -C workspace (which codex already
-    treats as writable)."""
+    treats as writable).
+
+    #96: never add anything under `.git`, from here or from a caller's `writable_roots` list.
+    QA reproduced three real sandbox escapes from an earlier version of this task that granted a
+    worktree's private gitdir + `objects/` so codex could `git commit`: rewriting `commondir` to
+    point at an attacker-controlled config (with a `core.fsmonitor` hook) runs the agent's own code
+    the next time *anyone* — the engine, `complete_task`'s `commit_all`, or the human — touches that
+    worktree with git; rewriting `HEAD` to `ref: refs/heads/main` makes the next trusted commit in
+    that worktree move `main` itself, unreviewed; and `objects/` being writable lets a loose object
+    already referenced by a merged commit be silently replaced (git doesn't re-hash on read).
+    `complete_task` already commits a builder's worktree from troupe's own trusted MCP server
+    process, which codex's sandbox never wraps — that's the intended path; codex agents don't need
+    to (and per REQ-SAFE-050 must not) run `git commit` themselves."""
     args = []
     for root in writable_roots:
-        if root != primary_cwd:
-            args += ["--add-dir", str(root)]
+        if root == primary_cwd:
+            continue
+        if root.name == ".git" or ".git" in root.parts:
+            continue
+        args += ["--add-dir", str(root)]
     return args

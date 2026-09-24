@@ -522,3 +522,69 @@ def test_changed_baseline_card_falls_back_to_raw_context_for_an_unrecognized_cha
     assert "no changes detected" not in body
     assert "unrecognized_field" in body
     assert "sneaky" in body
+
+
+def test_changed_baseline_card_shows_known_diff_and_raw_context_for_a_mixed_change():
+    """#109: a proposal that mixes a known-field change (roles) with a brand-new safety.<key> the
+    summarizer doesn't recognize used to show only the recognized half — the human would approve
+    the unrecognized part blind. Both the known summary and the raw context must appear."""
+    from troupe.tui.panes.needs_you import render_card
+
+    previous = dict(safety=dict(protected=[], remotes=[], secret_allow=[], roles={}),
+                    check="", check_timeout=600)
+    proposed = dict(safety=dict(protected=[], remotes=[], secret_allow=[],
+                                roles={"builder": {"network": True}}, future_field="sneaky"),
+                    check="", check_timeout=600)
+    body = render_card(_baseline_question(previous, proposed))
+    assert "no changes detected" not in body
+    assert "builder" in body and "network" in body  # known diff still summarized
+    assert "other changes:" in body
+    assert "future_field" in body and "sneaky" in body  # raw context still shown alongside it
+
+
+def test_changed_baseline_card_shows_known_diff_and_raw_context_for_an_unrecognized_top_level_key():
+    """#109: same as above, but the unrecognized field is a brand-new top-level key (outside
+    `safety`) rather than a `safety.*` one — both diff-stripping paths must catch it."""
+    from troupe.tui.panes.needs_you import render_card
+
+    previous = dict(safety=dict(protected=["src/troupe/safety.py"], remotes=[], secret_allow=[],
+                                roles={}), check="", check_timeout=600)
+    proposed = dict(safety=dict(protected=["src/troupe/roles.py"], remotes=[], secret_allow=[],
+                                roles={}), check="", check_timeout=600, future_gate="strict")
+    body = render_card(_baseline_question(previous, proposed))
+    assert "no changes detected" not in body
+    assert "−src/troupe/safety.py" in body and "+src/troupe/roles.py" in body  # known diff
+    assert "other changes:" in body
+    assert "future_gate" in body and "strict" in body  # raw context still shown alongside it
+
+
+def test_pinned_safety_card_renders_first_among_six_ordinary_questions():
+    """#109 acceptance: newest-first ordering could push a pending safety approval off-screen below
+    ordinary questions — it must be pinned to the top regardless of arrival order."""
+    async def body():
+        client = FakeClient([question(i) for i in range(1, 7)] + [safety_question(7)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            list_view = pilot.app.query_one("#ny-cards", ListView)
+            first = list_view.children[0]
+            assert isinstance(first, QuestionCard)
+            assert first.question["id"] == 7
+            assert first.is_safety
+
+    run(body())
+
+
+def test_pinned_safety_cards_sort_oldest_first_within_their_own_group():
+    """design/system.md "Pinning & priority order (#109)": the safety group is oldest-first within
+    itself (a merge gate), unlike the newest-first ordering everything else in the panel uses."""
+    async def body():
+        older = safety_question(1)
+        older["ts"] = 100
+        newer = safety_question(2)
+        newer["ts"] = 200
+        client = FakeClient([newer, older])  # delivered newest-first, as the API would
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            list_view = pilot.app.query_one("#ny-cards", ListView)
+            ids = [item.question["id"] for item in list_view.children]
+            assert ids == [1, 2]  # oldest (ts=100) first, despite arriving after the newer one
+
+    run(body())
