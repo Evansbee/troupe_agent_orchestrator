@@ -144,3 +144,8 @@ Raylib smoke could not render: GLFW reported no monitor/platform initialization 
 session. App.run then segfaulted at close_window; filed as #60 for graceful initialization-failure handling.
 No Swift package existed on that checkout; #49 has since merged as plumbing, but QA has not yet run the
 MAC-011/012/016 checks against it, so no Swift pass is claimed.
+
+Execution 2026-09-24 07:27: main at f7ea8ba, `uv run pytest -q`: 272 passed in 36s, clean exit, no stray
+engine processes. `troupe doctor` shows all backends OK. Found #63: main's service_status can't see a legacy
+(pre-#24, bare-int pid, no lock) engine that is still running, so a post-reinstall `troupe up` would start a second
+engine (ENG-003/006). That upgrade path needs a test in `tests/test_service.py`.
