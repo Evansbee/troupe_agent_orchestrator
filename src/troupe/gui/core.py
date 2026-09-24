@@ -113,6 +113,8 @@ class ScrollState:
     stick: bool = False
     rect: Rect | None = None
     dragging: bool = False
+    seen: float = 0.0  # content height as of the last time at_bottom was True (REQ-GUI-017 "New
+    # messages" pill: content arriving past this, while unstuck, is what the pill is telling you about)
 
 
 @dataclass
@@ -125,6 +127,48 @@ class InputState:
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+# ── stick-to-bottom scrolling (REQ-GUI-017) ─────────────────────────────────
+# Pure functions, no raylib calls, so the stickiness rule is unit-testable without an open window:
+# ScrollState.at_bottom (for stick_bottom=True scroll areas) must change only because of the user —
+# scrolling away or back with the wheel/drag (_scroll_apply_wheel, _scroll_apply_drag) or an explicit
+# re-stick (_re_stick, e.g. after sending a message or clicking the "New messages" pill). Content
+# arriving (_scroll_commit_content) never reads or writes at_bottom — it only repositions
+# target/offset, snapping to the new bottom in the same frame when already stuck so a large
+# single-frame content jump (a streaming reply) never leaves a visible gap.
+def _scroll_apply_wheel(sc: ScrollState, wheel: float, max_off: float) -> None:
+    sc.target = max(0.0, min(sc.target - wheel * 48, max_off))
+    if sc.stick:
+        sc.at_bottom = sc.target >= max_off - 4
+
+
+def _scroll_apply_drag(sc: ScrollState, rel: float, max_off: float) -> None:
+    sc.target = sc.offset = max(0.0, min(1.0, rel)) * max_off
+    if sc.stick:
+        sc.at_bottom = sc.target >= max_off - 4
+
+
+def _scroll_commit_content(sc: ScrollState, content_h: float, max_off: float) -> None:
+    sc.content = content_h
+    if sc.stick and sc.at_bottom:
+        sc.target = sc.offset = max_off
+    else:
+        sc.target = min(sc.target, max_off)
+    if sc.at_bottom:
+        sc.seen = content_h
+
+
+def _re_stick(sc: ScrollState) -> None:
+    """Explicit re-stick: sending a message, switching chat partners (a fresh ScrollState already
+    defaults at_bottom=True), or clicking the "New messages" pill."""
+    sc.at_bottom = True
+    sc.target = max(0.0, sc.content - sc.view)
+    # seen tracks *content* height (matching _scroll_commit_content's convention below), not
+    # max_off — setting it to max_off here was off by `view` pixels, which could make the pill
+    # reappear immediately (falsely claiming "new" content) the moment the user next scrolled away,
+    # even with nothing actually new since this re-stick.
+    sc.seen = sc.content
 
 
 def alpha(c: tuple, a: float) -> tuple:
@@ -592,9 +636,9 @@ class UI:
         sc = self.scrolls.setdefault(id, ScrollState(stick=stick_bottom))
         sc.rect = r
         sc.view = r.h
-        if self.hover(r) and self.wheel:
-            sc.target -= self.wheel * 48
         max_off = max(0.0, sc.content - sc.view)
+        if self.hover(r) and self.wheel:
+            _scroll_apply_wheel(sc, self.wheel, max_off)
         if sc.stick and sc.at_bottom:
             sc.target = max_off
         sc.target = max(0.0, min(sc.target, max_off))
@@ -606,11 +650,8 @@ class UI:
 
     def scroll_end(self, sc: ScrollState, content_h: float) -> None:
         self.pop_clip()
-        sc.content = content_h
         max_off = max(0.0, content_h - sc.view)
-        if sc.target > max_off:
-            sc.target = max_off
-        sc.at_bottom = sc.target >= max_off - 4
+        _scroll_commit_content(sc, content_h, max_off)
         r = sc.rect
         if r and content_h > sc.view + 1:
             track = Rect(r.r - 6, r.y + 3, 4, r.h - 6)
@@ -626,15 +667,34 @@ class UI:
                 sc.dragging = False
             if sc.dragging:
                 rel = (self.mouse[1] - track.y - th / 2) / max(1, track.h - th)
-                sc.target = sc.offset = max(0.0, min(1.0, rel)) * max_off
+                _scroll_apply_drag(sc, rel, max_off)
             show = self.ease(f"sb:{id(sc)}", 1.0 if (self.hover(r) or sc.dragging) else 0.35, 8)
             self.rect(thumb, alpha(T.TEXT_FAINT, 0.9 * show), 2)
 
     def scroll_to_bottom(self, id: str) -> None:
         sc = self.scrolls.get(id)
         if sc:
-            sc.at_bottom = True
-            sc.target = max(0.0, sc.content - sc.view)
+            _re_stick(sc)
+
+    def new_content_pill(self, sc: ScrollState, r: Rect) -> None:
+        """"↓ New messages" pill (REQ-GUI-017): shown only once unstuck *and* content has actually
+        arrived since — not just "you're scrolled up", which would fire even re-reading old history.
+        Clicking it jumps back to the bottom and re-sticks. Bottom-center inside `r`, floating above
+        the last line of content — solid fill (not alpha-blended) so it never reads as a glitch where
+        it overlaps a message."""
+        if not (sc.stick and not sc.at_bottom and sc.content > sc.seen + 1):
+            return
+        label = "↓ New messages"
+        w = self.measure(label, 12.5, "med") + 30
+        pr = Rect(r.cx - w / 2, r.b - 54, w, 34)
+        hov = self.hover(pr)
+        bg = mix(T.ACCENT, (255, 255, 255, 255), 0.12) if hov else T.ACCENT
+        self.rect(pr, bg, 17)
+        self.text_center(pr, label, 12.5, T.ON_ACCENT, "med")
+        if hov:
+            self.hand()
+        if self.click(pr):
+            _re_stick(sc)
 
     # ── text input ────────────────────────────────────────────────────────
     def input_height(self, id: str, width: float, size: float = 14, max_lines: int = 8, pad: float = 12) -> float:
