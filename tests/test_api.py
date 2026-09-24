@@ -517,6 +517,31 @@ def test_config_redaction_usage_and_validation(api):
         assert not s.tasks()
 
 
+def test_usage_serializes_codex_canonical_fields_only(api):
+    server, s = api
+    s.kv_set(
+        "usage:codex",
+        dict(
+            unifiedWindows=dict(
+                five_hour=dict(utilization=0.04, used_percent=4.0, window_minutes=300,
+                                resets_at=2000000000, slot="primary")
+            ),
+            plan_type="pro",
+            rate_limit_reached_type=None,
+            observed_at=time.time() - 30,
+            source="rollout",
+        ),
+    )
+    with client(api) as c:
+        codex = next(p for p in c.call("usage")["providers"] if p["provider"] == "codex")
+        window = codex["windows"][0]
+        assert window["used_percent"] == 4.0
+        assert window["window_minutes"] == 300
+        assert window["resets_at"] == 2000000000
+        assert codex["plan"] == "pro" and codex["source"] == "rollout"
+        assert 0 <= codex["age"] < 60
+
+
 def test_cli_and_engine_lifecycle(tmp_path, monkeypatch, capsys):
     from troupe.api_client import cli
     from troupe.engine import Engine

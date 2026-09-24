@@ -246,32 +246,45 @@ class App:
             if limit:
                 x += ui.pill(x, r.cy - 13, limit, T.ORANGE, 12, h=26) + 8
         x += 8
+        meters = []
+        claude = (d.kv.get("claude_ratelimit") or {}).get("unifiedWindows") or {}
+        codex = d.kv.get("usage:codex") or {}
+        for provider, windows in (("Claude", claude), ("Codex", codex.get("unifiedWindows") or {})):
+            for key, window in windows.items():
+                minutes = window.get("window_minutes") or {"five_hour": 300, "seven_day": 10080}.get(key)
+                if not minutes:
+                    continue
+                lab = (f"{minutes / 1440:g}d" if minutes % 1440 == 0 else
+                       f"{minutes / 60:g}h" if minutes % 60 == 0 else f"{minutes:g}m")
+                used = float(window.get("utilization") or 0)
+                stale = provider == "Codex" and time.time() - codex.get("observed_at", 0) > 120
+                label = f"{provider} {lab} {used * 100:.0f}%" + (" ~" if stale else "")
+                width = ui.measure(label, 11) + 16
+                meters.append((label, width, used, window, stale))
+        # Reserve quota meters before optional activity counts, keeping both providers visible.
+        stats_right = metrics_right - sum(m[1] for m in meters)
         stats = [(f"{d.running_count()}", "working"), (f"{d.runs_1h}/{self.cfg.budget.max_runs_per_hour}", "runs/h"),
                  (f"${d.cost_24h:.2f}", "24h est.")]
         open_n = sum(1 for t in d.tasks if t["status"] not in ("done", "cancelled"))
         stats.append((str(open_n), "open tasks"))
         for val, lab in stats:
-            if x + ui.measure(val, 15, "bold") + ui.measure(lab, 12) + 23 > metrics_right:
+            if x + ui.measure(val, 15, "bold") + ui.measure(lab, 12) + 23 > stats_right:
                 break
             x += ui.text(x, r.cy - 9, val, 15, T.TEXT, "bold") + 5
             x += ui.text(x, r.cy - 7, lab, 12, T.TEXT_FAINT) + 18
-        rlim = d.kv.get("claude_ratelimit") or {}
-        wins = rlim.get("unifiedWindows") or {}
-        for key, lab in (("five_hour", "5h"), ("seven_day", "7d")):
-            w = wins.get(key)
-            if not w:
-                continue
-            if x + ui.measure(f"claude {lab}", 11) + 76 > metrics_right:
+        for label, width, used, window, stale in meters:
+            if x + width > metrics_right:
                 break
-            u = float(w.get("utilization") or 0)
-            ui.text(x, r.cy - 7, f"claude {lab}", 11, T.TEXT_FAINT)
-            bx = x + ui.measure(f"claude {lab}", 11) + 6
-            bar = Rect(bx, r.cy - 3, 54, 6)
-            ui.rect(bar, T.PANEL3, 3)
-            ui.rect(Rect(bx, bar.y, max(6, 54 * min(1, u)), 6), T.GREEN if u < 0.6 else T.ORANGE if u < 0.85 else T.RED, 3)
-            if ui.hover(Rect(x, r.cy - 10, bar.r - x, 20)):
-                ui.tip(f"Claude {lab} window: {u * 100:.0f}% used")
-            x = bar.r + 16
+            ui.text(x, r.cy - 13, label, 11, T.TEXT_DIM)
+            bar = Rect(x, r.cy + 7, width - 16, 4)
+            ui.rect(bar, T.PANEL3, 2)
+            ui.rect(Rect(x, bar.y, bar.w * min(1, used), 4),
+                    T.GREEN if used < .6 else T.ORANGE if used < .85 else T.RED, 2)
+            if ui.hover(Rect(x, r.cy - 16, width, 32)):
+                reset = window.get("resets_at") or window.get("resetsAt")
+                reset_text = time.strftime("%b %d %H:%M", time.localtime(reset)) if isinstance(reset, (float, int)) else str(reset or "unknown")
+                ui.tip(f"{label} used · resets {reset_text}" + (" · cached sample is stale" if stale else ""))
+            x += width
         # right buttons
         bx = r.r - T.GAP
         lbl = "Start team" if not d.engine_alive else "Resume" if d.paused else "Pause"
