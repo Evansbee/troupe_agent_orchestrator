@@ -26,11 +26,19 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - Stale detection: a pid file whose process is dead (or isn't a troupe engine) is removed and a new service may
     start. Test: a stale pid file doesn't block `troupe up`; a concurrent start yields one engine.
 - **REQ-ENG-004 [x]** On start the engine recovers: runs left `running` become `interrupted`, agents go idle.
-- **REQ-ENG-060 [ ]** (#103; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
+- **REQ-ENG-060 [~]** (#103 shipped; #115 pending; found by QA: 74 orphaned test engines, 3.2 GB, 37% CPU on the human's laptop) An engine
   never outlives its project. If its project root or `.troupe/` disappears, it stops its runs, removes its pid
   file and exits within a few ticks. This check lives in the heartbeat loop.
   - Test hygiene, same task: a full `uv run pytest` session, even one killed mid-run, leaves no engine whose
     cwd is under the test temp root. A session-level guard fails the run if one survives.
+  - [ ] (#115) The check compares the root dir's identity (inode), not just its existence, so a delete-and-recreate
+    at the same path also triggers the exit.
+  - [ ] (#115) A shared reaper, `python -m troupe.service reap <dir>`, stops every engine whose project root is at
+    or under `<dir>`, along with its process group. Each engine is identity-checked (pid plus recorded start),
+    SIGTERM then SIGKILL, and nothing outside `<dir>` is touched. launch_smoke, test fixtures and QA harnesses
+    call it before deleting a project dir.
+    - Test: rmtree and recreate the dir, and the engine still exits. The reaper stops only engines under its
+      dir. A forced kill mid-smoke leaves zero engines.
   - Test: delete a running engine's project dir, and it exits and removes its pid within a few ticks. QA's check:
     run the full suite twice plus a forced mid-suite kill, then `pgrep -f "troupe.cli engine"` finds zero test
     engines (the team's real engine excepted).
@@ -369,7 +377,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     autocommits), the result is not a failure.
     - The worker re-merges main into the branch and re-runs the check, up to 3 times with backoff. It doesn't message
       the builder, and it doesn't count toward `max_task_attempts`.
-    - [ ] (#107) **Doc-only movement doesn't count.** If every path changed on main since the checked main
+    - [x] (#107) **Doc-only movement doesn't count.** If every path changed on main since the checked main
       head matches `[git] doc_only_paths`, the checked tree merges onto current main without a re-check, and
       the merged tree contains both. The default globs are `specs/**`, `design/**`, `docs/**`, `*.md`,
       `README*` and `LICENSE`. A commit set with any path outside the globs takes the re-merge + re-check path.
@@ -378,7 +386,10 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       `*`, `**`, and any pattern matching a typical source, test or build path (`src/x.py`, `tests/test_x.py`,
       `x.py`, `pyproject.toml`, `uv.lock`). The human's approval stays the primary guard, because those probe
       paths assume a Python layout. Test: each probe-matching pattern is refused with a message naming it.
-    - [ ] (#107) **Exhausted retries don't bounce approved work.** After 3 consecutive "main moved" retries
+      [ ] Known gaps, #114: the default `README*` also matches code files such as `READMEx.py`, the
+      nested-path probes are incomplete (`**/*.md`), and the baseline guard should be idempotent. A doc-only
+      glob must never match a path with a code extension.
+    - [x] (#107) **Exhausted retries don't bounce approved work.** After 3 consecutive "main moved" retries
       caused by real code movement, the task stays `approved` and the merge is requeued with a backoff
       (`next_attempt_at`). It's logged to the check log only: no builder mail, no builder wake, no QA re-review.
       (This replaces the earlier rule that sent the task back to the builder.)
@@ -605,6 +616,9 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-060 → [~]: #115 adds the inode identity check and a shared `troupe.service reap <dir>`.
+- 2026-09-24 — Shipped: ENG-060 (#103) and ENG-040's #107 bullets marked [x]. #114's known gaps noted under ENG-040.
+  SAFE-021's #107 sub-item stays [ ] until the protected-path freeze lifts (lead msg #1064).
 - 2026-09-24 — ENG-040: over-broad `doc_only_paths` patterns are rejected at load (#107, lead decision).
 - 2026-09-24 — ENG-040 (#107): doc-only main movement merges without a re-check (`[git] doc_only_paths`, guarded
   by SAFE-021), and exhausted main-moved retries keep the task approved and requeued instead of bouncing it.

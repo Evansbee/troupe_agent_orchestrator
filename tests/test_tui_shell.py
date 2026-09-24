@@ -237,6 +237,103 @@ def test_live_resize_collapses_and_restores_on_the_same_event(project):
     asyncio.run(scenario())
 
 
+def test_tasks_pane_load_failure_shows_inline_error_and_app_keeps_running(project):
+    """#108: a pane's load() failing (a dropped connection, an oversized response, whatever) must
+    not take the rest of the TUI down with it -- app.py gathers every pane's load() together, so an
+    uncaught exception here used to crash the whole app."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES,
+                               errors={"tasks": ("internal", "boom")})
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tasks_pane = app._panes[1]
+                assert "couldn't load: boom" in tasks_pane.content.plain
+                assert "r to retry" in tasks_pane.content.plain
+                # the rest of the app is unaffected: Team still loaded fine
+                assert any(a["handle"] == "builder_1@t" for a in app._panes[0]._agents)
+                assert not app._exit
+
+                del server.errors["tasks"]
+                app.set_focus(tasks_pane)
+                await pilot.press("r")
+                await _wait_until(lambda: tasks_pane._tasks)
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_tasks_pane_refresh_failure_preserves_last_good_content(project):
+    """QA's #108 soak review: a REFRESH failure (the initial load already succeeded) must not wipe
+    a working table with a bare error -- only an initial load with nothing to show yet should ever
+    render the error alone. A refresh failure instead leaves the table up and notes it quietly."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                tasks_pane = app._panes[1]
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+
+                server.errors["tasks"] = ("internal", "")  # an empty-message exception, on purpose
+                await server.push_event("task.changed", {})
+                await _wait_until(lambda: tasks_pane.border_subtitle)
+                # the table is still the last good render -- not replaced by the error
+                assert any(t["title"] == "TUI slice A" for t in tasks_pane._tasks)
+                assert "couldn't refresh:" in str(tasks_pane.border_subtitle)
+                # blank exception message must still show *something*, not a bare "couldn't refresh: "
+                assert "couldn't refresh: \n" not in str(tasks_pane.border_subtitle) + "\n"
+                assert str(tasks_pane.border_subtitle).strip() != "couldn't refresh:"
+
+                del server.errors["tasks"]
+                await _wait_until(lambda: not tasks_pane.border_subtitle, timeout=3.0)  # auto-retried
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_any_pane_load_failure_is_survivable_not_just_tasks(project):
+    """The base Pane class (panes/__init__.py), not just TasksPane, catches a load() failure --
+    live-testing #108's fix against a realistically sized seeded project (300 tasks/8000 events/
+    700 mail) surfaced the exact same crash from TeamPane's `agents` call timing out under load."""
+    cfg, _store = project
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES,
+                               errors={"agents": ("internal", "team unavailable")})
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(120, 40)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                await pilot.pause()
+                team_pane = app._panes[0]
+                assert "couldn't load: team unavailable" in team_pane.content.plain
+                # the rest of the app is unaffected: Tasks still loaded fine, app still running
+                assert any(t["title"] == "TUI slice A" for t in app._panes[1]._tasks)
+                assert not app._exit
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_empty_tasks_pane_shows_one_line_not_squashed_into_the_glyph_column(project):
     cfg, _store = project
 
@@ -438,6 +535,53 @@ def test_resize_round_trip_restores_focus_to_the_composer(project):
     asyncio.run(scenario())
 
 
+def test_resize_round_trip_keeps_the_full_chat_history_rendered(project):
+    """#104: TroupeApp._layout_body tears down and rebuilds every pane's DOM on a compact<->wide
+    transition (body.remove_children() then mount() into a new container). ChatPane.compose() runs
+    again and hands back a brand new, empty #chat-thread; the messages mounted by the earlier
+    load()/live events were only ever in *that* thread, not replayed into the new one — a resize
+    left the conversation permanently empty even though every message was still in the store. QA's
+    live repro: greeting shown, resize to 80x24 and back, thread empty in both layouts afterward."""
+    from textual.widgets import Markdown, TabbedContent
+
+    from troupe.tui.panes.chat import ChatPane
+
+    cfg, _store = project
+    messages = [
+        dict(id=1, sender="pm", recipient="human", kind="chat", body="Hi — I'm your PM.", ts=0),
+        dict(id=2, sender="human", recipient="pm", kind="chat", body="hello", ts=0),
+        dict(id=3, sender="pm", recipient="human", kind="chat", body="got it, one sec", ts=0),
+    ]
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES, messages=messages)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                chat = app.query_one(ChatPane)
+                thread = chat.query_one("#chat-thread")
+                await _wait_until(lambda: len(list(thread.query(Markdown))) == len(messages))
+
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                assert app.query(TabbedContent)
+                thread = chat.query_one("#chat-thread")  # a fresh widget after the remount
+                assert len(list(thread.query(Markdown))) == len(messages)
+
+                await pilot.resize_terminal(140, 42)
+                await pilot.pause()
+                assert not app.query(TabbedContent)
+                thread = chat.query_one("#chat-thread")
+                assert len(list(thread.query(Markdown))) == len(messages)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("size", [(140, 42), (80, 24)])
 @pytest.mark.parametrize("answer", ["y", "n"])
 def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
@@ -472,3 +616,36 @@ def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
             await server.stop()
 
     asyncio.run(scenario())
+
+
+def test_run_tui_exits_nonzero_when_the_app_panicked(project, monkeypatch):
+    """#108: Textual's own crash handling catches an unhandled exception, prints it, and returns
+    normally from App.run() with a non-zero return_code -- it never raises or exits the process on
+    its own (its own docstring's example is `sys.exit(app.return_code)`). Without this, a TUI that
+    crashed on startup looked exactly like a clean exit to anything checking the process."""
+    from troupe.tui.app import TroupeApp, run_tui
+
+    cfg, _store = project
+
+    def fake_run(self, **kwargs):
+        self._return_code = 1
+
+    monkeypatch.setattr(TroupeApp, "run", fake_run)
+    try:
+        run_tui(cfg, owns_engine=True)
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("run_tui did not exit non-zero after a panicked app")
+
+
+def test_run_tui_exits_cleanly_when_the_app_did_not_panic(project, monkeypatch):
+    from troupe.tui.app import TroupeApp, run_tui
+
+    cfg, _store = project
+
+    def fake_run(self, **kwargs):
+        pass  # return_code stays None: a normal quit
+
+    monkeypatch.setattr(TroupeApp, "run", fake_run)
+    run_tui(cfg, owns_engine=True)  # must not raise SystemExit
