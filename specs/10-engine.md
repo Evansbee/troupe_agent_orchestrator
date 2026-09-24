@@ -270,6 +270,8 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       the tick would launch.
     - `parked`: idle while owing work (today's derived diagnosis, REQ-GUI-002).
   - `since` = when the current kind began. It persists across ticks while the kind doesn't change.
+  - `waiting_on` is null while the agent has a run in progress (it's working, not waiting). The API serializes this
+    as `WaitingOn` with a `targets` list (REQ-API).
   - Mail: `mail_queued` = unread messages not yet delivered. `mail_reading` = messages delivered to the currently
     running run.
   - Test: one fixture per kind, precedence when several apply, and a stable `since`.
