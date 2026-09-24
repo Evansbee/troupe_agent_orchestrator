@@ -45,6 +45,33 @@ def _drain_copy_toast(app: "App") -> None:
 # ════════════════════════════════════════════════════════════════════════════
 # Question cards (right-hand "Needs you" inbox)
 # ════════════════════════════════════════════════════════════════════════════
+def answer_question_option(app: "App", q: dict, index: int) -> bool:
+    """Answer `q` with its option at `index` (0-based). Shared by the option button's click handler
+    and the 1-9 keyboard shortcut (REQ-COM-025) so both paths behave identically — same free-text
+    "extra" merge, same toast + card-leaves feedback. Returns False (no-op) for an out-of-range
+    index, e.g. a card with only 2 options and the human presses "5"."""
+    opts = q["options"] or []
+    if not (0 <= index < len(opts)):
+        return False
+    opt = opts[index]
+    extra = app.ui.input_text(f"qa{q['id']}").strip()
+    app.data.answer(q["id"], opt + (f" — {extra}" if extra else ""))
+    app.toast(f"Answered ✓ · {q['question'][:70]}", T.GREEN)
+    return True
+
+
+def keyboard_answer_target(app: "App", hovered: dict | None) -> dict | None:
+    """Which open question the 1-9 keyboard shortcut should apply to this frame — the hovered card,
+    else the top (first) open one — or None if the shortcut shouldn't fire at all: while a text
+    input has focus (typing "3" in a reply must never answer a question) or while ⌘ is held (that's
+    the ⌘1-9 tab-switch shortcut, App.shortcuts)."""
+    if app.ui.focus is not None or app.ui.cmd:
+        return None
+    if hovered is not None:
+        return hovered
+    return app.data.questions[0] if app.data.questions else None
+
+
 def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
     ui, d = app.ui, app.data
     pad = 14
@@ -118,8 +145,7 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
             if r:
                 kind = "primary" if i == 0 else "default"
                 if ui.button(f"q{q['id']}o{i}", Rect(ox, y, bw, 30), opt, kind, 12.5):
-                    extra = ui.input_text(f"qa{q['id']}").strip()
-                    d.answer(q["id"], opt + (f" — {extra}" if extra else ""))
+                    answer_question_option(app, q, i)
             ox += bw + 6
         y += 30
     # free-form reply
