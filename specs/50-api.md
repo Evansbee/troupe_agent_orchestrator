@@ -56,7 +56,7 @@ integers unless noted. `handle` is the full `role_N@project` (REQ-COM-005). Ever
     | `room_message`, `room` field | COM-024 → #4 |
     | `stop_team` (live), `mark_seen human_last_seen` catch-up, `troupe start` (live) | ENG-006, GUI-028 → #24 |
     | `reload`, `service.json`, Engine `reloading` | ENG-009/042, API-074 → #28 |
-    | `stop_now`, `resume`, approval questions (`decision`) | SAFE-010/020 → #57 (after #42 and #48) |
+    | `stop_now`, `resume`, approval questions (`decision`) (live) | SAFE-010/020 → #57 (after #42 and #48) |
     | `update_memory`, `delete_memory`, `major/pinned/status` | COM-032/033/034 → #8 |
     | `comment_decision`, `comments`, `decisions_seen_at` | COM-035..037 → #27 |
     | `update_config` | ENG-019 + SAFE-021 → #5 |
@@ -130,9 +130,13 @@ Engine     state: "live"|"stopped"|"paused"|"throttled"|"reloading", paused: boo
            version, pid, started_at: ts, running_runs: int, draining_runs: int, config_errors: [{file, message}]
            (state precedence: stopped > reloading > paused > throttled > live)
 Usage      budget: {max_runs_per_hour, max_usd_per_day, max_concurrent}, runs_1h: int, cost_24h: float,
-           throttled: str?, providers: [{provider, limited_until: ts?, plan_type: str?, observed_at: ts?,
-           source: str?, windows: [{name: "five_hour"|"seven_day"|"window_<minutes>", window_minutes: int,
-           used_pct: float, cap_pct: float?, resets_at: ts?}]}]  (window names per REQ-BE-011)
+           throttled: str?, providers: [{provider, limited_until: ts?, capped: bool, plan_type: str?,
+           observed_at: ts?, source: str?, windows: [{name: "five_hour"|"seven_day"|"window_<minutes>",
+           window_minutes: int, used_pct: float, cap_pct: float?, resets_at: ts?}]}]
+           (window names per REQ-BE-011; `capped` and each window's `cap_pct` are REQ-BE-016's MVP cap —
+           `capped` is true only when `limited_until` is set *because* of the cap, not a real provider
+           rate limit; `cap_pct` is that window's own claude_cap_5h_percent/claude_cap_7d_percent,
+           falling back to claude_cap_percent when unset)
 Seen       human_last_seen: ts?, decisions_seen_at: ts?
 ```
 
@@ -202,7 +206,7 @@ Seen       human_last_seen: ts?, decisions_seen_at: ts?
   - Status rules are REQ-ENG-039's: `done` on a task with a branch sets `approved` (merge then done); `review` wakes
     QA; `approved` also adds the note "Approved by the human."; `ready` resets `attempts` and `next_attempt_at`.
   - The event text matches today's (`You updated #12: status=ready`), or ENG-039's move wording once it lands.
-- **REQ-API-042 [~]** Protected-merge approvals are questions of kind `approval` (REQ-SAFE).
+- **REQ-API-042 [x]** Protected-merge approvals are questions of kind `approval` (REQ-SAFE).
   `answer_question` on one requires `decision: "approve"|"reject"` (else `bad_request`); `text` is an optional
   reason. The effect on the task is defined by REQ-SAFE. `decision` is rejected on other kinds.
 - **REQ-API-043 [x]** Idempotency: `chat`, `room_message`, `create_task`, `add_task_note` and `comment_decision`
@@ -313,3 +317,5 @@ starting an offline engine over the API (the client runs `troupe up`; REQ-ENG-00
 - 2026-09-24 — WaitingOn aligned to ENG-046 (precedence, plural `targets`, reset_at for providers too). Added the
   `milestone` command (builder-2 msg #329).
 - 2026-09-24 — Usage windows use BE-011 names and carry plan/observed_at/source.
+- 2026-09-24 — #57: `stop_now`/`resume`/approval-question `decision` marked live in the API-006 table;
+  REQ-API-042 shipped (builder-3, per REQ-API-006's "the owning task marks its row live in the same diff").

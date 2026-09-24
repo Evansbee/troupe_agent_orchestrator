@@ -16,12 +16,15 @@ from .. import config as config_mod
 from .client import TuiClient
 from .lifecycle import ensure_engine, restart_engine, stop_owned_engine
 from .panes.header import HeaderPane
+from .panes.needs_you import NeedsYouPane
 from .panes.tasks import TasksPane
 from .panes.team import TeamPane
 
-# Pane registry for the left/status column. #67 (Needs-you) and #68 (PM chat) each add one line
-# here (or to a `RIGHT_PANES` list, once one exists) — see panes/__init__.py for the Pane API.
-PANES: list[type] = [TeamPane, TasksPane]
+# Pane registries — see panes/__init__.py for the Pane API. LEFT_PANES sit under the header on
+# the left (Team/Tasks); RIGHT_PANES sit on the right (Needs-you, then Comms/Chat once #68/#69
+# land — one line each to add here, per design/tui.md's pane-priority order).
+LEFT_PANES: list[type] = [TeamPane, TasksPane]
+RIGHT_PANES: list[type] = [NeedsYouPane]
 
 # REQ-TUI-011: below this width or height, panes collapse from side-by-side to tabs.
 COMPACT_WIDTH = 80
@@ -69,24 +72,37 @@ class TroupeApp(App):
         self.client = TuiClient(cfg.root)
         self.title = cfg.project
         self._events_task: asyncio.Task | None = None
-        self._panes: list = []
+        self._panes: list = []  # left column: Team, Tasks
+        self._right_panes: list = []  # right column: Needs-you, (Comms/Chat once #68/#69 land)
         self._header: HeaderPane | None = None
         self._compact: bool | None = None  # unknown until first layout, forcing an initial build
+
+    @property
+    def _all_panes(self) -> list:
+        return self._right_panes + self._panes  # Needs-you first, matching design/tui.md's order
 
     def compose(self) -> ComposeResult:
         self._header = HeaderPane(self.client, self.cfg.project)
         yield self._header
-        self._panes = [cls(self.client) for cls in PANES]
+        self._panes = [cls(self.client) for cls in LEFT_PANES]
+        self._right_panes = [cls(self.client) for cls in RIGHT_PANES]
         yield Container(id="body")
         yield Footer()
 
-    def _is_compact(self) -> bool:
-        return self.size.width <= COMPACT_WIDTH or self.size.height <= COMPACT_HEIGHT
+    def _is_compact(self, size=None) -> bool:
+        size = size if size is not None else self.size
+        return size.width <= COMPACT_WIDTH or size.height <= COMPACT_HEIGHT
 
-    async def _layout_body(self) -> None:
+    async def _layout_body(self, size=None) -> None:
         """REQ-TUI-011: side-by-side panes normally, tabs at 80x24. Same pane instances (and
-        their loaded state) move between layouts — nothing gets re-fetched on a resize."""
-        compact = self._is_compact()
+        their loaded state) move between layouts — nothing gets re-fetched on a resize.
+
+        `size` is the terminal size to lay out for. On a live resize, `self.size` during the
+        `Resize` event still holds the *previous* size (Textual updates it after dispatching the
+        event), so on_resize passes `event.size` explicitly instead of trusting `self.size` — the
+        one place besides on_mount that calls this without an explicit size, where `self.size`
+        is already current."""
+        compact = self._is_compact(size)
         if compact == self._compact:
             return
         self._compact = compact
@@ -95,15 +111,16 @@ class TroupeApp(App):
         if compact:
             tabs = TabbedContent()
             await body.mount(tabs)
-            for pane in self._panes:
-                await tabs.add_pane(TabPane(pane.PANE_TITLE or pane.__class__.__name__, pane))
+            for pane in self._all_panes:
+                title = getattr(pane, "PANE_TITLE", "") or pane.__class__.__name__
+                await tabs.add_pane(TabPane(title, pane))
         else:
             left = Vertical(*self._panes, id="left")
-            right = Vertical(id="right")  # #68/#69 mount their panes here
+            right = Vertical(*self._right_panes, id="right")
             await body.mount(Horizontal(left, right, id="body-row"))
 
     async def on_resize(self, event) -> None:
-        await self._layout_body()
+        await self._layout_body(event.size)
 
     async def on_mount(self) -> None:
         self._install_signal_handlers()
@@ -130,7 +147,7 @@ class TroupeApp(App):
             if self._header:
                 self._header.set_offline()
             return
-        await asyncio.gather(self._header.load(), *(p.load() for p in self._panes))
+        await asyncio.gather(self._header.load(), *(p.load() for p in self._all_panes))
 
     def _refresh_connection_state(self) -> None:
         if self._header and not self.client.connected:
@@ -140,7 +157,7 @@ class TroupeApp(App):
         async for event in self.client.events():
             if self._header:
                 self._header.on_troupe_event(event)
-            for pane in self._panes:
+            for pane in self._all_panes:
                 pane.on_troupe_event(event)
 
     @work(exclusive=True)

@@ -156,11 +156,13 @@ def test_stop_kills_two_runs_and_blocks_chat_until_human_resume(project, monkeyp
             store.send('human', aid, 'chat', kind='chat')
             await engine.launch(Wake(0, cfg.agent(aid), 'chat'))
         running = list(engine.running.values())
-        for _ in range(100):
+        # #71: two real subprocess spawns race OS scheduling under load — poll generously (4s)
+        # rather than the original tight 1s budget.
+        for _ in range(400):
             if all(r.proc for r, _, _ in running):
                 break
             await asyncio.sleep(.01)
-        await asyncio.sleep(.1)  # children install SIGTERM handlers
+        await asyncio.sleep(.5)  # children install SIGTERM handlers (no observable signal to poll)
         start = time.monotonic()
         if entry == 'cli':
             cli.cmd_stop(argparse.Namespace(now=True))
@@ -169,6 +171,9 @@ def test_stop_kills_two_runs_and_blocks_chat_until_human_resume(project, monkeyp
         else:
             store.command('stop_now')
         await engine.tick()
+        # REQ-SAFE-010 promises the kill switch acts within 2s — that's the behavior under test,
+        # not test-infrastructure slack, so unlike the setup polls above this isn't widened for
+        # #71 (start is captured after setup, so setup delays don't eat into this budget).
         await asyncio.wait_for(asyncio.gather(*(t for _, t, _ in running)), 1.5)
         assert time.monotonic() - start < 2
         assert all(r.proc.returncode is not None for r, _, _ in running)

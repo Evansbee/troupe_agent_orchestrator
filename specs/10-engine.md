@@ -88,7 +88,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
 - **REQ-ENG-015 [x]** Failed runs back off exponentially per agent (30s → 10m) and their mail is re-queued.
-- **REQ-ENG-050 [ ]** (#61) Run watchdog, for every backend. Observed 2026-09-24: codex runs hung silently for
+- **REQ-ENG-050 [x]** (#61) Run watchdog, for every backend. Observed 2026-09-24: codex runs hung silently for
   2h45m (builder-2) and 78 min (QA) at 0% CPU, and nobody noticed.
   - Each run tracks the time of its last stream event (any line from the backend), taken in the engine from the
     run's stream, so the watchdog doesn't touch the protected `runners.py`.
@@ -319,6 +319,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
       the reset time;
     - an agent whose failure backoff has reached its cap;
     - a crash loop (REQ-ENG-042);
+    - a run watchdog stall or timeout kill (REQ-ENG-050);
     - a budget throttle;
     - safety events (REQ-SAFE-040).
   - **Anti-noise:** at most 1 notification per 30 s per project. Pending events coalesce into "3 things need you in
@@ -413,6 +414,10 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
   - Every push, and every refusal, appears in the feed and the TUI (last push time and result).
   - The default for new projects is `never`. troupe's own posture (`per_task`, `merge_commit`, `on_merge` to
     `origin main`) only goes live after the human confirms via the PM.
+  - troupe's own values: `commit_email` is the human's chosen personal address (decision in memory; it isn't
+    repeated in specs). The existing history's work email is rewritten once, before the first public push, as a
+    human-directed one-off operation in a quiet window the lead arranges. The engine itself never rewrites history
+    (ENG-053).
   - Test, with a local bare remote:
     - each merge strategy produces the expected history;
     - `on_merge` pushes after a merge and `never` never pushes;

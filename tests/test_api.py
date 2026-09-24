@@ -1,4 +1,6 @@
+import concurrent.futures
 import json
+import os
 import socket
 import stat
 import subprocess
@@ -37,6 +39,31 @@ def client(api, **kwargs):
 def error(c, method, params, code):
     with pytest.raises(APIError) as exc:
         c.call(method, params)
+    assert exc.value.code == code
+
+
+def call_as_human(root, method, params=None) -> dict:
+    """#57's peer-pid check refuses resume/answer_question/dismiss_question from a caller whose own
+    process carries TROUPE_AGENT — which every agent's shell (including this very test, when it's
+    run by an agent, as it always is in this dogfooding project) inherits from its own launch
+    environment. `ps` (which that check reads) reports a process's environment as of exec() time, so
+    monkeypatching os.environ here can't hide it retroactively; only a freshly spawned process with
+    TROUPE_AGENT stripped can act as "the human" for these calls. See tests/_api_call_subprocess.py
+    and tests/test_api_safety.py, which own this behavior's real coverage."""
+    env = {k: v for k, v in os.environ.items() if k != "TROUPE_AGENT"}
+    script = Path(__file__).parent / "_api_call_subprocess.py"
+    proc = subprocess.run([sys.executable, str(script), str(root), method, json.dumps(params or {})],
+                          capture_output=True, text=True, env=env, timeout=10)
+    assert proc.returncode == 0, proc.stderr
+    outcome = json.loads(proc.stdout.strip().splitlines()[-1])
+    if not outcome["ok"]:
+        raise APIError(outcome["code"], outcome["message"])
+    return outcome["result"]
+
+
+def error_as_human(root, method, params, code):
+    with pytest.raises(APIError) as exc:
+        call_as_human(root, method, params)
     assert exc.value.code == code
 
 
@@ -189,20 +216,23 @@ def test_commands_and_idempotency(api):
         c.call("set_agent_enabled", dict(agent="builder-1", enabled=False))
         assert s.one("SELECT * FROM commands ORDER BY id DESC")["cmd"] == "disable"
         assert c.call("pause")["engine"]["paused"]
-        assert not c.call("resume")["engine"]["paused"]
+        # resume/answer_question/dismiss_question are human-only (#57); this test's own process
+        # inherits TROUPE_AGENT from whatever agent is running it, so these three go through a
+        # freshly spawned, TROUPE_AGENT-free process instead of the shared connection `c`.
+        assert not call_as_human(server.cfg.root, "resume")["engine"]["paused"]
         q = s.ask("builder-1", "A?")
         assert (
-            c.call("answer_question", dict(id=q, text="yes"))["question"]["answer"]
+            call_as_human(server.cfg.root, "answer_question", dict(id=q, text="yes"))["question"]["answer"]
             == "yes"
         )
-        error(c, "answer_question", dict(id=q, text="again"), "conflict")
+        error_as_human(server.cfg.root, "answer_question", dict(id=q, text="again"), "conflict")
         q = s.ask("builder-1", "B?")
         assert (
-            c.call("dismiss_question", dict(id=q))["question"]["status"] == "dismissed"
+            call_as_human(server.cfg.root, "dismiss_question", dict(id=q))["question"]["status"] == "dismissed"
         )
         q = s.ask("builder-1", "Approve?", kind="approval")
-        error(c, "dismiss_question", dict(id=q), "forbidden")
-        error(c, "answer_question", dict(id=q, text="yes"), "bad_request")
+        error_as_human(server.cfg.root, "dismiss_question", dict(id=q), "forbidden")
+        error_as_human(server.cfg.root, "answer_question", dict(id=q, text="yes"), "bad_request")
         t = c.call("create_task", dict(title="Build", idempotency_key="task"))["task"]
         assert t["status"] == "ready" and t["created_by"] == "human"
         assert c.call("create_task", dict(title="Build", idempotency_key="task"))[
@@ -306,8 +336,15 @@ for i in range(50):
         ]
         c.call("unsubscribe")
         error(c, "subscribe", dict(since_seq=server.seq + 1), "resync_required")
-        server.loop.call_soon_threadsafe(server.ring.clear)
-        time.sleep(0.02)
+        # #71: call_soon_threadsafe only *schedules* the clear on the server's own thread/loop; a
+        # fixed sleep raced that thread actually running it. Wait on a future that only resolves
+        # once the clear has genuinely executed, so this is exact rather than a timing guess.
+        cleared = concurrent.futures.Future()
+        def clear_and_signal():
+            server.ring.clear()
+            cleared.set_result(None)
+        server.loop.call_soon_threadsafe(clear_and_signal)
+        cleared.result(timeout=5)
         error(c, "subscribe", dict(since_seq=0), "resync_required")
 
 
@@ -394,8 +431,13 @@ def test_slow_consumer_resync_and_engine_independence(api):
         for _ in range(20):
             s.send("human", "builder-1", "x" * 1024)
         s.conn.commit()
-        time.sleep(0.2)
-        # The queue is discarded before the writer gets a chance to drain it.
+        # #71: the server thread must actually notice the backpressure and flip `subscribed` to
+        # False before the queue is genuinely "discarded before the writer gets a chance to drain
+        # it" — a fixed sleep raced that; poll the real post-condition instead (also asserted
+        # below, so this just makes the wait exact rather than a timing guess).
+        deadline = time.monotonic() + 5
+        while next(iter(server.connections)).subscribed and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert c.event()["event"] == "resync_required"
         assert c.call("ping")["pong"]
         assert not next(iter(server.connections)).subscribed
@@ -492,7 +534,9 @@ def test_cli_and_engine_lifecycle(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(engine, "tick", tick)
     monkeypatch.setattr("troupe.engine.TICK", 0.05)
     thread = engine.start_thread()
-    deadline = time.time() + 1
+    # #71: the engine's own background thread must start and set up its API server before this
+    # is ready — a real OS-scheduling race, widened from the original 1s budget.
+    deadline = time.time() + 10
     while not getattr(engine, "api", None) or not engine.api._ready.is_set():
         assert time.time() < deadline
         time.sleep(0.005)
@@ -527,7 +571,11 @@ def test_default_backpressure_threshold(api):
                 "x" * (1024 * 1024),
             )
         s.conn.commit()
-        time.sleep(0.3)
+        # #71: poll the real backpressure post-condition instead of a fixed sleep (see
+        # test_slow_consumer_resync_and_engine_independence for why).
+        deadline = time.monotonic() + 5
+        while next(iter(server.connections)).subscribed and time.monotonic() < deadline:
+            time.sleep(0.02)
         event = c.event()
         assert event["event"] == "resync_required"
         assert c.call("ping")["pong"]

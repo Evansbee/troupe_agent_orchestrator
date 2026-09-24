@@ -108,6 +108,14 @@ def test_repository_changes_during_check_do_not_merge(project):
 
 
 def test_worker_does_not_block_ticks_or_chat_and_is_serial(project, monkeypatch):
+    """Deterministic under load (#71): the merge worker runs in a real thread
+    (asyncio.to_thread), so waiting for it to start is a real OS-scheduling race, not just
+    cooperative asyncio ordering. `release.wait(30)` is a generous safety net, not a budget the
+    test relies on — `release.set()` below fires as soon as the assertions pass, normally in
+    well under a second. The mutation check (tick() must not block on the worker) only needs its
+    own deadline to stay comfortably *shorter* than 30s; 10s leaves a wide margin over anything
+    system load could plausibly add to an in-process tick(), while still failing fast and hard if
+    tick() actually blocked on the still-running check (which wouldn't return for ~30s)."""
     cfg, store, engine, tid, tree = approved(project)
     cfg.git.check = "true"
     started, release = threading.Event(), threading.Event()
@@ -115,7 +123,7 @@ def test_worker_does_not_block_ticks_or_chat_and_is_serial(project, monkeypatch)
     def check(*args):
         calls.append(args)
         started.set()
-        assert release.wait(3)
+        assert release.wait(30)
         return True, "passed"
     monkeypatch.setattr(gitops, "run_check", check)
     store.kv_set("paused", True)
@@ -127,13 +135,10 @@ def test_worker_does_not_block_ticks_or_chat_and_is_serial(project, monkeypatch)
     monkeypatch.setattr(engine, "launch", launch)
     async def run():
         await engine.tick()
-        for _ in range(100):
-            if started.is_set(): break
-            await asyncio.sleep(0.01)
-        assert started.is_set()
+        assert await asyncio.to_thread(started.wait, 10)
         worker = engine._merge_task
         assert store.kv_get("checking_task") == tid
-        await asyncio.wait_for(engine.tick(), timeout=0.5)
+        await asyncio.wait_for(engine.tick(), timeout=10)
         assert engine._merge_task is worker
         assert chats and store.kv_get("heartbeat") > 0
         assert len(calls) == 1

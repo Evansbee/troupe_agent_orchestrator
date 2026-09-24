@@ -11,6 +11,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 from . import gitops, config as config_mod
@@ -56,6 +57,11 @@ class Engine(MergeGateMixin):
         self.store = Store(cfg.db_path)
         self.running: dict[str, tuple[Runner, asyncio.Task, Wake]] = {}
         self.failures: dict[str, tuple[int, float]] = {}  # agent -> (count, retry_after)
+        self._run_started: dict[str, float] = {}  # agent -> run start time (REQ-ENG-050)
+        self._last_output: dict[str, float] = {}  # agent -> time of last stream event (REQ-ENG-050)
+        self._run_worktree: dict[str, bool] = {}  # agent -> run's cwd is a task worktree (REQ-ENG-050)
+        self._watchdog_reason: dict[str, str] = {}  # agent -> "stalled" | "timeout" (REQ-ENG-050)
+        self._watchdog_killed_at: dict[str, float] = {}  # agent -> when the kill signal was sent
         self.pokes: set[str] = set()
         self.mail_triage = MailTriage()
         self._stop = threading.Event()
@@ -228,6 +234,7 @@ class Engine(MergeGateMixin):
                 if runner.proc is None:
                     running_task.cancel()
             return
+        self.check_claude_cap()
         if self._merge_task is not None and self._merge_task.done():
             try:
                 self._merge_task.result()
@@ -236,6 +243,8 @@ class Engine(MergeGateMixin):
             self._merge_task = None
         if self._merge_task is None:
             self._merge_task = asyncio.create_task(asyncio.to_thread(self.process_approved))
+        self.watchdog_sweep()
+        self.sweep_zombie_runs()
         paused = bool(s.kv_get("paused", False))
         if not paused:
             self.dispatch()
@@ -435,7 +444,10 @@ class Engine(MergeGateMixin):
     def backend_limited(self, backend: str) -> bool:
         return (self.store.kv_get(f"limit.{backend}", 0) or 0) > now()
 
-    def record_limit(self, backend: str, until: float, reported: bool = True) -> None:
+    def limit_reason(self, backend: str) -> str:
+        return (self.store.kv_get(f"limit_meta.{backend}", {}) or {}).get("reason", "provider")
+
+    def record_limit(self, backend: str, until: float, reported: bool = True, reason: str = "provider") -> None:
         key = f"limit.{backend}"
         previous = self.store.kv_get(key, 0) or 0
         meta = self.store.kv_get(f"limit_meta.{backend}", {})
@@ -447,7 +459,55 @@ class Engine(MergeGateMixin):
             if was_reported == reported:
                 until = max(previous, until)
         self.store.kv_set(key, until)
-        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported})
+        self.store.kv_set(f"limit_meta.{backend}", {"until": until, "reported": reported, "reason": reason})
+
+    def check_claude_cap(self) -> None:
+        """REQ-BE-016 (#72): an MVP usage cap. Each claude usage window (5h, 7d — same
+        claude_ratelimit data the usage meters read) has its own cap, `[budget]
+        claude_cap_5h_percent`/`claude_cap_7d_percent` (each falling back to claude_cap_percent
+        when unset; 0 = off). If a window's latest known utilization is at or above its own cap,
+        block new autonomous claude runs via the existing per-backend limit mechanism (reason
+        "cap") until *that window's* reset. Chat is exempt (see launch()) — the human is present
+        and can decide — but the header shows it as over the cap.
+
+        Once triggered, this doesn't re-check until the limit clears, and even then won't re-cap
+        off the *same* stale snapshot: nothing refreshes claude_ratelimit while claude is capped
+        (no runs happen to report fresh usage), so re-triggering on stale data would cap forever.
+        Letting one tick through on stale data gives a real run a chance to report a fresh reading.
+        """
+        if self.backend_limited("claude"):
+            return
+        snapshot = self.store.kv_get("claude_ratelimit") or {}
+        snapshot_at = snapshot.get("at")
+        if snapshot_at is not None and snapshot_at == self.store.kv_get("claude_cap_snapshot_at"):
+            return
+        budget = self.cfg.budget
+        tripped = None  # (pct, cap, until, window_key) of the window that tripped, if any
+        for key, window in (snapshot.get("unifiedWindows") or {}).items():
+            cap = config_mod.claude_window_cap(budget, key)
+            if not cap:
+                continue
+            pct = float(window.get("utilization") or 0) * 100
+            if pct < cap:
+                continue
+            reset = window.get("resetsAt") or window.get("resets_at") or window.get("reset")
+            if isinstance(reset, str):
+                try:
+                    reset = datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    reset = None
+            if tripped is None or pct > tripped[0]:
+                tripped = (pct, cap, reset, key)
+        if tripped is None:
+            return
+        pct, cap, reset, key = tripped
+        until = reset if reset and reset > now() else now() + 900
+        self.record_limit("claude", until, reported=True, reason="cap")
+        self.store.kv_set("claude_cap_snapshot_at", snapshot_at)
+        label = {"five_hour": "5h", "seven_day": "7d"}.get(key, key)
+        self.store.event("system", "providers",
+                         f"Claude usage cap engaged: {label} at {pct:.0f}% >= {cap:.0f}% — new autonomous claude "
+                         f"runs paused until {time.strftime('%H:%M', time.localtime(until))} (chat still works)")
 
     # ── who should wake ───────────────────────────────────────────────────
     def candidates(self, paused: bool) -> list[Wake]:
@@ -460,7 +520,12 @@ class Engine(MergeGateMixin):
         review_queue = [t for t in s.tasks(("review",))]
         for a in self.cfg.agents:
             row = db_agents.get(a.id)
-            if a.id in self.running or not row or not row["enabled"] or self.backend_limited(a.backend):
+            if a.id in self.running or not row or not row["enabled"]:
+                continue
+            # A "cap" limit (REQ-BE-016) blocks autonomous wakes but not chat — the human is
+            # present and can decide. A real provider limit blocks everything, chat included.
+            limited = self.backend_limited(a.backend)
+            if limited and self.limit_reason(a.backend) != "cap":
                 continue
             fails, retry_after = self.failures.get(a.id, (0, 0))
             if t_now < retry_after:
@@ -471,6 +536,8 @@ class Engine(MergeGateMixin):
                 if t_now - chat[-1]["ts"] >= CHAT_DEBOUNCE:
                     out.append(Wake(0, a, "chat", self.current_task(a)))
                 continue  # the human is typing to this agent: nothing else preempts that
+            if limited:
+                continue  # capped, and nothing for chat to preempt — no autonomous wake
             if paused:
                 continue
             if a.id in self.pokes:
@@ -499,7 +566,9 @@ class Engine(MergeGateMixin):
     # ── running an agent ──────────────────────────────────────────────────
     async def launch(self, w: Wake) -> None:
         a, s = w.agent, self.store
-        if s.kv_get("stopped") or self.backend_limited(a.backend):
+        if s.kv_get("stopped"):
+            return
+        if self.backend_limited(a.backend) and not (w.chat and self.limit_reason(a.backend) == "cap"):
             return
         self.pokes.discard(a.id)
         task = w.task
@@ -540,6 +609,9 @@ class Engine(MergeGateMixin):
                        session_id=row.get("session_id"), log_path=self.cfg.runs_dir / f"{run_id:06d}-{a.id}.jsonl")
         atask = asyncio.create_task(self._run(runner, spec, w, run_id, msgs, task, self._session_versions.get(a.id, 0)))
         self.running[a.id] = (runner, atask, w)
+        self._run_started[a.id] = now()
+        self._last_output[a.id] = now()
+        self._run_worktree[a.id] = cwd != self.cfg.root
 
     async def setup_worktree(self, runner: Runner, spec: RunSpec, task: dict | None, run_id: int) -> None:
         if not task or spec.cwd == self.cfg.root or runner.cancelled:
@@ -581,6 +653,77 @@ class Engine(MergeGateMixin):
             spec.prompt = (spec.prompt.removesuffix(footer) + "\n\n## Worktree setup\n" + setup["error"]
                            + "\nContinue the task; fix setup if needed." + footer)
 
+    def watchdog_sweep(self) -> None:
+        """REQ-ENG-050: kill runs that have gone silent past stall_minutes, or past their hard cap
+        (max_run_minutes for worktree roles, max_coord_run_minutes otherwise — chat is exempt from
+        the cap but not the stall rule). This only signals the process; `_run`'s own completion
+        handling (unblocked once the process exits) does the mail requeue, backoff and notification,
+        keyed off `self._watchdog_reason`."""
+        from .service import kill_descendants
+
+        t, b = now(), self.cfg.budget
+        for a_id, (runner, atask, w) in list(self.running.items()):
+            if runner is None:
+                continue  # not a real run (tests reserve slots this way)
+            if a_id in self._watchdog_reason:
+                self._unstick_killed_run(a_id, runner, t)
+                continue  # already killed; waiting for _run's completion handling to finish it up
+            if runner.cancelled:
+                continue
+            proc = runner.proc
+            if proc is None or proc.returncode is not None:
+                continue  # not spawned yet, or already exited — _run will finish it up
+            started = self._run_started.get(a_id, t)
+            last_output = self._last_output.get(a_id, started)
+            stalled = t - last_output > b.stall_minutes * 60
+            cap = None if w.chat else (b.max_run_minutes if self._run_worktree.get(a_id) else b.max_coord_run_minutes)
+            timed_out = cap is not None and t - started > cap * 60
+            if not (stalled or timed_out):
+                continue
+            self._watchdog_reason[a_id] = "timeout" if timed_out else "stalled"
+            self._watchdog_killed_at[a_id] = t
+            runner.cancelled = True
+            # Walk descendants before the group dies, or an orphaned child reparents to init
+            # and the pid-ancestry walk can no longer find it.
+            kill_descendants(proc.pid)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def _unstick_killed_run(self, a_id: str, runner: Runner, t: float) -> None:
+        """A run we already killed can still be blocked in _stream()'s readline(): a daemonized
+        grandchild can inherit the stdout/stderr pipe, reparent to init, and never exit, so the
+        pipe never sees EOF even though the backend itself is dead. We can't kill that holder (not
+        a verified descendant — never by name), so once it's had a while to exit on its own, force
+        EOF on both pipes to unblock _run's completion handling instead."""
+        killed_at = self._watchdog_killed_at.get(a_id)
+        if killed_at is None or t - killed_at < 20:
+            return
+        proc = runner.proc
+        if proc is None:
+            return
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None and not stream.at_eof():
+                stream.feed_eof()
+
+    def sweep_zombie_runs(self) -> None:
+        """REQ-ENG-050: a run marked 'running' whose agent this engine instance isn't actually
+        tracking anymore (its process/task vanished without going through _run's own completion,
+        e.g. after an engine crash-restart) becomes 'interrupted', same as the startup sweep
+        (REQ-ENG-004), but re-checked every tick instead of only once at start."""
+        s = self.store
+        for run in s.q("SELECT id, agent FROM runs WHERE status='running'"):
+            if run["agent"] in self.running:
+                continue
+            key = f"run_mail.{run['id']}"
+            s.mark_unread(s.kv_get(key, []))
+            s.x("DELETE FROM kv WHERE key=?", key)
+            s.x("UPDATE runs SET status='interrupted', ended=? WHERE id=?", now(), run["id"])
+            row = s.agent(run["agent"]) or {}
+            if row.get("current_run") == run["id"]:
+                s.set_agent(run["agent"], state="idle", current_run=None, activity="")
+
     async def _run(self, runner: Runner, spec: RunSpec, w: Wake, run_id: int, msgs: list[dict],
                    task: dict | None, session_version: int = 0) -> None:
         a, s = spec.agent, self.store
@@ -588,6 +731,7 @@ class Engine(MergeGateMixin):
 
         def emit(kind: str, text: str) -> None:
             nonlocal limited
+            self._last_output[a.id] = now()  # any line resets the stall clock (REQ-ENG-050)
             if kind == "backend_limit":
                 limited = True
                 info = json.loads(text)
@@ -625,6 +769,11 @@ class Engine(MergeGateMixin):
             emit("error", traceback.format_exc()[-800:])
         finally:
             self.running.pop(a.id, None)
+            self._run_started.pop(a.id, None)
+            self._last_output.pop(a.id, None)
+            self._run_worktree.pop(a.id, None)
+            self._watchdog_killed_at.pop(a.id, None)
+        watchdog_reason = self._watchdog_reason.pop(a.id, None)
         if res.extra.get("limit_until"):
             limited = True
             self.record_limit(a.backend, res.extra["limit_until"], res.extra.get("limit_reported", True))
@@ -632,8 +781,8 @@ class Engine(MergeGateMixin):
             limited = True
             reset = reported_reset({"message": res.error}, now())
             self.record_limit(a.backend, now() + 900 if reset is None else reset, reset is not None)
-        status = "limited" if limited else "ok" if res.ok else (
-            ("interrupted" if (s.kv_get("stopped") or self._stop.is_set()) else "stopped") if runner.cancelled else "failed")
+        status = "limited" if limited else "ok" if res.ok else (watchdog_reason or (
+            ("interrupted" if (s.kv_get("stopped") or self._stop.is_set()) else "stopped") if runner.cancelled else "failed"))
         summary = (res.final_text or res.error or "").strip()
         s.end_run(run_id, status, res.cost, res.tokens, summary[:4000])
         s.x("DELETE FROM kv WHERE key=?", f"run_mail.{run_id}")
@@ -651,6 +800,14 @@ class Engine(MergeGateMixin):
             s.mark_unread([m["id"] for m in msgs])
             reset = time.strftime("%H:%M", time.localtime(s.kv_get(f"limit.{a.backend}")))
             s.event(a.id, "run", f"{a.backend.title()} limited until {reset}", significant=False)
+            return
+        if watchdog_reason and not self._stop.is_set():
+            n = self.failures.get(a.id, (0, 0))[0] + 1
+            self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
+            s.mark_unread([m["id"] for m in msgs])  # retry the mail later
+            detail = (f"produced no output for {self.cfg.budget.stall_minutes:.0f}m" if watchdog_reason == "stalled"
+                      else "ran past its time limit")
+            s.event(a.id, watchdog_reason, f"{a.id}'s run {detail} and was killed ({n}x)")
             return
         if not res.ok and not runner.cancelled:
             n = self.failures.get(a.id, (0, 0))[0] + 1
