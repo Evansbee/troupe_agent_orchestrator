@@ -119,8 +119,9 @@ isn't, but there's no single blocker to point at."
 
 ### The five waiting substates (fine treatment)
 Each gets a dashed ring (coarse signal above) plus a small glyph badge on the node, a colored dashed
-**tether** to whatever it's waiting on (a "marching ants" dash that slowly scrolls along the line to read
-as pending, not static), and an age timer (`ago()`-style, e.g. "12m") at the node end of the tether.
+**tether** to whatever it's waiting on — a "marching ants" dash pattern scrolling along the line at a
+slow, constant ~12px/s (fast enough to read as "still pending," slow enough not to compete with comet
+motion) — and an age timer (`ago()`-style, e.g. "12m") at the node end of the tether.
 
 | Substate | Glyph | Tether color | Tether target | When |
 |---|---|---|---|---|

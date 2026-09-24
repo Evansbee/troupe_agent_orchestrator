@@ -140,9 +140,9 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   - `TROUPE_TAB=Stage` (with `TROUPE_SHOT`) renders Stage for screenshots. `TROUPE_STAGE_DEMO=1` seeds synthetic
     comets, task cards and an open question so one screenshot shows every element.
 - **REQ-GUI-031 [ ]** Agents: every enabled agent is a node around a central "YOU" node, in its role color.
-  - Idle, working, parked (owes work, REQ-GUI-002) and throttled or rate-limited (REQ-ENG-016) are visually
-    distinct. A working node shows its current activity (e.g. tool name) as a short label.
-  - Up to 16 agents render without overlapping nodes or labels (above 9, two rings; layout in `design/stage.md`).
+  - Node states follow the legend in REQ-GUI-038 and `design/pulse.md` (which replaces stage.md's old 4-state table).
+    A working node shows its current activity (e.g. tool name) as a short label.
+  - Up to 16 agents render without overlapping nodes or labels (above 9, two rings; layout in `design/pulse.md`).
   - Adding, removing or disabling agents (REQ-ENG-019) adds or removes nodes with an animation, not a jump.
 - **REQ-GUI-032 [ ]** Messages are comets that travel from sender to recipient, labeled with the subject (or the
   first ~40 characters of the body if there is no subject).
@@ -178,7 +178,9 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   - **Message passing:** comets per REQ-GUI-032, with a visible direction. Edges used in the last 5 min stay warm, so
     "who's been talking to whom" reads at a glance.
   - **Who's waiting on whom:** every `waiting_on` kind (human, review, dependency, blocked, providers, rate_limit, slot,
-    parked) has a distinct, named node treatment. Where there's a target, a dashed tether is drawn to it: YOU for
+    parked) has a named node treatment in the `design/pulse.md` legend. `dependency` and `blocked` may share one,
+    distinguished by label and tether target. `providers` (every provider unavailable) must read differently from a
+    single-provider `rate_limit`. Where there's a target, a dashed tether is drawn to it: YOU for
     human, the reviewer, the dependency's assignee, or a provider badge. Each tether shows the age since `since`.
     Rate-limit and providers waits show a reset countdown, and slot waits show the queue position.
   - Idle, working and waiting must be distinguishable at a glance from across the room (design legend).
@@ -211,3 +213,5 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
 - 2026-09-23 — platform move to the Mac app noted (REQs stay behavioral). GUI-038 Pulse information layers and GUI-039
   Work panel (#32, human). GUI-042 Docs groups for skills, research and architecture. GUI-040 adopts design/projects.md
   (rail hidden with one project, All inbox by default). Restored the missing Changelog heading.
+- 2026-09-23 — GUI-031/038 point to design/pulse.md's legend (#32 design done). dependency/blocked may share a
+  treatment, and `providers` must be distinct from `rate_limit`.
