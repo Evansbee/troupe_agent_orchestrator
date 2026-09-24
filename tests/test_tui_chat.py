@@ -348,3 +348,63 @@ def test_long_realistic_history_settles_to_the_bottom_even_in_a_small_viewport()
             assert len(list(thread.query(Markdown))) == len(seed) + 1
             assert thread.is_vertical_scroll_end  # the new message scrolled into view
     asyncio.run(scenario())
+
+
+def test_removing_and_remounting_the_pane_replays_full_history():
+    """#104: TroupeApp._layout_body's compact<->wide transition removes every pane from its
+    container and mounts the *same instances* into a new one (body.remove_children(), then
+    body.mount(...)) — not a recompose() of children in place. That's the exact lifecycle this
+    simulates directly (out of the isolated ChatTestApp's control, so no real resize is available
+    here): remove the widget, mount it again, and confirm ChatPane.compose() running fresh doesn't
+    leave the new #chat-thread permanently empty."""
+    seed = [message(1, "pm_1", "human", "first"), message(2, "human", "pm_1", "second"),
+            message(3, "pm_1", "human", "third")]
+    client = FixtureClient(messages=seed)
+
+    async def scenario():
+        async with ChatTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(ChatPane)
+            await pilot.pause()
+            thread = pane.query_one("#chat-thread", VerticalScroll)
+            assert len(list(thread.query(Markdown))) == len(seed)
+
+            container = pane.parent
+            await pane.remove()
+            await container.mount(pane)
+            await pilot.pause()
+
+            new_thread = pane.query_one("#chat-thread", VerticalScroll)
+            assert new_thread is not thread  # compose() really ran again, not reusing the old one
+            assert len(list(new_thread.query(Markdown))) == len(seed)
+    asyncio.run(scenario())
+
+
+def test_sending_at_the_initial_layout_renders_a_you_bubble_once_the_engine_echoes_it():
+    """#104 acceptance criterion 2 ("at the initial wide layout, sending a message renders a 'you'
+    bubble immediately"). The real engine broadcasts every new chat message to every subscribed
+    connection, including the sender's own (api.py ConnectionManager.publish has no self-exclusion),
+    so the TUI's own send is expected to come back as a message.new push like any other — this
+    simulates that echo explicitly, since FixtureClient (like the real API) doesn't auto-generate
+    one just from a "chat" call, and confirms the render path handles it on the very first mount,
+    before any resize has ever happened."""
+    client = FixtureClient()
+
+    async def scenario():
+        async with ChatTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(ChatPane)
+            thread = pane.query_one("#chat-thread", VerticalScroll)
+            composer = pane.query_one("#chat-composer", Composer)
+            composer.focus()
+            await pilot.pause()
+            for ch in "hello pm":
+                await pilot.press("space" if ch == " " else ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(client.messages) == 1  # the send landed
+            sent = client.messages[0]
+            assert sent["sender"] == "human"
+
+            await push_and_settle(pilot, pane, "message.new", message=sent)
+            labels = [row.query_one(Static).content for row in thread.query(".chat-message")]
+            assert labels and "you" in labels[-1]
+    asyncio.run(scenario())

@@ -102,6 +102,14 @@ class ChatPane(Widget):
         self._working_text = ""
         self._seen_ids: set[int] = set()
         self._sending = False
+        # Every message ever mounted, oldest-first (#104): a compact<->wide layout transition tears
+        # down and rebuilds every pane's DOM (TroupeApp._layout_body's remove_children()+mount()), so
+        # ChatPane.compose() runs again and hands back a brand new, empty #chat-thread. `load()` only
+        # fetches and mounts history once; without a local copy, a resize left the thread permanently
+        # empty even though every message was still in the store. `on_mount` below replays this list
+        # into whatever #chat-thread it's handed, so it works the same on the very first mount (where
+        # this is still empty — load() fills both the thread and this together) and on every remount.
+        self._history: list[dict] = []
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-thread")
@@ -110,6 +118,21 @@ class ChatPane(Widget):
             id="chat-composer", tab_behavior="focus", soft_wrap=True, show_line_numbers=False,
             placeholder=f"Message {self.pm_name}…  Enter to send · Shift+Enter for a new line",
         )
+
+    async def on_mount(self) -> None:
+        """(#104) Fires after every `compose()`, including a compact<->wide remount, not just the
+        very first mount. On the very first mount `self._history` is still empty (`load()` hasn't
+        run yet — it's awaited separately, after the initial layout, by TroupeApp), so this is a
+        no-op then and `load()` populates the thread as before. On a remount, `self._history` is
+        already populated from the *previous* mount's `load()`/live messages, so this replays it
+        into the fresh (otherwise permanently empty) #chat-thread `compose()` just handed back."""
+        if not self._history:
+            return
+        thread = self.query_one("#chat-thread", VerticalScroll)
+        self._seen_ids = set()  # the new thread is genuinely empty; forget the old one's dedup state
+        for m in self._history:
+            await self._mount_message(thread, m)
+        self._scroll_to_end(thread)
 
     # ── shared pane interface ────────────────────────────────────────────
     # load() lets client errors (offline engine, timeout) propagate — the orchestrator awaits every
@@ -130,6 +153,7 @@ class ChatPane(Widget):
         thread = self.query_one("#chat-thread", VerticalScroll)
         for m in reversed(result.get("items", [])):
             await self._mount_message(thread, m)
+            self._history.append(m)
             self._last_sender = m.get("sender")
         self._scroll_to_end(thread)
         self._pm_running = pm.get("state") == "running"
@@ -161,6 +185,8 @@ class ChatPane(Widget):
         thread = self.query_one("#chat-thread", VerticalScroll)
         was_at_bottom = thread.is_vertical_scroll_end
         mounted = await self._mount_message(thread, m)
+        if mounted:
+            self._history.append(m)
         if mounted and was_at_bottom:
             self._scroll_to_end(thread)
         self._last_sender = m.get("sender")

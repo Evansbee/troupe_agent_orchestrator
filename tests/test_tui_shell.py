@@ -438,6 +438,53 @@ def test_resize_round_trip_restores_focus_to_the_composer(project):
     asyncio.run(scenario())
 
 
+def test_resize_round_trip_keeps_the_full_chat_history_rendered(project):
+    """#104: TroupeApp._layout_body tears down and rebuilds every pane's DOM on a compact<->wide
+    transition (body.remove_children() then mount() into a new container). ChatPane.compose() runs
+    again and hands back a brand new, empty #chat-thread; the messages mounted by the earlier
+    load()/live events were only ever in *that* thread, not replayed into the new one — a resize
+    left the conversation permanently empty even though every message was still in the store. QA's
+    live repro: greeting shown, resize to 80x24 and back, thread empty in both layouts afterward."""
+    from textual.widgets import Markdown, TabbedContent
+
+    from troupe.tui.panes.chat import ChatPane
+
+    cfg, _store = project
+    messages = [
+        dict(id=1, sender="pm", recipient="human", kind="chat", body="Hi — I'm your PM.", ts=0),
+        dict(id=2, sender="human", recipient="pm", kind="chat", body="hello", ts=0),
+        dict(id=3, sender="pm", recipient="human", kind="chat", body="got it, one sec", ts=0),
+    ]
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES, messages=messages)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                chat = app.query_one(ChatPane)
+                thread = chat.query_one("#chat-thread")
+                await _wait_until(lambda: len(list(thread.query(Markdown))) == len(messages))
+
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                assert app.query(TabbedContent)
+                thread = chat.query_one("#chat-thread")  # a fresh widget after the remount
+                assert len(list(thread.query(Markdown))) == len(messages)
+
+                await pilot.resize_terminal(140, 42)
+                await pilot.pause()
+                assert not app.query(TabbedContent)
+                thread = chat.query_one("#chat-thread")
+                assert len(list(thread.query(Markdown))) == len(messages)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("size", [(140, 42), (80, 24)])
 @pytest.mark.parametrize("answer", ["y", "n"])
 def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):
