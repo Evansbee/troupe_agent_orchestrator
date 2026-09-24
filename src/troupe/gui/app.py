@@ -90,6 +90,9 @@ class App:
         if d.new_messages:
             on_new_messages(self, d.new_messages)
             for m in d.new_messages:
+                if m["recipient"] == "human" and m["kind"] == "needs_help":
+                    self.toast(m["body"][:100], T.RED)
+                    d.notify("troupe · Safety needs attention", m["body"])
                 if m["recipient"] == "human" and m["kind"] == "chat" and m["sender"] != self.chat_with_visible():
                     self.toast(f"{d.name_of(m['sender'])}: {m['body'][:90]}", d.color_of(m["sender"]))
                     if not rl.is_window_focused():
@@ -134,6 +137,8 @@ class App:
 
     def shortcuts(self) -> None:
         ui = self.ui
+        if ui.cmd and (rl.is_key_down(rl.KeyboardKey.KEY_LEFT_SHIFT) or rl.is_key_down(rl.KeyboardKey.KEY_RIGHT_SHIFT)) and rl.is_key_pressed(rl.KeyboardKey.KEY_PERIOD):
+            self.data.stop_now()
         if ui.cmd and ui.focus is None:
             for i, name in enumerate(TABS):
                 if rl.is_key_pressed(rl.KeyboardKey.KEY_ONE + i):
@@ -164,7 +169,9 @@ class App:
         x += ui.text(x, r.cy - 11, "troupe", 19, T.TEXT, "bold") + 12
         x += ui.text(x, r.cy - 8, self.cfg.project, 14, T.TEXT_DIM, "med") + 22
         # engine state pill
-        if not d.engine_alive:
+        if d.kv.get("stopped"):
+            label, col = "Stopped", T.RED
+        elif not d.engine_alive:
             label, col = "Engine offline", T.RED
         elif d.paused:
             label, col = "Paused", T.YELLOW
@@ -223,6 +230,10 @@ class App:
         if ui.button("pause", Rect(bx, r.cy - 16, bw, 32), lbl, "primary" if d.paused else "default",
                      tip="Pause autonomous work (chat still answered)  ⌘P"):
             d.set_paused(not d.paused)
+        bw = ui.button_w("Stop everything")
+        bx -= bw + 8
+        if ui.button("stop_now", Rect(bx, r.cy - 16, bw, 32), "Stop everything", tip="Stop all agents, including chat  ⌘⇧."):
+            d.stop_now()
         bw = ui.button_w("+ Task")
         bx -= bw + 8
         if ui.button("newtask", Rect(bx, r.cy - 16, bw, 32), "+ Task", tip="Add a task to the board"):

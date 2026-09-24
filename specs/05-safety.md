@@ -87,7 +87,8 @@ normal project work, including pushing to the project's own remote with the huma
   - The engine keeps the hash of the last human-approved `[safety]` section in kv. If the file's section changes by any
     means other than the GUI or API acting as the human, the engine keeps enforcing the approved values and raises an
     approval card showing the diff. Only Approve adopts the change.
-  - The first `troupe init` or migration counts as approved.
+  - A missing baseline (including first init or migration) raises a human approval card. Compiled defaults
+    apply and merges wait until the human approves; loading config never self-approves a baseline.
   - Test: editing `[safety]` by hand doesn't change enforcement until approved.
 
 ## Guards: defense in depth, enforced below the prompt (#42)

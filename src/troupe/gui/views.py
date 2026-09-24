@@ -68,7 +68,7 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
         if ui.hover(xr):
             ui.rect(xr, T.HOVER, 5)
             ui.hand()
-            ui.tip("Dismiss (the agent will use its judgment)")
+            ui.tip("Reject this safety approval" if q["kind"] == "safety" else "Dismiss (the agent will use its judgment)")
         ui.text(xr.x + 4, xr.y + 1, "×", 15, T.TEXT_DIM, "med")
         if ui.click(xr):
             d.dismiss(q["id"])
@@ -105,6 +105,14 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
                 if ui.click(lr):
                     app.expanded.symmetric_difference_update({key})
             y += 20
+    if q["kind"] == "safety":
+        diff_line = next((line for line in q["context"].splitlines() if line.startswith(("Full diff: ", "Full patch: "))), "")
+        if diff_line:
+            if r and ui.button(f"q{q['id']}diff", Rect(x0, y + 5, 110, 28), "Open full diff"):
+                path = Path(diff_line.split(": ", 1)[1])
+                if path.resolve().is_relative_to(app.cfg.state_dir / "pending"):
+                    subprocess.Popen(["open", str(path)])
+            y += 36
     # options
     opts = q["options"] or []
     if opts:
@@ -495,7 +503,7 @@ def _task_card(app: "App", t: dict, x: float, y: float, w: float, draw: bool) ->
     h = pad + 18
     th = ui.text_height(t["title"], iw, 13, "med", 1.4, 3)
     h += th + 8 + 18 + pad
-    check = t.get("merge_check", "")
+    check = "awaiting human" if t.get("awaiting_human") else t.get("merge_check", "")
     if check:
         h += 24
     if not draw:

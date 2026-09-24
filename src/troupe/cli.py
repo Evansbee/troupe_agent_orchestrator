@@ -182,6 +182,23 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(0 if ok else 1)
 
 
+def cmd_stop(args: argparse.Namespace) -> None:
+    cfg = config_mod.load(require_root())
+    if args.now:
+        from .safety import stop_now
+        stop_now(Store(cfg.db_path))
+        print("Stopped: no runs, including chat, until you resume.")
+    elif pid := engine_alive(cfg):
+        os.kill(pid, signal.SIGTERM)
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    from .safety import resume
+    cfg = config_mod.load(require_root())
+    resume(Store(cfg.db_path))
+    print("Resume requested.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="troupe", description="A team of AI agents that builds software with you.")
     sub = ap.add_subparsers(dest="cmd")
@@ -196,8 +213,11 @@ def main() -> None:
     p = sub.add_parser("say", help="chat to an agent from the terminal")
     p.add_argument("agent")
     p.add_argument("text", nargs="+")
+    p = sub.add_parser("stop", help="stop the service, or stop all agent runs with --now")
+    p.add_argument("--now", action="store_true")
+    sub.add_parser("resume", help="resume after Stop everything")
     sub.add_parser("doctor", help="check backends are available")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui, "status": cmd_status,
-                "say": cmd_say, "doctor": cmd_doctor}
+                "say": cmd_say, "doctor": cmd_doctor, "stop": cmd_stop, "resume": cmd_resume}
     handlers.get(args.cmd or "up", cmd_up)(args)

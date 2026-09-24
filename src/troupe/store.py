@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from .safety import redact
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
@@ -195,6 +196,7 @@ class Store:
 
     # ── events (activity feed) ────────────────────────────────────────────
     def event(self, agent: str, kind: str, text: str, ref: str = "", significant: bool = True) -> int:
+        text = redact(text)
         return self.x("INSERT INTO events(ts,agent,kind,text,ref,significant) VALUES(?,?,?,?,?,?)",
                       now(), agent, kind, text, ref, int(significant))
 
@@ -211,6 +213,7 @@ class Store:
     # ── messages ──────────────────────────────────────────────────────────
     def send(self, sender: str, recipient: str, body: str, subject: str = "", kind: str = "msg",
              reply_to: int | None = None, task_id: int | None = None) -> int:
+        body, subject = redact(body), redact(subject)
         mid = self.x("""INSERT INTO messages(ts,sender,recipient,subject,body,kind,reply_to,task_id)
                         VALUES(?,?,?,?,?,?,?,?)""", now(), sender, recipient, subject, body, kind, reply_to, task_id)
         label = subject or (body.strip().splitlines() or [""])[0]
@@ -284,6 +287,7 @@ class Store:
     # ── questions for the human ───────────────────────────────────────────
     def ask(self, asker: str, question: str, context: str = "", options: list[str] | None = None,
             kind: str = "question", task_id: int | None = None) -> int:
+        question, context = redact(question), redact(context)
         qid = self.x("""INSERT INTO questions(ts,asker,kind,question,context,options,task_id)
                         VALUES(?,?,?,?,?,?,?)""", now(), asker, kind, question, context,
                      json.dumps(options or []), task_id)
@@ -312,9 +316,12 @@ class Store:
         label = "Idea" if qn["kind"] == "idea" else "Question"
         verb = "dismissed" if status == "dismissed" else "answered"
         body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
-        if notify:
+        if notify and qn["kind"] != "safety":
             self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
         self.event("human", "answer", f"You {verb} {qn['asker']}'s {label.lower()}: {answer[:100]}", ref=f"q:{qid}")
+        if qn["kind"] == "safety":
+            from .safety import audit
+            audit(self, f"Human {verb} safety approval #{qid}: {answer}", notify=False)
         return True
 
     # ── memory ────────────────────────────────────────────────────────────
@@ -360,10 +367,10 @@ class Store:
 
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",
-               now(), status, cost, tokens, summary, run_id)
+               now(), status, cost, tokens, redact(summary), run_id)
 
     def run_line(self, run_id: int, kind: str, text: str) -> None:
-        self.x("INSERT INTO run_lines(run_id,ts,kind,text) VALUES(?,?,?,?)", run_id, now(), kind, text)
+        self.x("INSERT INTO run_lines(run_id,ts,kind,text) VALUES(?,?,?,?)", run_id, now(), kind, redact(text))
 
     def run_lines(self, run_id: int, after: int = 0, limit: int = 2000) -> list[dict]:
         return self.q("SELECT * FROM run_lines WHERE run_id=? AND id>? ORDER BY id LIMIT ?", run_id, after, limit)

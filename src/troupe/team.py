@@ -157,6 +157,8 @@ class TeamAPI:
         question = self.store.one("SELECT * FROM questions WHERE id=?", question_id)
         if not question:
             return "ERROR: question not found. Check its id in your open questions."
+        if question["kind"] == "safety":
+            return "ERROR: safety approvals require the human in Needs you; agents cannot resolve them."
         if question["asker"] != self.me and self.role not in ("lead", "pm"):
             return "ERROR: this is another agent's question. Ask its owner, the lead or PM to resolve it."
         if question["status"] != "open":
@@ -310,6 +312,9 @@ class TeamAPI:
             return "ERROR: only QA or the lead can review tasks."
         self.store.task_note(task_id, self.me, f"REVIEW {verdict.upper()}: {notes}")
         if verdict == "approve":
+            from .gates import task_gate
+            if not task_gate(self.cfg, self.store, t):
+                return f"QA approved #{task_id}; awaiting human approval of protected changes."
             self.store.update_task(task_id, actor=self.me, status="approved", review_notes=notes,
                                    event_text=f"{self.me} approved #{task_id} {t['title']}")
             return f"Approved #{task_id}. The orchestrator will merge it into main."

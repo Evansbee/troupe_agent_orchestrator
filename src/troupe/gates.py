@@ -28,7 +28,7 @@ def verdict(store, record: dict) -> str:
     q = store.one('SELECT * FROM questions WHERE id=?', record['qid'])
     if not q or q['status'] == 'open':
         return ''
-    return 'approve' if q['status'] == 'answered' and q['answer'].strip().lower() == 'approve' else 'reject'
+    return 'approve' if q['status'] == 'answered' and q['answer'].split(' — ', 1)[0].strip().lower() == 'approve' else 'reject'
 
 
 def guard_config(cfg) -> None:
@@ -36,23 +36,27 @@ def guard_config(cfg) -> None:
     s = Store(cfg.db_path)
     desired = {'safety': cfg.safety, 'check': cfg.git.check, 'check_timeout': cfg.git.check_timeout}
     approved = s.kv_get('safety.approved')
-    if approved is None:
-        approved = desired
-        s.kv_set('safety.approved', approved)
-        s.kv_set('safety.approved_hash', fingerprint(json.dumps(approved, sort_keys=True)))
-    elif desired != approved:
-        record = request(s, 'safety.config', 'Approve safety / merge-check configuration change?',
+    if desired != approved:
+        record = request(s, 'safety.config', 'Approve safety / merge-check configuration?',
                          'Approved:\n' + json.dumps(approved, indent=2) + '\nProposed:\n' + json.dumps(desired, indent=2), desired)
         if verdict(s, record) == 'approve':
             approved = desired
             s.kv_set('safety.approved', approved)
             s.kv_set('safety.approved_hash', record['digest'])
             audit(s, 'Human approved safety configuration', notify=False)
+    if approved is None:
+        from .safety import PROTECTED
+        approved = {'safety': {'protected': list(PROTECTED), 'remotes': [], 'secret_allow': []},
+                    'check': '', 'check_timeout': 600}
     cfg.safety = approved['safety']
     cfg.git.check, cfg.git.check_timeout = approved['check'], approved['check_timeout']
 
 
 def task_gate(cfg, store, task: dict) -> bool:
+    if store.kv_get('safety.approved') is None:
+        store.update_task(task['id'], status='review', review_notes='Awaiting human approval of safety baseline')
+        store.kv_set(f'safety.baseline_wait.{task["id"]}', True)
+        return False
     if not task['branch']:
         return True
     base = gitops.git(cfg.root, 'merge-base', 'HEAD', task['branch'])
@@ -88,6 +92,10 @@ def task_gate(cfg, store, task: dict) -> bool:
 
 def process_answers(cfg, store) -> None:
     for task in store.tasks(('review',)):
+        if store.kv_get('safety.approved') and store.kv_get(f'safety.baseline_wait.{task["id"]}'):
+            store.kv_set(f'safety.baseline_wait.{task["id"]}', False)
+            store.update_task(task['id'], status='approved')
+            continue
         key = f'safety.task.{task["id"]}'
         record = store.kv_get(key)
         if store.kv_get(f'safety.waiting.{task["id"]}') and record and verdict(store, record):
@@ -138,7 +146,7 @@ def hold_main(cfg, store, author: str, run_id: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(patch)
         request(store, f'safety.patch.{run_id}', 'Approve protected edits made in main?',
-                '\n'.join(paths) + f'\nFull patch: {path}',
+                '\n'.join(paths) + '\nAdded / removed lines:\n' + gitops.git(cfg.root, 'diff', '--cached', '--numstat', '--', *paths) + f'\nFull patch: {path}',
                 {'path': str(path), 'hash': fingerprint(patch), 'author': author, 'paths': paths})
         old = [p for p in paths if p not in new]
         if old:

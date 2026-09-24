@@ -94,6 +94,7 @@ class Config:
     team_data: dict = field(default_factory=dict, repr=False)
     toml_data: dict = field(default_factory=dict, repr=False)
     git: GitSettings = field(default_factory=GitSettings)
+    safety: dict = field(default_factory=dict)
 
     @property
     def state_dir(self) -> Path:
@@ -419,14 +420,20 @@ def load(root: Path, *, toml_data: dict | None = None, team_data: dict | None = 
             nonnegative(cap, f"provider_limits.{provider}.{window}", TEAM_FILE)
             if cap > 100:
                 raise ValueError(f"team.yaml: provider_limits.{provider}.{window}: maximum is 100")
-    return Config(
+    from .safety import parse_settings
+    from .gates import guard_config
+    cfg = Config(
         root=root, project=raw.get("project", {}).get("name", root.name), agents=agents,
         budget=Budget(**{k: v for k, v in raw.get("budget", {}).items() if k in Budget.__dataclass_fields__}),
         backends=Backends(**{k: v for k, v in raw.get("backends", {}).items() if k in Backends.__dataclass_fields__}),
         git_autocommit=raw.get("git", {}).get("autocommit", True),
         git=GitSettings(**{k: v for k, v in raw.get("git", {}).items() if k in GitSettings.__dataclass_fields__}),
         provider_limits=limits, team_data=team_data, toml_data=raw,
+        safety=parse_settings(raw.get("safety", {}), root),
     )
+
+    guard_config(cfg)
+    return cfg
 
 
 def load_runtime(root: Path) -> Config:

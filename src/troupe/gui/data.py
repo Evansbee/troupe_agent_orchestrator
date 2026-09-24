@@ -80,7 +80,9 @@ class Data:
         self.tasks = s.tasks(limit=800)
         checking = s.kv_get("checking_task")
         failed = {r["key"] for r in s.q("SELECT key FROM kv WHERE key LIKE 'check_failed.%' AND value='true'")}
+        waiting = {r["key"] for r in s.q("SELECT key FROM kv WHERE (key LIKE 'safety.waiting.%' OR key LIKE 'safety.baseline_wait.%') AND value='true'")}
         for task in self.tasks:
+            task["awaiting_human"] = any(f"{prefix}.{task['id']}" in waiting for prefix in ("safety.waiting", "safety.baseline_wait"))
             task["merge_check"] = ("checking…" if task["id"] == checking else
                                    "checks failed" if f"check_failed.{task['id']}" in failed else "")
         self.questions = s.questions("open")
@@ -96,7 +98,7 @@ class Data:
         self._answer_event = answer_event
         self.messages = s.messages(limit=600)
         self.memories = s.memories(limit=400)
-        self.kv = {k: s.kv_get(k) for k in ("paused", "heartbeat", "throttled", "claude_ratelimit",
+        self.kv = {k: s.kv_get(k) for k in ("paused", "stopped", "heartbeat", "throttled", "claude_ratelimit",
                                                        "limit.claude", "limit.codex", "limit.local",
                                                        "config_error.team.yaml", "config_error.troupe.toml")}
         self.cost_24h = s.scalar("SELECT SUM(cost) FROM runs WHERE started>?", now - 86400, default=0.0)
@@ -178,7 +180,20 @@ class Data:
         self.store.answer(qid, "(dismissed without an answer — use your judgment)", status="dismissed")
         self.refresh(force=True)
 
+    def stop_now(self) -> None:
+        from ..safety import stop_now
+        stop_now(self.store)
+        self.refresh(force=True)
+
+    def resume(self) -> None:
+        from ..safety import resume
+        resume(self.store)
+
     def set_paused(self, paused: bool) -> None:
+        if self.kv.get("stopped"):
+            if not paused:
+                self.resume()
+            return
         self.store.kv_set("paused", paused)
         self.store.event("human", "control", "You paused the troupe" if paused else "You resumed the troupe",
                          significant=False)
