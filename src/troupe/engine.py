@@ -414,6 +414,10 @@ class Engine:
                 from .runners import RunResult
                 res = RunResult(ok=False, error="stopped during setup")
             else:
+                # setup_worktree may have appended failure context to spec.prompt; re-persist so the
+                # inspector shows exactly what's about to be sent. The launch()-time write already
+                # covers a crash during setup itself (nothing to update to in that case).
+                s.update_run_prompt(run_id, spec.prompt)
                 res = await runner.run(spec, emit)
         except Exception as e:
             from .runners import RunResult

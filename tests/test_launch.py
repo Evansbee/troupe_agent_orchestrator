@@ -69,3 +69,38 @@ def test_launch_persisted_prompt_and_system_survive_backend_crash(project, monke
     assert row_after["status"] == "failed"
     assert row_after["prompt"] == row_before["prompt"]
     assert row_after["system"] == row_before["system"]
+
+
+def test_failed_worktree_setup_error_lands_in_the_persisted_prompt(project, monkeypatch, tmp_path):
+    """Engine._run() awaits setup_worktree() before the backend starts, which can append failure
+    context to spec.prompt. The persisted run prompt must be updated to match — otherwise the
+    inspector shows a prompt the backend never actually saw."""
+    cfg, store = project
+    builder = next(a for a in cfg.agents if a.role == "builder")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    tid = store.add_task("Do the thing", "body", status="in_progress", role="builder",
+                         assignee=builder.id, created_by="lead")
+    store.update_task(tid, worktree=str(worktree), branch="troupe/t-test")
+    store.kv_set(f"setup.{worktree}", {"status": "pending", "command": "exit 1"})
+
+    fake = FakeRunner(crash=False)
+    monkeypatch.setattr("troupe.engine.make_runner", lambda backend: fake)
+    engine = Engine(cfg)
+    engine.store = store
+
+    async def scenario():
+        wake = Wake(priority=3, agent=builder, reason="task", task=store.task(tid))
+        await engine.launch(wake)
+        run_id = store.scalar("SELECT MAX(id) FROM runs")
+        row_before = store.one("SELECT * FROM runs WHERE id=?", run_id)
+        await engine.running[builder.id][1]
+        return run_id, row_before
+
+    run_id, row_before = asyncio.run(scenario())
+    row_after = store.one("SELECT * FROM runs WHERE id=?", run_id)
+
+    assert "## Worktree setup" not in row_before["prompt"]  # launch()-time write predates setup running
+    assert "## Worktree setup" in row_after["prompt"]  # re-persisted once setup appended its error
+    assert fake.received_spec is not None
+    assert row_after["prompt"] == fake.received_spec.prompt  # inspector matches what the backend got

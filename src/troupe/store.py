@@ -302,6 +302,11 @@ class Store:
                          VALUES(?,?,?,?,?,?,?,?)""",
                       agent, now(), reason, task_id, cwd, int(chat), prompt, system)
 
+    def update_run_prompt(self, run_id: int, prompt: str) -> None:
+        """Re-persist the wake prompt after it's mutated post-launch (e.g. worktree setup appending
+        failure context in Engine._run), so the inspector matches what the backend actually received."""
+        self.x("UPDATE runs SET prompt=? WHERE id=?", prompt, run_id)
+
     def end_run(self, run_id: int, status: str, cost: float, tokens: int, summary: str) -> None:
         self.x("UPDATE runs SET ended=?, status=?, cost=?, tokens=?, summary=? WHERE id=?",
                now(), status, cost, tokens, summary, run_id)
