@@ -436,6 +436,7 @@ class Engine:
                 p.append("\n## What happened since you last looked\n"
                          + "\n".join(f"- {ago(e['ts'])}: {e['text']}" for e in evs[-25:]))
         p.append("\n## Now\n" + self.instruction(a, w, task, bool(msgs)))
+        p.append("\nPrinciple 0 applies: the human comes first.")
         return "\n".join(p)
 
     def instruction(self, a: AgentCfg, w: Wake, task: dict | None, has_msgs: bool) -> str:
