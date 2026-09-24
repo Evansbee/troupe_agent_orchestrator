@@ -159,6 +159,9 @@ class UI:
         self.cmd = False
         self.shift = False
         self.activity = 0.0  # seconds since last input — lets the app idle at lower fps
+        self.copied_text: str | None = None  # set by copy(); markdown() code-block copies go through
+        # this since the click is handled inside markdown()'s own draw loop, not exposed to the caller
+        # as a return value — the caller checks/clears it once after the markdown() call to show a toast.
 
     # ── frame ─────────────────────────────────────────────────────────────
     def begin_frame(self) -> None:
@@ -474,6 +477,28 @@ class UI:
             self.hand()
         return self.click(r), w
 
+    def copy(self, text: str) -> None:
+        """Write raw text to the OS clipboard. Sets `copied_text` so callers that can't show a toast
+        directly (markdown()'s code-block button, handled inside its own draw loop) can signal one."""
+        rl.set_clipboard_text(text or "")
+        self.copied_text = text
+
+    def copy_button(self, r: Rect, show: bool, tip: str = "Copy") -> bool:
+        """A small hover-revealed "Copy" affordance. `show` is typically the parent element's hover
+        state, so the button appears while hovering anywhere over it, not just the button itself.
+        Returns True on click; the caller copies the relevant text and shows its own "Copied" toast."""
+        if not show:
+            return False
+        hov = self.hover(r)
+        self.rect(r, T.PANEL3 if hov else alpha(T.PANEL2, 0.92), 5)
+        self.stroke(r, T.BORDER, 5)
+        self.text_center(r, "Copy", 10.5, T.TEXT if hov else T.TEXT_DIM, "med")
+        if hov:
+            self.hand()
+            if tip:
+                self.tip(tip)
+        return self.click(r)
+
     def badge(self, x: float, y: float, n: int, color: tuple = T.RED) -> None:
         s = str(n) if n < 100 else "99+"
         w = max(18, self.measure(s, 10, "bold") + 10)
@@ -763,6 +788,7 @@ class UI:
                 ops.append(("r", 0, y, width, h, T.CODE_BG, 6))
                 for k, c in enumerate(wrapped):
                     ops.append(("t", 12, y + 8 + k * cs * 1.5, c, cs, "mono", T.CODE_TEXT, "code"))
+                ops.append(("codecopy", 0, y, width, h, "\n".join(code)))
                 y += h + size * 0.6
                 continue
             m = re.match(r"^(#{1,4})\s+(.*)", st)
@@ -868,4 +894,12 @@ class UI:
                     self.line(br.x + sz * 0.42, br.b - 3, br.r - 3, br.y + 3, T.BG, 2)
                 else:
                     self.stroke(br, T.TEXT_DIM, 3, 1.3)
+            elif kind == "codecopy":
+                _, ox, oy, w, hh, raw = op
+                if clip and (y + oy > clip.b or y + oy + hh < clip.y):
+                    continue
+                block = Rect(x + ox, y + oy, w, hh)
+                btn = Rect(block.r - 54, block.y + 6, 46, 20)
+                if self.copy_button(btn, self.hover(block), "Copy code"):
+                    self.copy(raw)
         return h

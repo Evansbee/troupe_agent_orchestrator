@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pyray as rl
+
 from ..roles import get_role
 from ..team import ago
 from . import theme as T
@@ -22,6 +24,24 @@ def clock(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+def _copy(app: "App", text: str) -> None:
+    """Copy `text` and toast. Also used to drain `ui.copied_text` after a `ui.markdown()` call, since
+    a code-block's own copy button is handled inside markdown()'s draw loop, not exposed as a return
+    value — clearing it here (whether we just set it or are draining it) keeps it from being picked
+    up a second time by some other markdown() call later in the same frame."""
+    app.ui.copy(text)
+    app.toast("Copied", T.GREEN)
+    app.ui.copied_text = None
+
+
+def _drain_copy_toast(app: "App") -> None:
+    """Call right after ui.markdown(): shows the toast if its code-block copy button was just clicked
+    (the clipboard write already happened inside markdown()'s own draw loop)."""
+    if app.ui.copied_text:
+        app.toast("Copied", T.GREEN)
+        app.ui.copied_text = None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Question cards (right-hand "Needs you" inbox)
 # ════════════════════════════════════════════════════════════════════════════
@@ -33,6 +53,7 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
     y = (r.y if r else 0) + pad
     col = d.color_of(q["asker"])
     if r:
+        hov = ui.hover(r)
         ui.rect(r, T.PANEL2, 10)
         ui.stroke(r, alpha(col, 0.28), 10)
         ui.rect(Rect(r.x, r.y + 10, 3, r.h - 20), col, 1.5)
@@ -51,6 +72,11 @@ def _q_layout(app: "App", q: dict, w: float, r: Rect | None = None) -> float:
         ui.text(xr.x + 4, xr.y + 1, "×", 15, T.TEXT_DIM, "med")
         if ui.click(xr):
             d.dismiss(q["id"])
+        if ui.copy_button(Rect(xr.x - 54, y, 46, 20), hov, "Copy question"):
+            parts = [q["question"]]
+            if q["context"]:
+                parts.append(q["context"])
+            _copy(app, "\n\n".join(parts))
     y += 28
     # question
     qsize = 14
@@ -248,9 +274,14 @@ def _bubble(app: "App", m: dict, area: Rect, y: float, maxw: float) -> float:
     pad = 14
     inner_w = maxw - 2 * pad
     md_h = ui.md_layout(body, inner_w, 14)[1]
+    name = "You" if human else d.name_of(m["sender"])
+    # name + timestamp + the hover copy button, so a short reply from a long-named agent never
+    # shrink-wraps narrower than its own header (which would otherwise collide with the button)
+    header_w = ui.measure(name, 12, "bold") + 8 + ui.measure(clock(m["ts"]), 11) + 16 + 46
     # shrink-wrap short single-line messages
     if "\n" not in body and ui.measure(body, 14) < inner_w - 4:
-        inner_w = max(ui.measure(body, 14) + 2, 160 if subject else 60, ui.measure(subject, 12, "med") if subject else 0)
+        inner_w = max(ui.measure(body, 14) + 2, 160 if subject else 60,
+                      ui.measure(subject, 12, "med") if subject else 0, header_w)
         md_h = ui.md_layout(body, inner_w, 14)[1]
     head_h = 20
     sub_h = 20 if subject else 0
@@ -261,21 +292,26 @@ def _bubble(app: "App", m: dict, area: Rect, y: float, maxw: float) -> float:
     if br.b < area.y - 50 or br.y > area.b + 50:
         return br.b
     col = d.color_of(m["sender"])
+    hov = ui.hover(br)
     if human:
         ui.rect(br, alpha(T.ACCENT, 0.16), 14)
         ui.stroke(br, alpha(T.ACCENT, 0.35), 14)
     else:
         ui.rect(br, T.PANEL2, 14)
         ui.stroke(br, T.BORDER, 14)
-    name = "You" if human else d.name_of(m["sender"])
     nx = br.x + pad
     nx += ui.text(nx, br.y + 10, name, 12, T.TEXT if human else col, "bold") + 8
     ui.text(nx, br.y + 11, clock(m["ts"]), 11, T.TEXT_FAINT)
+    if ui.copy_button(Rect(br.r - 58, br.y + 8, 46, 20), hov, "Copy message"):
+        _copy(app, body)
+    if hov and ui.cmd and rl.is_key_pressed(rl.KeyboardKey.KEY_C):
+        _copy(app, body)
     yy = br.y + 10 + head_h
     if subject:
         ui.text_fit(br.x + pad, yy, subject, inner_w, 12, T.TEXT_DIM, "med")
         yy += sub_h
     ui.markdown(br.x + pad, yy, body, inner_w, 14)
+    _drain_copy_toast(app)
     return br.b
 
 
@@ -576,8 +612,11 @@ def mail_view(app: "App", r: Rect) -> None:
             ui.text(rr.r - 16 - ui.measure(ts, 11), rr.y + 12, ts, 11, T.TEXT_FAINT)
             if not m["read_at"] and m["recipient"] != "human":
                 ui.pill(rr.r - 80 - ui.measure(ts, 11), rr.y + 9, "unread", T.ACCENT, 10, h=18)
+            if ui.copy_button(Rect(rr.r - 54, rr.y + 6, 46, 20), hov, "Copy message"):
+                _copy(app, (m["subject"] + "\n\n" + m["body"]) if m["subject"] else m["body"])
             if open_:
                 ui.markdown(rr.x + 44, rr.y + 34, m["body"], w - 60, 13.5)
+                _drain_copy_toast(app)
             else:
                 ui.text_block(rr.x + 44, rr.y + 34, m["body"], w - 60, 12.5, T.TEXT_DIM, "ui", 1.45, 2)
             if hov:
@@ -619,6 +658,7 @@ def memory_view(app: "App", r: Rect) -> None:
             + (why_h + 6 if why_h else 0) + 14
         rr = Rect(body.x + 16, y, w, h)
         if rr.b > body.y - 10 and rr.y < body.b + 10:
+            hov = ui.hover(rr)
             ui.rect(rr, T.PANEL2, 10)
             kc = KIND_COLORS.get(m["kind"], T.TEXT_DIM)
             ui.rect(Rect(rr.x, rr.y + 10, 3, rr.h - 20), kc, 1.5)
@@ -629,11 +669,19 @@ def memory_view(app: "App", r: Rect) -> None:
             col = d.color_of(m["agent"])
             px += ui.text(px, rr.y + 14, d.name_of(m["agent"]), 12, col, "med") + 8
             ui.text(px, rr.y + 15, ago(m["ts"]), 11, T.TEXT_FAINT)
+            if ui.copy_button(Rect(rr.r - 54, rr.y + 8, 46, 20), hov, "Copy memory"):
+                parts = [m["title"]]
+                if m["content"]:
+                    parts.append(m["content"])
+                if m["rationale"]:
+                    parts.append("Why: " + m["rationale"])
+                _copy(app, "\n\n".join(parts))
             yy = rr.y + 40
             yy += ui.text_block(rr.x + 16, yy, m["title"], w - 32, 14.5, T.TEXT, "bold")
             if m["content"]:
                 yy += 6
                 yy += ui.markdown(rr.x + 16, yy, m["content"], w - 32, 13.5, T.TEXT_DIM)
+                _drain_copy_toast(app)
             if m["rationale"]:
                 yy += 6
                 ui.text_block(rr.x + 16, yy, "Why: " + m["rationale"], w - 32, 12.5, mix(kc, T.TEXT_DIM, 0.5))
@@ -706,12 +754,18 @@ def docs_view(app: "App", r: Rect) -> None:
     ui.text(head.x + 30 + ui.measure(str(p.relative_to(root)), 14, "bold"), head.y + 19, f"edited {ago(mt)}", 12,
             T.TEXT_FAINT)
     bw = ui.button_w("Open")
-    if ui.button("docopen", Rect(head.r - bw - 16, head.y + 11, bw, 30), "Open", tip="Open in your default editor"):
+    bx = head.r - bw - 16
+    if ui.button("docopen", Rect(bx, head.y + 11, bw, 30), "Open", tip="Open in your default editor"):
         subprocess.Popen(["open", str(p)])
+    cw = ui.button_w("Copy doc")
+    bx -= cw + 8
+    if ui.button("doccopy", Rect(bx, head.y + 11, cw, 30), "Copy doc", tip="Copy the whole document"):
+        _copy(app, text)
     ui.hline(main.x, head.b, main.w, T.BORDER)
     sc = ui.scroll_begin(f"doc:{p}", body)
     width = min(860.0, body.w - 64)
     h = ui.markdown(body.x + (body.w - width) / 2, body.y + 20 - sc.offset, text, width, 14.5)
+    _drain_copy_toast(app)
     ui.scroll_end(sc, h + 60)
 
 
@@ -818,7 +872,11 @@ def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
         if k == "text":
             h = ui.md_layout(text, w, 13.5)[1]
             if y + h > r.y - 20 and y < r.b + 20:
-                ui.markdown(r.x + 24, y, text, w, 13.5)
+                block = Rect(r.x + 24, y, w, h)
+                if ui.copy_button(Rect(block.r - 54, block.y - 2, 46, 20), ui.hover(block), "Copy"):
+                    _copy(app, text)
+                ui.markdown(block.x, block.y, text, w, 13.5)
+                _drain_copy_toast(app)
             y += h + 10
         elif k == "tool":
             h = 24
@@ -827,12 +885,17 @@ def _transcript(app: "App", lines: list[dict], r: Rect, sid: str) -> None:
                 ui.rect(tr, alpha(T.ACCENT, 0.10), 6)
                 ui.text(tr.x + 8, y + 4, "›", 13, T.ACCENT, "monob")
                 ui.text_fit(tr.x + 22, y + 4, text, w - 30, 12, mix(T.ACCENT, T.TEXT, 0.55), "mono")
+                if ui.copy_button(Rect(tr.r + 6, y, 46, 20), ui.hover(tr), "Copy"):
+                    _copy(app, text)
             y += h + 4
         elif k in ("result", "error", "info"):
             col = {"result": T.TEXT_FAINT, "error": T.RED, "info": T.YELLOW}[k]
             h = ui.text_height(text, w - 16, 11.5, "mono", 1.4, 3)
             if y + h > r.y and y < r.b:
-                ui.text_block(r.x + 36, y, text, w - 16, 11.5, col, "mono", 1.4, 3)
+                block = Rect(r.x + 36, y, w - 16, h)
+                if ui.copy_button(Rect(block.r - 54, block.y - 2, 46, 20), ui.hover(block), "Copy"):
+                    _copy(app, text)
+                ui.text_block(block.x, block.y, text, w - 16, 11.5, col, "mono", 1.4, 3)
             y += h + 8
     if not lines:
         ui.text(r.x + 24, r.y + 16, "Waiting for output…", 13, T.TEXT_FAINT)
@@ -956,6 +1019,7 @@ def _task_modal(app: "App") -> None:
         ui.text(x, y, title.upper(), 10.5, T.TEXT_FAINT, "bold")
         y += 20
         y += ui.markdown(x, y, md, bw, 13.5, color) + 18
+        _drain_copy_toast(app)
 
     section("Description", t["description"])
     section("Acceptance criteria", t["acceptance"])
@@ -971,6 +1035,7 @@ def _task_modal(app: "App") -> None:
             ui.text(x, y, f"{d.name_of(n['agent'])} · {ago(n['ts'])}", 11.5, d.color_of(n["agent"]), "med")
             y += 18
             y += ui.markdown(x, y, n["text"], bw, 13, T.TEXT_DIM) + 10
+            _drain_copy_toast(app)
     y += 6
     nid = f"tnote:{t['id']}"
     nh = ui.input_height(nid, bw, 13, 5, 10)
