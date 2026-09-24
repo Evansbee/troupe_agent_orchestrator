@@ -76,14 +76,16 @@ class Store:
         self.path = str(path)
         self._local = threading.local()
         self.conn.executescript(SCHEMA)
-        self._migrate()
-
-    def _migrate(self) -> None:
-        cols = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
-        if "prompt" not in cols:
-            self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
-        if "system" not in cols:
-            self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            columns = {r["name"] for r in self.q("PRAGMA table_info(questions)")}
+            if "answered_via" not in columns:
+                self.conn.execute("ALTER TABLE questions ADD COLUMN answered_via TEXT DEFAULT 'inbox'")
+            run_columns = {r["name"] for r in self.q("PRAGMA table_info(runs)")}
+            if "prompt" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT DEFAULT ''")
+            if "system" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN system TEXT DEFAULT ''")
 
     # ── plumbing ──────────────────────────────────────────────────────────
     @property
@@ -246,16 +248,23 @@ class Store:
             r["options"] = json.loads(r["options"] or "[]")
         return rows
 
-    def answer(self, qid: int, answer: str, status: str = "answered") -> None:
+    def answer(self, qid: int, answer: str, status: str = "answered", *,
+               via: str = "inbox", notify: bool = True) -> bool:
         qn = self.one("SELECT * FROM questions WHERE id=?", qid)
         if not qn or qn["status"] != "open":
-            return
-        self.x("UPDATE questions SET status=?, answer=?, answered_at=? WHERE id=?", status, answer, now(), qid)
+            return False
+        changed = self.conn.execute(
+            "UPDATE questions SET status=?, answer=?, answered_at=?, answered_via=? WHERE id=? AND status='open'",
+            (status, answer, now(), via, qid)).rowcount
+        if not changed:
+            return False
         label = "Idea" if qn["kind"] == "idea" else "Question"
         verb = "dismissed" if status == "dismissed" else "answered"
         body = f"The human {verb} your {label.lower()} #{qid}.\n\n> {qn['question']}\n\nAnswer: {answer}"
-        self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
+        if notify:
+            self.send("human", qn["asker"], body, subject=f"{label} #{qid} {verb}", task_id=qn["task_id"])
         self.event("human", "answer", f"You {verb} {qn['asker']}'s {label.lower()}: {answer[:100]}", ref=f"q:{qid}")
+        return True
 
     # ── memory ────────────────────────────────────────────────────────────
     def remember(self, agent: str, title: str, content: str = "", rationale: str = "", kind: str = "decision",

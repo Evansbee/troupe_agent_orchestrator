@@ -26,18 +26,43 @@ Code: `src/troupe/engine.py`, `store.py`, `gitops.py`, `config.py`, `roles.py`.
   - `troupe stop` stops this project's service. No new runs start, and running agent runs are stopped (process group)
     and marked `interrupted` with their mail re-queued (the ENG-004 recovery path). It returns once the process has
     exited, and force-kills after 15 s. Stopping when nothing is running prints "not running" and exits 0.
-  - `troupe restart` = stop + start. It is used after reinstalling troupe.
+  - `troupe start` starts the detached service only, with no GUI (used by the Mac app's Start team and by scripts).
+    `troupe restart` = stop + start.
   - `troupe status` first prints the service state (`running` with pid, uptime, heartbeat age and version,
     `stopped`, or `stale`) and exits 0 if running, 1 otherwise.
-  - `troupe up` and `troupe status` warn when the running service's version differs from the installed CLI's
-    ("service is 0.1.0, installed 0.2.0 — run `troupe restart`").
+  - `troupe reload` = graceful reload (REQ-ENG-009). `troupe status` shows the running service's version; a
+    newer installed version is picked up automatically by ENG-009 (this replaces the earlier mismatch warning).
   - The GUI has a **Stop team** action (with confirmation) that goes through the `commands` table.
 - **REQ-ENG-007 [ ]** (#24) The service logs to `.troupe/engine.log` (start/stop, errors, launches, merges, config reloads),
   rotated at 10 MB and keeping 3 files. Log lines identify agents by handle (REQ-COM-005).
 - **REQ-ENG-008 [ ]** (#24) Project registry: `~/.troupe/projects.json` lists `{name, path, last_opened}`. It is written
   by `troupe init` and `troupe up`. `troupe projects` lists them with each one's service state. Entries whose
   `.troupe/` is gone are shown as missing, never auto-deleted. (The GUI project switcher is REQ-GUI-040.)
-- Out of scope: auto-start at login (launchd) and one machine-wide service for all projects.
+- **REQ-ENG-009 [ ]** (#28) Graceful reload, i.e. "auto hup" (human: "make this a service that auto hups").
+  - Triggered by `troupe reload`, SIGHUP to the service, or automatically when the installed troupe changes: the
+    service checks about every 30 s for a new version or changed package files (e.g. after
+    `uv tool install --reinstall`).
+  - Drain: no new runs start (chat included; it stays queued). Runs in flight, and a merge-gate check in progress
+    (ENG-040), finish normally, up to `[service] drain_timeout` (default 600 s). After the timeout the remaining runs
+    are stopped and marked `interrupted` with their mail re-queued (ENG-004).
+  - Then config is re-read and the engine re-execs on the currently installed code. The lock, pid file and DB carry
+    over, and the heartbeat resumes within 10 s of the drain ending. GUIs stay attached and reconnect by themselves.
+  - An event and a log line record it ("Engine reloaded: v0.1.0 → v0.2.0", or "config reload" if the version is
+    unchanged). A reload request during a reload is ignored.
+  - Test: while draining nothing launches, in-flight runs complete, the timeout interrupts, and the version-change
+    detector fires once per change.
+- **REQ-ENG-042 [ ]** (#28) Crash supervision.
+  - The service is a small supervisor process that holds the lock and runs the engine as a child. If the engine
+    exits unexpectedly (non-zero, or killed, including `kill -9`), the supervisor restarts it with backoff
+    (1 s, 2 s, 4 s … max 60 s), and recovery (ENG-004) marks its runs interrupted.
+  - Crash loop: more than 5 restarts in 10 min → stop restarting and record the reason in kv and `engine.log`.
+    `troupe status` shows `crashed` and the GUI shows it (REQ-GUI-029). `troupe up` or Start team clears it.
+  - `troupe stop` and reload are not crashes. If the supervisor itself dies, the engine exits within 5 s, so no
+    unlocked orphan engine can run beside a new one.
+  - No launchd/login items are installed: auto-start at login stays out of scope. Test: backoff sequence and the
+    crash-loop limit.
+- Out of scope: auto-start at login (launchd) and one machine-wide service for all projects (human chose one service
+  per project, with one GUI attached to all of them, REQ-GUI-040).
 
 ## Wake-ups (who runs, when, why)
 Each agent run is one session of a backend CLI. Agents never loop; they are woken with a reason.
@@ -51,7 +76,7 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   cost). When exceeded, autonomous wakes stop and the top bar shows "Throttled" with the reason.
 - **REQ-ENG-014 [x]** Pause: stops autonomous work; chat is still answered.
 - **REQ-ENG-015 [x]** Failed runs back off exponentially per agent (30s → 10m) and their mail is re-queued.
-- **REQ-ENG-016 [ ]** Rate-limit awareness: when a backend reports a usage/rate limit, back off that backend
+- **REQ-ENG-016 [x]** Rate-limit awareness: when a backend reports a usage/rate limit, back off that backend
   globally until its reset time and surface it in the GUI. (#2)
   - Detection: claude `rate_limit_event` with status ≠ `allowed`, or a failed run whose error text mentions a
     rate/usage limit; codex error events mentioning a rate/usage limit.
@@ -77,12 +102,18 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
   - Test: migration on an old-schema DB; a launched run persists both fields.
 - **REQ-ENG-019 [ ]** The team is defined in `.troupe/team.yaml` and both config files hot-reload. (#20; human,
   live chat: "the agent setup should be a yaml file, which provider, which level")
-  - `team.yaml` holds `agents:`, a list of `{id, role, name, provider, model, level, enabled, idle_minutes,
-    extra_args}`. `provider` is `claude | codex | local`. `level` is `low | medium | high | max`, or empty for the
-    provider default (mapping in REQ-BE-010). Only `id`, `role` and `provider` are required. `troupe.toml` keeps
-    `[project]`, `[budget]`, `[backends]` and `[git]`.
+  - `team.yaml` holds `agents:`, a list of `{id, role, name, providers, enabled, idle_minutes, extra_args}`, plus the
+    top-level `provider_limits` (REQ-BE-011).
+    - `providers` is an **ordered** preference list of `{provider, model, level}`, first = preferred (human request).
+      Fallback between entries is REQ-BE-012.
+    - `provider` is `claude | codex | local`. `level` is `low | medium | high | max`, or empty for the provider
+      default (mapping in REQ-BE-010).
+    - Shorthand: `provider`/`model`/`level` at the agent's top level means a one-entry list.
+    - Only `id`, `role` and a provider are required. The config exposes `cfg.agent(id).providers` as the list.
+  - `troupe.toml` keeps `[project]`, `[budget]`, `[backends]`, `[git]`, `[safety]` and `[research]`.
   - Validation (on load and on reload): ids are unique, exactly one `lead`, roles and providers are known, `level`
-    is valid, and numbers are non-negative. The error message names the file, the agent id and the field.
+    is valid, and numbers are non-negative. A `providers` list is non-empty with no duplicate `provider`+`model`
+    entries. The error message names the file, the agent id and the field.
   - Migration: if `team.yaml` is missing and `troupe.toml` has `[[agents]]`, write `team.yaml` from them once
     (`backend` → `provider`, `effort` → `level`) and log an event. `troupe.toml` is not modified. When both exist,
     `team.yaml` wins and a leftover `[[agents]]` gets a one-time "ignored" event. `troupe init` writes `team.yaml`.
@@ -98,19 +129,26 @@ Each agent run is one session of a backend CLI. Agents never loop; they are woke
     invalid file keeps the old config.
   - Ids: new agents use `<role>_<N>` ids (the handle's local part, REQ-COM-005). If `id` is omitted it is derived
     from role + the next free N. Legacy ids (`builder-1`, `spec`) stay valid and are never rewritten in the DB.
-- **REQ-ENG-041 [ ]** (#20) Default roster, written by `troupe init` and adopted for this project once #20 lands (human:
-  trust codex; QA on a different provider from the builders):
-  | id | provider | model | level |
-  |---|---|---|---|
-  | lead_1 | claude | opus | high |
-  | pm_1 | codex | (default) | high |
-  | spec_1 | codex | (default) | high |
-  | designer_1 | claude | sonnet | medium |
-  | builder_1, builder_2 | codex | (default) | high |
-  | qa_1 | claude | opus | high |
-  | gadfly_1 | local | first model the local server reports | (ignored) |
-  - If no local server answers during `troupe init`, gadfly_1 is written as `codex / (default) / medium` with a
-    comment saying how to switch it to local. Test: the generated team.yaml validates and matches the table.
+- **REQ-ENG-041 [ ]** (#20 ships the mechanism and today's roles; each row notes its task) Default roster, written by `troupe init` and
+  adopted for this project once #20 lands. Human: trust codex; reviewers run on a different provider from writers.
+  Each cell is a preference list, first = preferred:
+  | id | providers (provider · model · level) |
+  |---|---|
+  | lead_1 | claude · opus · high → codex · default · high |
+  | pm_1 | codex · default · high → claude · opus · high |
+  | spec_1 | codex · default · high → claude · opus · high |
+  | designer_1 | claude · sonnet · medium → codex · default · medium |
+  | builder_1, builder_2 | codex · default · high → claude · sonnet · high → local · detected |
+  | architect_1 (#36) | claude · opus · high → codex · default · high |
+  | qa_1 | claude · opus · high → codex · default · high |
+  | researcher_1 (#41) | local · detected → codex · default · medium |
+  | gadfly_1 | local · detected → codex · default · medium |
+  - "detected" = the first model the local server reports during `troupe init`. If no local server answers, local
+    entries are written commented out, with a note saying how to enable them.
+  - Default `provider_limits`: claude `five_hour: 50, seven_day: 50` (the human's example); codex and local uncapped.
+  - `troupe init` writes the architect and researcher once their roles exist (#36, #41), and either can be disabled
+    in team.yaml.
+  - Test: the generated team.yaml validates and matches the table.
 
 ## Prompts
 - **REQ-ENG-020 [x]** System prompt = team charter (roster, rules, tools) + role prompt (`roles.py`).
@@ -143,7 +181,7 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     while both remain in flight. Tasks with empty territories are never flagged.
   - Serializing (holding the second task) is out of scope for now.
   - Test: parsing, prefix rules, notify-once-per-pair.
-- **REQ-ENG-038 [ ]** Worktree setup and cleanup. (#3)
+- **REQ-ENG-038 [x]** Worktree setup and cleanup. (#3)
   - Config `[git] setup = "uv sync"` (default empty = none) runs once in each newly created worktree, before the
     builder's first run. Output is appended to that run's log; a non-zero exit adds a note to the task and the
     builder is still started (told that setup failed and why).
@@ -173,12 +211,62 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
     REQ-ENG-034 path.
   - Test: in a temp git repo, a passing check merges, a failing check doesn't merge and sends the task back with
     output, a timeout counts as a failure, and an empty check merges directly.
+- **REQ-ENG-043 [ ]** (#36) Architecture review for **risky changes only** (human's answer). A task needs the architect's
+  approval in addition to QA's when its diff (against its merge base) matches any of these:
+  - **schema:** added or removed lines containing `CREATE TABLE`, `ALTER TABLE` or `CREATE INDEX`, or files under a
+    `migrations/` dir or `*.sql`;
+  - **dependency:** any change to a manifest (`pyproject.toml`, `requirements*.txt`, `package.json`, `Cargo.toml`,
+    `go.mod`, `Package.swift`);
+  - **new top-level module:** a new file directly in a source root (`src/<pkg>/`, `mac/Sources/<target>/`), or a new
+    directory at that level;
+  - **contract:** any path in `[review] arch_paths`. troupe's own list is `src/troupe/mcp_server.py`,
+    `src/troupe/team.py`, `src/troupe/api*`, `specs/50-api.md` and the commands handling in `src/troupe/store.py`;
+  - **flag:** the lead set `arch_review` on the task (`update_task(arch_review=True)`).
+  Rules:
+  - When such a task enters `review`, QA and the architect are both woken, and the board card shows an "arch ✓ / arch
+    pending" chip. Merging needs both approvals. Either rejection sends the task back with that reviewer's notes, and
+    both review again after the fix.
+  - Order after both approve: human approval if protected paths are touched (REQ-SAFE-020), then the merge gate
+    (REQ-ENG-040).
+  - With no enabled architect, the gate is skipped and the approval notes say so.
+  - The detection is a pure function of the diff and flag.
+  - Test: a `store.py` schema change or a `pyproject.toml` dependency needs both approvals; a `gui/views.py`-only change
+    merges on QA alone; an architect reject sends it back.
+- **REQ-ENG-045 [ ]** Milestones are first-class (human: Pulse should show the major work and how close the goal is).
+  - Additive schema: a `milestones` table (`id, name, goal, sort_order, status active|done, created`) and
+    `tasks.milestone_id`.
+  - Tools:
+    - the lead (or human) creates and edits milestones with `milestone(action=create|update, name, goal, order,
+      status)`;
+    - `create_task` and `update_task` accept `milestone`;
+    - `list_tasks(milestone=…)` filters by it.
+  - Progress = done / (total − cancelled) tasks in the milestone, computed, never stored. Only the lead or human marks
+    a milestone `done`.
+  - The lead's and pm's wake prompts show the active milestones with progress. The API exposes milestones
+    (specs/50-api.md), and Pulse shows them (REQ-GUI-038).
+  - The first milestone is "Ready for a test project" (#1, #2, #3, #15, #20, #23, #24, #25, plus the lead's additions).
+    The lead creates it with the tool, not a code seed.
+  - Test: create, assign and filter; progress excludes cancelled tasks; non-lead edits return `ERROR:`.
+- **REQ-ENG-046 [ ]** The engine publishes each agent's **wait state** and mail backlog every tick, as data (additive
+  columns or kv, exposed by the API), so Pulse (REQ-GUI-038) doesn't infer it.
+  - `waiting_on` = `{kind, target, since, reset_at?, queue_position?}` or null. Kinds, in precedence order:
+    - `human`: the agent's open question, or its task awaiting a human approval card. Target is `human`.
+    - `review`: its task is in review. Targets are the reviewer handles.
+    - `dependency`: its assigned task has unmet `depends_on`. Target is the dependency task id(s).
+    - `blocked`: its task is `blocked`. Target is the task id plus the reason from the task note.
+    - `providers`: every provider in its list is unavailable (REQ-BE-012). `reset_at` is the earliest reset.
+    - `rate_limit`: its current provider is limited (REQ-ENG-016). Target is the provider, plus `reset_at`.
+    - `slot`: it has a wake candidate but no run slot is free. `queue_position` is its 1-based position in the order
+      the tick would launch.
+    - `parked`: idle while owing work (today's derived diagnosis, REQ-GUI-002).
+  - `since` = when the current kind began. It persists across ticks while the kind doesn't change.
+  - Mail: `mail_queued` = unread messages not yet delivered. `mail_reading` = messages delivered to the currently
+    running run.
+  - Test: one fixture per kind, precedence when several apply, and a stable `since`.
 
 ## Open questions
 - Should QA be able to push small fixes itself, or always bounce to the builder?
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
-- One service per project (the current default, decided by pm when the human didn't answer) vs one machine-wide
-  service. The human can still choose.
 
 ## Changelog
 - 2026-09-23 — written from the bootstrap implementation.
@@ -189,3 +277,8 @@ Lifecycle: `backlog → ready → in_progress ⇄ blocked → review → approve
 - 2026-09-23 — service process model: ENG-001/003 rewritten, new ENG-006/007/008. Default roster: ENG-041 (the
   roster open question is resolved).
 - 2026-09-23 — tagged: service → #24, roster → #20.
+- 2026-09-23 — ENG-019: ordered `providers` list per agent (human). ENG-041: roster as preference lists, plus architect_1,
+  researcher_1 and default provider_limits. New ENG-043 architect gate for risky changes (#36), ENG-045 milestones, and
+  ENG-046 agent wait state + mail backlog as engine data (for Pulse, #32).
+- 2026-09-23 — human chose one service per project (open question closed). New ENG-009 graceful/auto reload and
+  ENG-042 crash supervision (#28). ENG-006 version warning replaced by auto reload.

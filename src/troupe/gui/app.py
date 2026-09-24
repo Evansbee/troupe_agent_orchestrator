@@ -95,6 +95,10 @@ class App:
                     if not rl.is_window_focused():
                         d.notify(f"troupe · {d.name_of(m['sender'])}", m["body"])
             d.new_messages = []
+        if d.new_chat_answers:
+            for q in d.new_chat_answers:
+                self.toast(f"Answered in chat ✓ · {q['question'][:70]}", T.GREEN)
+            d.new_chat_answers = []
         if d.new_questions:
             for q in d.new_questions:
                 self.toast(f"{d.name_of(q['asker'])} needs you: {q['question'][:90]}", d.color_of(q["asker"]))
@@ -176,7 +180,12 @@ class App:
         ui.text(pr.x + 24, pr.cy - 8, label, 12, col, "med")
         if ui.hover(pr) and d.kv.get("throttled"):
             ui.tip(str(d.kv.get("throttled")))
-        x = pr.r + 20
+        x = pr.r + 12
+        for backend in ("claude", "codex", "local"):
+            limit = d.limit_label(backend)
+            if limit:
+                x += ui.pill(x, r.cy - 13, limit, T.ORANGE, 12, h=26) + 8
+        x += 8
         stats = [(f"{d.running_count()}", "working"), (f"{d.runs_1h}/{self.cfg.budget.max_runs_per_hour}", "runs/h"),
                  (f"${d.cost_24h:.2f}", "24h est.")]
         open_n = sum(1 for t in d.tasks if t["status"] not in ("done", "cancelled"))

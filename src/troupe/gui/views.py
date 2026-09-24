@@ -186,7 +186,8 @@ def chat_view(app: "App", r: Rect) -> None:
         y = _chat_empty(app, a, convo, y)
     for m in thread:
         y = _bubble(app, m, convo, y, maxw) + 14
-    waiting = a["state"] == "running" and (not thread or thread[-1]["sender"] == "human")
+    waiting = (a["state"] == "running" and (not thread or thread[-1]["sender"] == "human")) or (
+        bool(d.limit_label(a["backend"])) and bool(thread) and thread[-1]["sender"] == "human")
     if waiting:
         y = _typing(app, a, convo, y, maxw) + 14
     ui.scroll_end(sc, y + sc.offset - convo.y + 8)
@@ -281,7 +282,8 @@ def _bubble(app: "App", m: dict, area: Rect, y: float, maxw: float) -> float:
 def _typing(app: "App", a: dict, area: Rect, y: float, maxw: float) -> float:
     ui, d = app.ui, app.data
     col = d.color_of(a["id"])
-    act = a["activity"] or "thinking…"
+    limit = d.limit_label(a["backend"])
+    act = limit or a["activity"] or "thinking…"
     w = min(maxw, max(200, ui.measure(act, 12) + 80))
     br = Rect(area.x + 24, y, w, 52)
     ui.rect(br, T.PANEL2, 14)
@@ -289,7 +291,7 @@ def _typing(app: "App", a: dict, area: Rect, y: float, maxw: float) -> float:
     for i in range(3):
         ph = ui.t * 5 - i * 0.7
         ui.circle(br.x + 20 + i * 12, br.y + 18 + math.sin(ph) * 2.5, 3.2, alpha(col, 0.5 + 0.5 * max(0, math.sin(ph))))
-    ui.text_fit(br.x + 58, br.y + 10, f"{a['name']} is working", w - 70, 12, col, "med")
+    ui.text_fit(br.x + 58, br.y + 10, f"{a['name']} is waiting" if limit else f"{a['name']} is working", w - 70, 12, col, "med")
     ui.text_fit(br.x + 16, br.y + 30, act, w - 30, 12, T.TEXT_DIM)
     return br.b
 
