@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
+from .config import claude_window_cap
 from .roles import ROLES
 from .store import ALL_STATUSES, HandleBook, Store
 
@@ -408,6 +409,7 @@ class Data:
         providers = []
         for provider in ("claude", "codex", "local"):
             until = s.kv_get("limit." + provider) or 0
+            reason = (s.kv_get(f"limit_meta.{provider}") or {}).get("reason", "provider")
             windows = []
             raw = (
                 (s.kv_get("claude_ratelimit") or {}).get("unifiedWindows", {})
@@ -427,18 +429,23 @@ class Data:
                         ).timestamp()
                     except ValueError:
                         reset = None
+                # REQ-BE-016 MVP cap, per window (5h/7d each have their own); #38's provider_limits
+                # (once configured) takes precedence over it.
+                mvp_cap = claude_window_cap(self.cfg.budget, key) if provider == "claude" else 0
                 windows.append(
                     dict(
                         name={"five_hour": "5h", "seven_day": "7d"}.get(key, key),
                         used_pct=float(window.get("utilization") or 0) * 100,
-                        cap_pct=self.cfg.provider_limits.get(provider, {}).get(key),
+                        cap_pct=self.cfg.provider_limits.get(provider, {}).get(key) or (mvp_cap or None),
                         resets_at=reset,
                     )
                 )
+            capped = bool(until > time.time() and reason == "cap")
             providers.append(
                 dict(
                     provider=provider,
                     limited_until=until if until > time.time() else None,
+                    capped=capped,
                     windows=windows,
                 )
             )

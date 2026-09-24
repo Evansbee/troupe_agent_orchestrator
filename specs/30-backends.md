@@ -70,7 +70,7 @@ should be able to move to codex or even local models as defined in the setup yam
   - A provider that reports nothing is treated as uncapped, with a one-time event saying so. Local is never capped.
   - Caps are account-wide: every project's service reads the provider's reported %, so they agree without coordinating.
   - Test: parsing each backend's usage events into per-window %, and cap comparison.
-- **REQ-BE-016 [ ]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
+- **REQ-BE-016 [x]** (#72; human: "running this morning", milestone #2) MVP Claude cap, ahead of the full BE-011/012.
   - Per-window caps in `troupe.toml`: `[budget] claude_cap_5h_percent` and `claude_cap_7d_percent` (each 0 = off).
     If either is unset it falls back to `claude_cap_percent` (default 50), so older configs keep working. Troupe's own
     values are the human's choice (question #18): **5h = 80, 7d = 50**.
