@@ -75,6 +75,36 @@ pattern, no special-cased UI for this one card type.
   as the task-diff approval card — e.g. `[dim]changed:[/dim] protected paths +2 −0`, or a clean
   before→after for a scalar field, `[dim]changed:[/dim] check: "true" → "uv run pytest"`.
 
+**Every card shows its own action hint inline, always** (#128 — a human's first launch had a pinned
+safety card in front of them and nothing on screen said how to act on it; discoverable-only-when-focused
+was the bug). The hint is part of the card's own rendered text, not chrome that appears on
+focus/hover, so it reads the same whether or not Needs-you has focus:
+- Safety/approval card: `[dim]A approve · X reject[/dim]`
+- Question with options: `[dim]a then 1–N · d dismiss[/dim]`
+- Free-text question: `[dim]a to reply[/dim]`
+
+**Safety cards get single-key fast paths, `A` (approve) / `X` (reject), each behind the same y/N
+confirm the generic `d` dismiss already used** — this is a second way to reach the same two outcomes
+`a`+option already gives a safety card (options 1/2 = Approve/Reject-with-note per
+`design/system.md`'s Approval-card component), not a replacement for it. The bar for a card this
+consequential is the single most obvious keystroke on the card, even if it duplicates an existing
+path. `a`+option and `d`+`y` on non-safety cards are unchanged.
+
+**On launch, a pending safety card takes focus over chat.** #83's rule ("focus the PM chat on
+startup") is the default; a pending safety card overrides it: Needs-you gets focus, its top card is
+highlighted (safety cards already sort first per the Pinning section below), and the status line reads
+`Safety card pending: press A to approve, X to reject`. Once nothing safety-kind is pending, launch
+focus reverts to chat as #83 specified — this is a priority override on top of that rule, not a second
+rule that competes with it.
+
+**Footer exception, documented:** a thin `SafetyHintBanner` line — `Tab: panes · A: approve safety
+card · X: reject` — docks above the regular Textual `Footer` whenever any safety card is pending,
+regardless of which pane has focus. This is a deliberate exception to "Footer / key bindings" below:
+Textual's built-in Footer only surfaces a binding owned by the currently-focused widget chain, which
+can't cover "the human tabbed away to Team and a safety card is still waiting" — exactly the gap that
+caused #128. Don't extend this pattern to any other kind; must-deliver safety-class urgency is what
+earns it a hand-built line, same reasoning as the pinning rule below.
+
 ## Chat pane (#68)
 
 Sender name in role color, message text plain, most recent at the bottom (sticky-to-bottom, same
@@ -99,7 +129,9 @@ full list per spec; don't build a modal for this, just navigate to/filter the re
 
 Use Textual's built-in `Footer` widget (auto-generated from bound keys) rather than hand-building a
 key-hint bar — it already matches this guidance's spirit (plain text, no emoji) and is one less thing
-to keep consistent across four builders.
+to keep consistent across four builders. One narrow, documented exception: the `SafetyHintBanner`
+described above, justified by a real discoverability failure (#128), not a stylistic preference — don't
+take it as license to add more hand-built bars for anything less than must-deliver safety urgency.
 
 ## Not doing right now
 
