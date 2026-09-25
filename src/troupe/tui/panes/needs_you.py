@@ -12,6 +12,7 @@ from typing import Any
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, ListItem, ListView, Static
@@ -332,8 +333,30 @@ class NeedsYouPane(Widget):
     async def action_retry(self) -> None:
         await self.load()
 
+    def _live_list_view(self) -> ListView | None:
+        """(#124) #ny-cards, but only when it's actually safe to mount into. `query_one` alone
+        isn't enough: it can itself raise `NoMatches` if compose() hasn't handed back a fresh
+        #ny-cards yet -- the pane's whole subtree was just torn down (TroupeApp._layout_body's
+        `remove_children()` during a compact<->wide resize prunes every pane's children outright,
+        confirmed live: `query_one` raises immediately after, before the matching `mount()` call
+        even starts). And even once compose() has run again, the fresh widget isn't linked into
+        the DOM (`is_attached`) until its own mount finishes -- `.append()`/`.insert()` both go
+        through `ListView.mount()` internally, which raises MountError before then. A live
+        question.new/answered event can arrive at any moment, unlike this pane's own lifecycle
+        calls, so this is the one lookup that must handle both."""
+        try:
+            list_view = self.query_one("#ny-cards", ListView)
+        except NoMatches:
+            return None
+        return list_view if list_view.is_attached else None
+
     async def _set_cards(self, items: list[dict]) -> None:
-        list_view = self.query_one("#ny-cards", ListView)
+        list_view = self._live_list_view()
+        if list_view is None:
+            # Nothing to reconcile here either way: a remount already drops this pane's rendered
+            # cards regardless of this guard (#111 is the dedicated fix for that); this only has
+            # to not crash while detached.
+            return
         focused_id = self._focused_question_id()
         await list_view.clear()
         for q in sort_cards(items):
@@ -358,7 +381,9 @@ class NeedsYouPane(Widget):
             self.run_worker(self._apply_update(q), exclusive=False)
 
     async def _apply_update(self, q: dict) -> None:
-        list_view = self.query_one("#ny-cards", ListView)
+        list_view = self._live_list_view()
+        if list_view is None:
+            return
         focused_id = self._focused_question_id()
         for item in list(list_view.children):
             if isinstance(item, QuestionCard) and item.question["id"] == q["id"]:
