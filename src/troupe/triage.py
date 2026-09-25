@@ -27,11 +27,36 @@ class TriageSettings:
             raise ValueError('triage.timeout must be >0 and <=30 seconds')
 
 
+BROADCAST_WINDOW = 2.0  # seconds; team.py's send_message fans a "team"/role broadcast out to one
+# row per recipient in a tight loop, with no shared marker on the rows themselves. Used only to
+# corroborate an explicit fyi=True (never to invent fyi status on its own — a coincidentally
+# identical status update sent individually to a few people, e.g. by a test or a habit, is not
+# reliably distinguishable from a real broadcast by content alone, and must not silently become
+# fyi just because it looks alike).
+
+
+def _has_broadcast_siblings(message: dict, store) -> bool:
+    return bool(store.scalar(
+        "SELECT 1 FROM messages WHERE sender=? AND subject=? AND body=? AND recipient!=? AND ABS(ts-?)<=? LIMIT 1",
+        message['sender'], message['subject'], message['body'], message['recipient'], message['ts'],
+        BROADCAST_WINDOW, default=None))
+
+
 def mandatory(message: dict, agent, store) -> bool:
     if message['sender'] == 'human':
         return True
     text = message['subject'] + '\n' + message['body']
-    if '?' in text or re.search(r'\b(question|blocking|blocked|review|please|action required)\b', text, re.I):
+    if '?' in text:
+        return True
+    # #121: a "team"/role broadcast the sender already marked fyi=True (the interim policy: mark
+    # broadcasts fyi) still got overridden by this keyword rule just because ordinary broadcast
+    # prose routinely contains "please"/"review"/etc without asking *this* particular recipient for
+    # anything — corroborated by sibling rows to other recipients (never fyi=True alone: a direct,
+    # single-recipient fyi=True message keeps the keyword rule as a safety net exactly as before,
+    # per REQ-COM-049 / test_hard_rules_bypass_fyi_and_model).
+    explicit_broadcast = bool(message.get('fyi')) and _has_broadcast_siblings(message, store)
+    if not explicit_broadcast and re.search(
+            r'\b(question|blocking|blocked|review|please|action required)\b', text, re.I):
         return True
     ids = [message['task_id']] if message.get('task_id') else [int(x) for x in re.findall(r'#(\d+)\b', text)]
     tasks = [store.task(tid) for tid in ids]

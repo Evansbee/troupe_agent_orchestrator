@@ -392,6 +392,9 @@ class PulseState:
     heat: dict = field(default_factory=dict)  # (a, b) -> last ts
     bumps: dict = field(default_factory=dict)  # node -> t
     feed_filter: str = "all"
+    show_spend: bool = False
+    spend_cache: str = ""
+    spend_cache_at: float = 0.0
 
 
 def on_new_messages(app: "App", msgs: list[dict]) -> None:
@@ -422,6 +425,24 @@ def _bez(p0, p1, t, bend=0.18):
     cx, cy = mx - dy * bend, my + dx * bend
     u = 1 - t
     return (u * u * p0[0] + 2 * u * t * cx + t * t * p1[0], u * u * p0[1] + 2 * u * t * cy + t * t * p1[1])
+
+
+SPEND_REFRESH = 5.0  # seconds; recomputing scans every run/event, so don't do it every frame
+
+
+def _spend_report(app: "App", p: "PulseState") -> list[str]:
+    """REQ-ENG-070: same numbers as `troupe spend`/the TUI, read straight off the GUI's own Store
+    handle (no socket needed here -- see AGENTS.md on the GUI/TUI data-access split). Cached because
+    this is draw code and the classification scans every run/event in the window."""
+    now = time.time()
+    if now - p.spend_cache_at > SPEND_REFRESH:
+        from .. import spend
+        runs = spend.load_runs(app.data.store, since="7d")
+        total = spend.summary(app.data.store, runs)
+        rows = spend.by_agent(app.data.store, runs)
+        p.spend_cache = spend.format_report(total, "7d", "agent", rows, name=app.data.name_of)
+        p.spend_cache_at = now
+    return p.spend_cache.splitlines()
 
 
 def pulse_view(app: "App", r: Rect) -> None:
@@ -512,29 +533,44 @@ def pulse_view(app: "App", r: Rect) -> None:
     fh, fb = feed.cut_top(44)
     ui.text(fh.x + 20, fh.y + 15, "ACTIVITY", 11, T.TEXT_FAINT, "bold")
     fx = fh.x + 100
+    clicked, w = ui.chip("feed:spend", fx, fh.y + 9, "$ Spend", p.show_spend, color=T.GREEN)
+    if clicked:
+        p.show_spend = not p.show_spend
+    fx += w + 6
     kinds = [("all", "All"), ("message", "Messages"), ("task", "Tasks"), ("run", "Runs"), ("question", "Questions"),
              ("memory", "Decisions")]
-    for key, label in kinds:
-        clicked, w = ui.chip(f"feed:{key}", fx, fh.y + 9, label, p.feed_filter == key)
-        if clicked:
-            p.feed_filter = key
-        fx += w + 6
-    evs = d.events if p.feed_filter == "all" else [e for e in d.events if e["kind"] == p.feed_filter
-                                                   or (p.feed_filter == "question" and e["kind"] == "answer")]
-    sc = ui.scroll_begin("feed", fb)
-    y = fb.y + 4 - sc.offset
-    for e in evs:
-        if y > fb.b + 20:
+    if not p.show_spend:
+        for key, label in kinds:
+            clicked, w = ui.chip(f"feed:{key}", fx, fh.y + 9, label, p.feed_filter == key)
+            if clicked:
+                p.feed_filter = key
+            fx += w + 6
+    if p.show_spend:
+        lines = _spend_report(app, p)
+        sc = ui.scroll_begin("feed", fb)
+        y = fb.y + 4 - sc.offset
+        for line in lines:
+            if y > fb.y - 20:
+                ui.text_fit(fb.x + 20, y, line, fb.w - 40, 12.5, T.TEXT_DIM, "mono")
+            y += 18
+        ui.scroll_end(sc, y + sc.offset - fb.y + 6)
+    else:
+        evs = d.events if p.feed_filter == "all" else [e for e in d.events if e["kind"] == p.feed_filter
+                                                       or (p.feed_filter == "question" and e["kind"] == "answer")]
+        sc = ui.scroll_begin("feed", fb)
+        y = fb.y + 4 - sc.offset
+        for e in evs:
+            if y > fb.b + 20:
+                y += 26
+                continue
+            if y > fb.y - 30:
+                col = d.color_of(e["agent"])
+                ui.text(fb.x + 20, y + 4, clock(e["ts"]), 11.5, T.TEXT_FAINT, "mono")
+                ui.circle(fb.x + 92, y + 11, 3.5, col)
+                tcol = T.RED if e["kind"] == "error" else (T.TEXT if e["significant"] else T.TEXT_DIM)
+                ui.text_fit(fb.x + 104, y + 3, e["text"], fb.w - 128, 13, tcol)
             y += 26
-            continue
-        if y > fb.y - 30:
-            col = d.color_of(e["agent"])
-            ui.text(fb.x + 20, y + 4, clock(e["ts"]), 11.5, T.TEXT_FAINT, "mono")
-            ui.circle(fb.x + 92, y + 11, 3.5, col)
-            tcol = T.RED if e["kind"] == "error" else (T.TEXT if e["significant"] else T.TEXT_DIM)
-            ui.text_fit(fb.x + 104, y + 3, e["text"], fb.w - 128, 13, tcol)
-        y += 26
-    ui.scroll_end(sc, y + sc.offset - fb.y + 6)
+        ui.scroll_end(sc, y + sc.offset - fb.y + 6)
 
 
 # ════════════════════════════════════════════════════════════════════════════

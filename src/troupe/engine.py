@@ -147,12 +147,54 @@ class Engine(MergeGateMixin):
         self.sync_config_agents(self.cfg)
         for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
             s.kv_set(f"config_error.{name}", "")
-        from .service import recover_interrupted
-        recover_interrupted(s)
+        self._recover_interrupted_runs()
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
         s.kv_set("checking_task", None)
         self.cleanup_worktrees()
+
+    def _recover_interrupted_runs(self) -> None:
+        """#121: like service.recover_interrupted, but keyed on run id, not a blind status sweep — a
+        run still marked 'running' after a crash or restart (today's actual driver: a reinstall
+        racing a run) may have already landed its real side effects (e.g. the builder's own
+        complete_task call) before the process died, well before that run's own end_run() got a
+        chance to record it. Redelivering its mail regardless wastes a run the agent can only reply
+        "already handled this" to — see _requeue_or_deliver_read."""
+        s = self.store
+        for run in s.q("SELECT id FROM runs WHERE status='running'"):
+            self._requeue_or_deliver_read(s.kv_get(f"run_mail.{run['id']}", []))
+            s.x("DELETE FROM kv WHERE key=?", f"run_mail.{run['id']}")
+        s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
+        s.x("UPDATE agents SET state='idle',current_run=NULL,activity='' WHERE state='running'")
+
+    def _requeue_or_deliver_read(self, message_ids: list[int]) -> None:
+        """#121: mail belonging to a run that produced no usable reply (limited, watchdog-killed,
+        failed, cancelled, or orphaned by a crash/restart) still needs to reach the recipient again
+        — redelivered by default, exactly like the pre-#121 behavior. Marked read instead only on
+        positive evidence that *this specific recipient* already acted on the mail's own task after
+        it arrived: update_task (complete_task, review_task, and update_task itself all go through
+        it) logs a `task:<id>` event with `agent=actor` — if the recipient authored one for this
+        message's task_id after the message's own ts, they've already engaged with it themselves.
+
+        QA #121 round 1 (rejected): the task's *current* status alone proves nothing about whether
+        this recipient read this particular message — a reviewer is mailed about tasks sitting in
+        "review", a builder about "ready" ones, a lead about any status — so treating any status
+        other than in_progress/blocked as "handled" silently dropped real mail (a rate-limited or
+        failed run for exactly those roles). Only a same-recipient, same-task, later-than-the-mail
+        event counts."""
+        if not message_ids:
+            return
+        s = self.store
+        rows = s.q(f"SELECT id, task_id, recipient, ts FROM messages WHERE id IN ({','.join('?' * len(message_ids))})",
+                  *message_ids)
+        done_ids, retry_ids = [], []
+        for row in rows:
+            handled = bool(row["task_id"]) and s.scalar(
+                "SELECT 1 FROM events WHERE ref=? AND agent=? AND ts>? LIMIT 1",
+                f"task:{row['task_id']}", row["recipient"], row["ts"], default=None)
+            (done_ids if handled else retry_ids).append(row["id"])
+        s.mark_read(done_ids)
+        s.mark_unread(retry_ids)
 
     def cleanup_worktrees(self) -> None:
         try:
@@ -448,7 +490,12 @@ class Engine(MergeGateMixin):
                     self.store.kv_set(f"setup.{path}", {"status": "pending", "command": self.cfg.git.setup})
             except gitops.GitError as e:
                 self.store.event("system", "error", f"worktree for #{t['id']} failed: {e}", significant=False)
-        self.store.update_task(t["id"], actor=a.id, event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
+        # #121: actor="system", not a.id -- this is the engine's own dispatch-adjacent bookkeeping
+        # (same convention as dispatch()'s own update_task call below), not something the agent
+        # itself did. _requeue_or_deliver_read treats a task event authored by a message's own
+        # recipient as evidence they've acted on it; crediting the agent here would make every
+        # task start look like already-handled mail, dropping the message that started it.
+        self.store.update_task(t["id"], actor="system", event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
         return self.store.task(t["id"]) or t
 
     def backend_limited(self, backend: str) -> bool:
@@ -739,7 +786,7 @@ class Engine(MergeGateMixin):
             if run["agent"] in self.running:
                 continue
             key = f"run_mail.{run['id']}"
-            s.mark_unread(s.kv_get(key, []))
+            self._requeue_or_deliver_read(s.kv_get(key, []))
             s.x("DELETE FROM kv WHERE key=?", key)
             s.x("UPDATE runs SET status='interrupted', ended=? WHERE id=?", now(), run["id"])
             row = s.agent(run["agent"]) or {}
@@ -833,14 +880,14 @@ class Engine(MergeGateMixin):
             apply_usage(s, sample, self.record_limit)
 
         if limited:
-            s.mark_unread([m["id"] for m in msgs])
+            self._requeue_or_deliver_read([m["id"] for m in msgs])
             reset = time.strftime("%H:%M", time.localtime(s.kv_get(f"limit.{a.backend}")))
             s.event(a.id, "run", f"{a.backend.title()} limited until {reset}", significant=False)
             return
         if watchdog_reason and not self._stop.is_set():
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
-            s.mark_unread([m["id"] for m in msgs])  # retry the mail later
+            self._requeue_or_deliver_read([m["id"] for m in msgs])  # retry the mail later, unless it's since been handled
             detail = (f"produced no output for {self.cfg.budget.stall_minutes:.0f}m" if watchdog_reason == "stalled"
                       else "ran past its time limit")
             s.event(a.id, watchdog_reason, f"{a.id}'s run {detail} and was killed ({n}x)")
@@ -848,14 +895,14 @@ class Engine(MergeGateMixin):
         if not res.ok and not runner.cancelled:
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
-            s.mark_unread([m["id"] for m in msgs])  # retry the mail later
+            self._requeue_or_deliver_read([m["id"] for m in msgs])  # retry the mail later, unless it's since been handled
             s.event(a.id, "error", f"{a.id}'s run failed ({n}x): {res.error[:200]}", significant=False)
             if w.chat:
                 s.send(a.id, "human", f"_(I hit an error and will retry shortly: {res.error[:300]})_", kind="chat")
             return
         self.failures.pop(a.id, None)
         if runner.cancelled:
-            s.mark_unread([m["id"] for m in msgs])
+            self._requeue_or_deliver_read([m["id"] for m in msgs])
             s.event(a.id, "run", f"{a.id}'s run was stopped", significant=False)
             return
 
@@ -968,6 +1015,12 @@ class Engine(MergeGateMixin):
             if evs:
                 p.append("\n## What happened since you last looked\n"
                          + "\n".join(f"- {ago(e['ts'])}: {names.event_text(e['text'])}" for e in evs[-25:]))
+        if a.role == "pm" and w.reason == "proactive":
+            from . import spend
+            runs = spend.load_runs(s, since="7d")
+            total = spend.summary(s, runs)
+            p.append(f"\n## Spend, last 7 days\n{spend.format_report(total, '7d', 'agent', spend.by_agent(s, runs), name=names.name)}"
+                     "\nMention this to the human if it's notable -- don't wait for them to ask.")
         p.append("\n## Now\n" + self.instruction(a, w, task, bool(msgs)))
         p.append("\nPrinciple 0 applies: the human comes first.")
         return "\n".join(p)
