@@ -147,12 +147,45 @@ class Engine(MergeGateMixin):
         self.sync_config_agents(self.cfg)
         for name in (config_mod.TEAM_FILE, config_mod.CONFIG_FILE):
             s.kv_set(f"config_error.{name}", "")
-        from .service import recover_interrupted
-        recover_interrupted(s)
+        self._recover_interrupted_runs()
         for a in self.cfg.agents:
             s.set_agent(a.id, enabled=int(a.enabled))
         s.kv_set("checking_task", None)
         self.cleanup_worktrees()
+
+    def _recover_interrupted_runs(self) -> None:
+        """#121: like service.recover_interrupted, but keyed on run id, not a blind status sweep — a
+        run still marked 'running' after a crash or restart (today's actual driver: a reinstall
+        racing a run) may have already landed its real side effects (e.g. the builder's own
+        complete_task call) before the process died, well before that run's own end_run() got a
+        chance to record it. Redelivering its mail regardless wastes a run the agent can only reply
+        "already handled this" to — see _requeue_or_deliver_read."""
+        s = self.store
+        for run in s.q("SELECT id FROM runs WHERE status='running'"):
+            self._requeue_or_deliver_read(s.kv_get(f"run_mail.{run['id']}", []))
+            s.x("DELETE FROM kv WHERE key=?", f"run_mail.{run['id']}")
+        s.x("UPDATE runs SET status='interrupted', ended=? WHERE status='running'", now())
+        s.x("UPDATE agents SET state='idle',current_run=NULL,activity='' WHERE state='running'")
+
+    def _requeue_or_deliver_read(self, message_ids: list[int]) -> None:
+        """#121: mail belonging to a run that produced no usable reply (limited, watchdog-killed,
+        failed, cancelled, or orphaned by a crash/restart) still needs to reach the recipient again
+        — unless the specific task each message is about has, in fact, already moved past needing
+        it (the run's own tool call, e.g. complete_task, landed before whatever cut the run off).
+        Checked fresh per message against its own task_id — not the run's task as a whole, since
+        unrelated mail can ride along in the same batch — so this never marks something read just
+        because a different task in the same run happened to move on."""
+        if not message_ids:
+            return
+        s = self.store
+        rows = s.q(f"SELECT id, task_id FROM messages WHERE id IN ({','.join('?' * len(message_ids))})",
+                  *message_ids)
+        done_ids, retry_ids = [], []
+        for row in rows:
+            t = s.task(row["task_id"]) if row["task_id"] else None
+            (done_ids if t and t["status"] not in ("in_progress", "blocked") else retry_ids).append(row["id"])
+        s.mark_read(done_ids)
+        s.mark_unread(retry_ids)
 
     def cleanup_worktrees(self) -> None:
         try:
@@ -739,7 +772,7 @@ class Engine(MergeGateMixin):
             if run["agent"] in self.running:
                 continue
             key = f"run_mail.{run['id']}"
-            s.mark_unread(s.kv_get(key, []))
+            self._requeue_or_deliver_read(s.kv_get(key, []))
             s.x("DELETE FROM kv WHERE key=?", key)
             s.x("UPDATE runs SET status='interrupted', ended=? WHERE id=?", now(), run["id"])
             row = s.agent(run["agent"]) or {}
@@ -833,14 +866,14 @@ class Engine(MergeGateMixin):
             apply_usage(s, sample, self.record_limit)
 
         if limited:
-            s.mark_unread([m["id"] for m in msgs])
+            self._requeue_or_deliver_read([m["id"] for m in msgs])
             reset = time.strftime("%H:%M", time.localtime(s.kv_get(f"limit.{a.backend}")))
             s.event(a.id, "run", f"{a.backend.title()} limited until {reset}", significant=False)
             return
         if watchdog_reason and not self._stop.is_set():
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
-            s.mark_unread([m["id"] for m in msgs])  # retry the mail later
+            self._requeue_or_deliver_read([m["id"] for m in msgs])  # retry the mail later, unless it's since been handled
             detail = (f"produced no output for {self.cfg.budget.stall_minutes:.0f}m" if watchdog_reason == "stalled"
                       else "ran past its time limit")
             s.event(a.id, watchdog_reason, f"{a.id}'s run {detail} and was killed ({n}x)")
@@ -848,14 +881,14 @@ class Engine(MergeGateMixin):
         if not res.ok and not runner.cancelled:
             n = self.failures.get(a.id, (0, 0))[0] + 1
             self.failures[a.id] = (n, now() + min(600, 30 * 2 ** (n - 1)))
-            s.mark_unread([m["id"] for m in msgs])  # retry the mail later
+            self._requeue_or_deliver_read([m["id"] for m in msgs])  # retry the mail later, unless it's since been handled
             s.event(a.id, "error", f"{a.id}'s run failed ({n}x): {res.error[:200]}", significant=False)
             if w.chat:
                 s.send(a.id, "human", f"_(I hit an error and will retry shortly: {res.error[:300]})_", kind="chat")
             return
         self.failures.pop(a.id, None)
         if runner.cancelled:
-            s.mark_unread([m["id"] for m in msgs])
+            self._requeue_or_deliver_read([m["id"] for m in msgs])
             s.event(a.id, "run", f"{a.id}'s run was stopped", significant=False)
             return
 
