@@ -36,13 +36,20 @@ def reasons(engine, agent_id):
 
 
 # ── item 1: a message a previous run already handled never wakes again ──────
+#
+# QA #121 round 1 (rejected): a task's *current status* proves nothing about whether a given
+# recipient read a given message — a reviewer is mailed about tasks in "review", a builder about
+# "ready" ones, a lead about any status. The fix is evidence-based instead: mark a message read
+# only when *that message's own recipient* has, since the message arrived, authored a task event
+# for its task_id (update_task/complete_task/review_task all log one). Everything else redelivers,
+# exactly like the pre-#121 behavior.
 
-def test_orphaned_run_whose_task_already_finished_does_not_redeliver_its_mail(project, monkeypatch):
+def test_orphaned_run_whose_recipient_already_acted_on_the_task_does_not_redeliver_its_mail(project, monkeypatch):
     """#121 AC1: a message already delivered in a previous run must never cause another wake once
-    that run's own task shows the work is done — keyed on the run's task state, not on how long
-    it's been. Reproduces today's actual driver: the engine (or process) dies between the builder's
-    own complete_task call landing and that run's end_run() finalizing its row, so the run is still
-    'running' in the DB even though the work it was mailed about is already finished."""
+    its own recipient has, in fact, acted on that task since. Reproduces today's actual driver: the
+    engine (or process) dies between the builder's own complete_task call landing and that run's
+    end_run() finalizing its row, so the run is still 'running' in the DB even though the work it
+    was mailed about is already finished."""
     cfg, store = project
     monkeypatch.setattr('troupe.engine.now', lambda: 1000)
     engine = Engine(cfg)
@@ -52,7 +59,8 @@ def test_orphaned_run_whose_task_already_finished_does_not_redeliver_its_mail(pr
     store.mark_read([mid])  # this run already saw it
     rid = store.start_run('builder-1', 'messages', tid, str(cfg.root), False)
     store.kv_set(f'run_mail.{rid}', [mid])
-    store.update_task(tid, status='review')  # the run's own complete_task call landed
+    # the run's own complete_task call landed (actor=builder-1, an event on task:tid after ts=990)
+    store.update_task(tid, actor='builder-1', event_text='builder-1 completed it', status='review')
     # run row is still 'running': the process died before end_run() got a chance to run
 
     engine.sweep_zombie_runs()
@@ -61,9 +69,9 @@ def test_orphaned_run_whose_task_already_finished_does_not_redeliver_its_mail(pr
     assert reasons(engine, 'builder-1') == []  # no fresh wake for it
 
 
-def test_orphaned_run_whose_task_is_still_unfinished_still_redelivers_its_mail(project, monkeypatch):
-    """The safety net: if the task never actually moved, the mail must still come back — #121's fix
-    must never risk silently dropping real unaddressed work."""
+def test_orphaned_run_whose_recipient_never_touched_the_task_still_redelivers_its_mail(project, monkeypatch):
+    """The safety net: if the recipient never actually acted on the task, the mail must still come
+    back — #121's fix must never risk silently dropping real unaddressed work."""
     cfg, store = project
     monkeypatch.setattr('troupe.engine.now', lambda: 1000)
     engine = Engine(cfg)
@@ -73,7 +81,28 @@ def test_orphaned_run_whose_task_is_still_unfinished_still_redelivers_its_mail(p
     store.mark_read([mid])
     rid = store.start_run('builder-1', 'messages', tid, str(cfg.root), False)
     store.kv_set(f'run_mail.{rid}', [mid])
-    # task never moved — the run genuinely never got to it
+    # task never touched by builder-1 — the run genuinely never got to it
+
+    engine.sweep_zombie_runs()
+
+    assert len(store.unread('builder-1')) == 1
+    assert reasons(engine, 'builder-1') == ['messages']
+
+
+def test_a_tasks_status_moving_for_some_other_reason_does_not_by_itself_clear_the_mail(project, monkeypatch):
+    """QA's exact regression repro shape: the task's status changes (by dispatch, by someone else,
+    or just because that's the status mail about this role normally arrives in) without the
+    *recipient* having authored anything — must still redeliver. Status alone is never evidence."""
+    cfg, store = project
+    monkeypatch.setattr('troupe.engine.now', lambda: 1000)
+    engine = Engine(cfg)
+    tid = store.add_task('Fix the thing', assignee='builder-1', status='in_progress')
+    mid = store.send('qa', 'builder-1', 'needs changes', subject=f'Review: #{tid}', task_id=tid)
+    store.x('UPDATE messages SET ts=990')
+    store.mark_read([mid])
+    rid = store.start_run('builder-1', 'messages', tid, str(cfg.root), False)
+    store.kv_set(f'run_mail.{rid}', [mid])
+    store.update_task(tid, actor='system', event_text='moved by someone else', status='review')
 
     engine.sweep_zombie_runs()
 
@@ -94,7 +123,7 @@ def test_orphaned_run_only_clears_the_mail_tied_to_the_finished_task_not_unrelat
     store.mark_read([done_mid, other_mid])
     rid = store.start_run('builder-1', 'messages', tid, str(cfg.root), False)
     store.kv_set(f'run_mail.{rid}', [done_mid, other_mid])
-    store.update_task(tid, status='review')
+    store.update_task(tid, actor='builder-1', event_text='builder-1 completed it', status='review')
 
     engine.sweep_zombie_runs()
 
@@ -114,7 +143,7 @@ def test_engine_startup_recovery_also_skips_mail_for_finished_work(project, monk
     store.mark_read([mid])
     rid = store.start_run('builder-1', 'messages', tid, str(cfg.root), False)
     store.kv_set(f'run_mail.{rid}', [mid])
-    store.update_task(tid, status='review')
+    store.update_task(tid, actor='builder-1', event_text='builder-1 completed it', status='review')
     store.set_agent('builder-1', state='running', current_run=rid)
 
     engine._recover_interrupted_runs()
@@ -124,7 +153,7 @@ def test_engine_startup_recovery_also_skips_mail_for_finished_work(project, monk
     assert store.agent('builder-1')['state'] == 'idle'
 
 
-def test_watchdog_kill_does_not_redeliver_mail_for_a_task_that_finished_first(project, monkeypatch):
+def test_watchdog_kill_does_not_redeliver_mail_for_a_task_the_recipient_finished_first(project, monkeypatch):
     """The same live, same-process path (REQ-ENG-050): the backend already called complete_task,
     then the session hung on something unrelated afterward and got stall-killed. The original
     mail must not be redelivered — that's the literal "I already addressed this" run."""
@@ -138,7 +167,8 @@ def test_watchdog_kill_does_not_redeliver_mail_for_a_task_that_finished_first(pr
 
     class HangingRunner(FakeRunner):
         async def run(self, spec, emit):
-            store.update_task(tid, status='review')  # the tool call lands mid-run
+            # the tool call lands mid-run, authored by the recipient itself
+            store.update_task(tid, actor='builder-1', event_text='builder-1 completed it', status='review')
             engine._watchdog_reason['builder-1'] = 'stalled'  # then the watchdog kills it
             return RunResult(ok=False, error='killed')
 
@@ -147,6 +177,51 @@ def test_watchdog_kill_does_not_redeliver_mail_for_a_task_that_finished_first(pr
 
     assert store.unread('builder-1') == []
     assert reasons(engine, 'builder-1') == []
+
+
+def test_rate_limited_run_that_did_no_work_still_redelivers_mail_about_a_review_task(project, monkeypatch):
+    """QA #121 round 1 repro (a): a task in "review" (the status a reviewer is normally mailed
+    about); the run comes back rate-limited having done nothing. Must redeliver — a task's own
+    status ("review") is exactly the kind of thing that used to look like false evidence."""
+    cfg, store = project
+    monkeypatch.setattr('troupe.engine.now', lambda: 1000)
+    engine = Engine(cfg)
+    monkeypatch.setattr(engine, 'process_approved', lambda: None)
+    tid = store.add_task('Needs review', assignee='builder-1', status='review')
+    mid = store.send('lead', 'qa', f'Review #{tid} first; checklist: run the tests, check the diff.',
+                     subject=f'Review: #{tid}', task_id=tid)
+    store.x('UPDATE messages SET ts=990')
+
+    runner = FakeRunner(RunResult(ok=False, error='rate limited', extra={'limit_until': 2000}))
+    monkeypatch.setattr('troupe.engine.make_runner', lambda backend: runner)
+    asyncio.run(run_wake(engine, Wake(2, cfg.agent('qa'), 'messages', store.task(tid))))
+
+    assert len(store.unread('qa')) == 1  # not dropped -- still there once the limit clears
+    monkeypatch.setattr('troupe.engine.now', lambda: 2001.0)  # past limit_until: qa is wakeable again
+    # 'review', not 'messages': the task's own review-queue candidacy (a separate, pre-existing
+    # mechanism) outranks it -- either way the redelivered mail rides along in that same wake.
+    assert reasons(engine, 'qa') == ['review']
+
+
+def test_failed_run_that_did_no_work_still_redelivers_mail_about_a_ready_task(project, monkeypatch):
+    """QA #121 round 1 repro (b): a task in "ready" (the status a builder is normally mailed about);
+    the run fails outright. Must redeliver."""
+    cfg, store = project
+    monkeypatch.setattr('troupe.engine.now', lambda: 1000)
+    engine = Engine(cfg)
+    monkeypatch.setattr(engine, 'process_approved', lambda: None)
+    tid = store.add_task('Pick this up', status='ready')
+    mid = store.send('lead', 'builder-1', f'Heads up on #{tid} before you start.', task_id=tid)
+    store.x('UPDATE messages SET ts=990')
+
+    runner = FakeRunner(RunResult(ok=False, error='backend crashed'))
+    monkeypatch.setattr('troupe.engine.make_runner', lambda backend: runner)
+    asyncio.run(run_wake(engine, Wake(2, cfg.agent('builder-1'), 'messages', store.task(tid))))
+
+    assert len(store.unread('builder-1')) == 1  # not dropped
+    monkeypatch.setattr('troupe.engine.now', lambda: 1100.0)  # past the failure backoff
+    assert reasons(engine, 'builder-1') == ['messages']
+    assert reasons(engine, 'builder-1') == ['messages']
 
 
 # ── item 2: fyi=True alone never wakes; it's folded into the next real wake ─
@@ -301,8 +376,9 @@ def _run_seeded_hour(cfg, store, engine, monkeypatch) -> int:
             store.kv_set(f'run_mail.{rid}', [mid])
             # done, not review: a task left sitting in review would legitimately keep waking QA
             # every tick until reviewed -- that's the review queue working as intended, not a
-            # wake-economy bug, and this simulation's fake backend never resolves it.
-            store.update_task(tid, status='done')
+            # wake-economy bug, and this simulation's fake backend never resolves it. actor/
+            # event_text=builder-1 is the evidence _requeue_or_deliver_read looks for.
+            store.update_task(tid, actor='builder-1', event_text='builder-1 completed it', status='done')
         if minute % 10 == 0:
             # A fyi=True team broadcast with ordinary "please"/"review" prose.
             for recipient in ('lead', 'pm', 'spec', 'designer', 'qa'):

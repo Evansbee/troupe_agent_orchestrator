@@ -170,20 +170,29 @@ class Engine(MergeGateMixin):
     def _requeue_or_deliver_read(self, message_ids: list[int]) -> None:
         """#121: mail belonging to a run that produced no usable reply (limited, watchdog-killed,
         failed, cancelled, or orphaned by a crash/restart) still needs to reach the recipient again
-        — unless the specific task each message is about has, in fact, already moved past needing
-        it (the run's own tool call, e.g. complete_task, landed before whatever cut the run off).
-        Checked fresh per message against its own task_id — not the run's task as a whole, since
-        unrelated mail can ride along in the same batch — so this never marks something read just
-        because a different task in the same run happened to move on."""
+        — redelivered by default, exactly like the pre-#121 behavior. Marked read instead only on
+        positive evidence that *this specific recipient* already acted on the mail's own task after
+        it arrived: update_task (complete_task, review_task, and update_task itself all go through
+        it) logs a `task:<id>` event with `agent=actor` — if the recipient authored one for this
+        message's task_id after the message's own ts, they've already engaged with it themselves.
+
+        QA #121 round 1 (rejected): the task's *current* status alone proves nothing about whether
+        this recipient read this particular message — a reviewer is mailed about tasks sitting in
+        "review", a builder about "ready" ones, a lead about any status — so treating any status
+        other than in_progress/blocked as "handled" silently dropped real mail (a rate-limited or
+        failed run for exactly those roles). Only a same-recipient, same-task, later-than-the-mail
+        event counts."""
         if not message_ids:
             return
         s = self.store
-        rows = s.q(f"SELECT id, task_id FROM messages WHERE id IN ({','.join('?' * len(message_ids))})",
+        rows = s.q(f"SELECT id, task_id, recipient, ts FROM messages WHERE id IN ({','.join('?' * len(message_ids))})",
                   *message_ids)
         done_ids, retry_ids = [], []
         for row in rows:
-            t = s.task(row["task_id"]) if row["task_id"] else None
-            (done_ids if t and t["status"] not in ("in_progress", "blocked") else retry_ids).append(row["id"])
+            handled = bool(row["task_id"]) and s.scalar(
+                "SELECT 1 FROM events WHERE ref=? AND agent=? AND ts>? LIMIT 1",
+                f"task:{row['task_id']}", row["recipient"], row["ts"], default=None)
+            (done_ids if handled else retry_ids).append(row["id"])
         s.mark_read(done_ids)
         s.mark_unread(retry_ids)
 
@@ -481,7 +490,12 @@ class Engine(MergeGateMixin):
                     self.store.kv_set(f"setup.{path}", {"status": "pending", "command": self.cfg.git.setup})
             except gitops.GitError as e:
                 self.store.event("system", "error", f"worktree for #{t['id']} failed: {e}", significant=False)
-        self.store.update_task(t["id"], actor=a.id, event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
+        # #121: actor="system", not a.id -- this is the engine's own dispatch-adjacent bookkeeping
+        # (same convention as dispatch()'s own update_task call below), not something the agent
+        # itself did. _requeue_or_deliver_read treats a task event authored by a message's own
+        # recipient as evidence they've acted on it; crediting the agent here would make every
+        # task start look like already-handled mail, dropping the message that started it.
+        self.store.update_task(t["id"], actor="system", event_text=f"{a.id} started #{t['id']} {t['title']}", **fields)
         return self.store.task(t["id"]) or t
 
     def backend_limited(self, backend: str) -> bool:
