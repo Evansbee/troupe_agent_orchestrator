@@ -139,6 +139,18 @@ def _locked(state: Path) -> bool:
         return False
 
 
+def _dir_identity(path: Path) -> tuple[int, int] | None:
+    """(device, inode) of `path`, or None if it can't be stat'd. A delete-then-recreate at the same
+    path (#115: QA's harness reuses a scratch dir like /tmp/qacut across iterations) allocates a
+    fresh inode, so comparing this -- not just `path.is_dir()` -- is what actually notices the swap
+    instead of reading the recreated directory as "still there, still mine"."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -350,6 +362,55 @@ def kill_service_now(cfg) -> bool:
     return True
 
 
+def reap_engines_under(path: Path, timeout: float = 5.0) -> list[int]:
+    """Identity-checked stop of every troupe engine whose project root is at or under `path` --
+    SIGTERM then SIGKILL, plus each one's process-group children (kill_descendants). For a harness
+    about to delete `path` (a test fixture's rmtree, launch_smoke's TemporaryDirectory, QA's
+    /tmp/qa_*.sh scripts) — PM ask #1088, after a scratch engine leaked for hours because the
+    harness that started it deleted-and-recreated its project dir instead of just deleting it,
+    which defeated the old is_dir()-only self-exit check (see run_foreground's watch_liveness).
+
+    Walks the filesystem for `*/.troupe/engine.pid` rather than trusting the global project
+    registry (~/.troupe/projects.json): ad hoc and test project dirs are routinely never
+    registered (they write `.troupe/` directly, skipping `register_project`), so the registry
+    alone would miss exactly the scratch/test engines this exists to catch.
+
+    Returns the pids actually stopped. Never touches a pid whose live identity doesn't match the
+    one recorded when it started -- a reused pid is never a valid target, same rule as every other
+    stop path in this module."""
+    path = Path(path)
+    stopped = []
+    if not path.is_dir():
+        return stopped
+    for pid_file in sorted(path.rglob(".troupe/engine.pid")):
+        try:
+            record = json.loads(pid_file.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        pid, identity = record.get("pid"), record.get("identity")
+        if not (isinstance(pid, int) and pid > 0 and identity and _identity(pid) == identity):
+            continue  # not a live, identity-matched engine -- nothing to reap
+        kill_descendants(pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            stopped.append(pid)
+            continue
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and _process_alive(pid) and _identity(pid) == identity:
+            time.sleep(0.05)
+        if _process_alive(pid) and _identity(pid) == identity:
+            kill_descendants(pid)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        stopped.append(pid)
+    return stopped
+
+
 def run_foreground(cfg) -> bool:
     from .engine import Engine
 
@@ -412,14 +473,21 @@ def run_foreground(cfg) -> bool:
                 # matter *why* the root vanished (a crashed test's tmpdir cleanup, the human
                 # deleting a project, a stray `rm -rf`), the engine notices within a couple of
                 # ticks instead of running forever. TROUPE_EXIT_WITH_PARENT_PID (set only by the
-                # test fixture, never in production) adds a second, tighter trigger: exit as soon
+                # tests and smoke harnesses, never normal launches) adds a second trigger: exit as soon
                 # as the process that spawned this engine is gone, rather than waiting for its
                 # directory to vanish too.
+                #
+                # #115: root_identity is the (device, inode) captured once, right here, so a
+                # harness that deletes *and recreates* its project dir at the same path (QA's
+                # /tmp/qacut, reused across iterations) still trips this -- `cfg.root.is_dir()`
+                # alone is fooled by the recreated directory existing again at the same path, but
+                # its inode is fresh.
+                root_identity = _dir_identity(cfg.root)
                 parent_pid_raw = os.environ.get("TROUPE_EXIT_WITH_PARENT_PID", "")
                 parent_pid = int(parent_pid_raw) if parent_pid_raw.isdigit() else None
                 while True:
-                    if not cfg.root.is_dir() or not cfg.state_dir.is_dir():
-                        logger.info("Project root %s disappeared; stopping.", cfg.root)
+                    if _dir_identity(cfg.root) != root_identity or not cfg.state_dir.is_dir():
+                        logger.info("Project root %s disappeared or was replaced; stopping.", cfg.root)
                         eng.stop()
                         return
                     if parent_pid is not None and not _process_alive(parent_pid):
@@ -470,3 +538,18 @@ def run_foreground(cfg) -> bool:
             for sig, previous in old_handlers.items():
                 signal.signal(sig, previous)
         return True
+
+
+def _cli(argv: list[str]) -> int:
+    """`python -m troupe.service reap <dir>` -- for QA's ad hoc harness scripts (/tmp/qa_*.sh) to
+    call before rmtree'ing a scratch project dir, same as scripts/launch_smoke.py now does."""
+    if len(argv) == 2 and argv[0] == "reap":
+        stopped = reap_engines_under(Path(argv[1]))
+        print(f"stopped {len(stopped)} engine(s): {stopped}" if stopped else "no engines found")
+        return 0
+    print("usage: python -m troupe.service reap <dir>", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

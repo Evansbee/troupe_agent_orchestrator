@@ -10,6 +10,7 @@ from troupe.config import AgentCfg, Config, NotifySettings, load
 from troupe.engine import Engine
 from troupe.gui.data import Data
 from troupe.notify import Notifier, deliver
+from troupe.service import reap_engines_under
 from troupe.store import Store
 
 
@@ -25,8 +26,11 @@ def env(tmp_path):
     clock = [1000.0]
     sent = []
     n = Notifier(s, lambda *args: sent.append(args) or True, lambda: clock[0])
-    yield cfg, s, clock, sent, n
-    project_dir.cleanup()
+    try:
+        yield cfg, s, clock, sent, n
+    finally:
+        reap_engines_under(tmp_path, timeout=2)
+        project_dir.cleanup()
 
 
 def advance(env, seconds=4, **kw):

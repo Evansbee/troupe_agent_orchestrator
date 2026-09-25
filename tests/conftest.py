@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from troupe import config, gitops
-from troupe.service import _identity
+from troupe.service import _identity, reap_engines_under
 from troupe.store import Store
 
 
@@ -30,7 +30,10 @@ def project(tmp_path):
     store.x("DELETE FROM messages")
     store.x("DELETE FROM events WHERE kind IN ('safety','question','answer','message')")
     store.sync_agents(cfg.agents)
-    return cfg, store
+    try:
+        yield cfg, store
+    finally:
+        reap_engines_under(tmp_path, timeout=2)
 
 
 # ── #103/REQ-ENG-060: no `troupe.cli engine` this session spawns may outlive it ─────────────────

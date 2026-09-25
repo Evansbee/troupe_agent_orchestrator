@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ from troupe import config
 from troupe.service import (
     _identity,
     projects,
+    reap_engines_under,
     register_project,
     service_status,
     start_service,
@@ -57,9 +59,7 @@ def project(monkeypatch):
         try:
             yield cfg
         finally:
-            if state.is_dir():  # a test may have deleted it itself (e.g. the root-disappears test)
-                stop_service(cfg, timeout=2)
-            _kill_engine_by_pid_file(state)  # #103: unconditional fallback, see conftest.py
+            reap_engines_under(Path(tmp), timeout=2)
             untrack_engine_state_dir(state)
 
 
@@ -647,6 +647,46 @@ def test_engine_exits_when_its_project_root_disappears(project):
     assert _wait_for_child_exit(pid, 10)
 
 
+def test_engine_exits_when_its_project_root_is_deleted_and_recreated_at_the_same_path(project):
+    """#115: QA's exact repro (msg #1088, the 14:28-18:40 leak) -- a harness that rmtrees and
+    RE-CREATES its scratch dir at the same path (reused across iterations, e.g. /tmp/qacut) defeats
+    the plain existence check the test above covers: the recreated directory exists again at that
+    path, so `cfg.root.is_dir()` alone reads it as "still there, still mine". Only comparing the
+    directory's identity (inode), not just its existence, actually notices the swap."""
+    cfg = project
+    proc = subprocess.Popen([sys.executable, "-m", "troupe.cli", "engine"], cwd=cfg.root,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        store = Store(cfg.db_path)
+        deadline = time.monotonic() + 10
+        while not store.kv_get("heartbeat") and time.monotonic() < deadline:
+            assert proc.poll() is None, "engine exited before its first heartbeat"
+            time.sleep(0.05)
+        assert store.kv_get("heartbeat"), "engine did not heartbeat"
+        # Pause across the entire swap: no tick may observe a missing root or state directory.
+        os.kill(proc.pid, signal.SIGSTOP)
+        try:
+            waited, status = os.waitpid(proc.pid, os.WUNTRACED)
+            assert waited == proc.pid and os.WIFSTOPPED(status)
+            original_inode = cfg.root.stat().st_ino
+            # Retain the old inode until recreation to prevent immediate inode reuse.
+            root_fd = os.open(cfg.root, os.O_RDONLY)
+            try:
+                shutil.rmtree(cfg.root)
+                cfg.state_dir.mkdir(parents=True)
+                assert cfg.root.stat().st_ino != original_inode
+            finally:
+                os.close(root_fd)
+        finally:
+            os.kill(proc.pid, signal.SIGCONT)
+        assert proc.wait(timeout=10) == 0
+    finally:
+        # The replacement has no pid record; retain the child handle for failed-test cleanup.
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
 def test_engine_exits_when_its_spawning_process_is_gone(project, monkeypatch, tmp_path):
     """The second #103 backstop: TROUPE_EXIT_WITH_PARENT_PID catches the case the root-disappears
     check can't — the spawning process (in production, nothing sets this; in tests, pytest itself)
@@ -664,6 +704,153 @@ def test_engine_exits_when_its_spawning_process_is_gone(project, monkeypatch, tm
         if fake_parent.poll() is None:
             fake_parent.kill()
             fake_parent.wait(timeout=5)
+
+
+def _make_scratch_project(root: Path) -> config.Config:
+    """A minimal project the same shape as the `project` fixture builds, but callable more than
+    once per test -- reap_engines_under's own tests need two independent projects at once."""
+    state = root / ".troupe"
+    state.mkdir(parents=True)
+    (state / "troupe.toml").write_text('[project]\nname="Reap Test"\n[git]\nautocommit=false\n')
+    (state / "team.yaml").write_text(
+        "agents:\n  - id: builder-1\n    role: builder\n    provider: local\n    enabled: false\n"
+        "  - id: lead\n    role: lead\n    provider: local\n    enabled: false\n"
+    )
+    return config.load(root)
+
+
+def test_reap_engines_under_stops_only_engines_at_or_under_path(monkeypatch):
+    """#115 acceptance: reap_engines_under(tmp) must stop an engine nested under `tmp` (a harness
+    can have its project several directories deep) and must leave a live engine under a sibling,
+    unrelated directory completely alone."""
+    with tempfile.TemporaryDirectory(prefix="troupe-reap-target-", dir="/tmp") as target_tmp, \
+         tempfile.TemporaryDirectory(prefix="troupe-reap-other-", dir="/tmp") as other_tmp, \
+         tempfile.TemporaryDirectory(prefix="troupe-reap-home-", dir="/tmp") as home_tmp:
+        monkeypatch.setenv("HOME", home_tmp)
+        monkeypatch.setenv("TROUPE_EXIT_WITH_PARENT_PID", str(os.getpid()))
+        target_root = Path(target_tmp) / "nested" / "project"
+        other_root = Path(other_tmp) / "project"
+        target_cfg = _make_scratch_project(target_root)
+        other_cfg = _make_scratch_project(other_root)
+        track_engine_state_dir(target_cfg.state_dir)
+        track_engine_state_dir(other_cfg.state_dir)
+        try:
+            target_pid = start_service(target_cfg)["pid"]
+            other_pid = start_service(other_cfg)["pid"]
+
+            stopped = reap_engines_under(Path(target_tmp))
+
+            assert stopped == [target_pid]
+            assert _wait_for_child_exit(target_pid, 10)
+            assert other_pid == service_status(other_cfg.root)["pid"]  # untouched, still running
+        finally:
+            stop_service(other_cfg, timeout=2)
+            _kill_engine_by_pid_file(target_cfg.state_dir)
+            _kill_engine_by_pid_file(other_cfg.state_dir)
+            untrack_engine_state_dir(target_cfg.state_dir)
+            untrack_engine_state_dir(other_cfg.state_dir)
+
+
+def test_reap_engines_under_ignores_a_stale_pid_file_whose_identity_does_not_match(tmp_path):
+    """Same rule as every other stop path in this module: a pid file naming a pid that's alive but
+    isn't actually the engine that wrote the record (a reused pid) must never be signalled."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        state = tmp_path / "proj" / ".troupe"
+        state.mkdir(parents=True)
+        (state / "engine.pid").write_text(
+            json.dumps({"pid": proc.pid, "identity": "not the real identity, simulating a reused pid"}))
+        stopped = reap_engines_under(tmp_path)
+        assert stopped == []
+        assert proc.poll() is None  # still alive -- must NOT have been touched
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_reap_engines_under_is_a_no_op_below_the_given_path(tmp_path):
+    assert reap_engines_under(tmp_path / "does-not-exist") == []
+
+
+def test_smoke_owns_its_engines_even_when_invoked_by_pytest(tmp_path, monkeypatch):
+    script = Path(__file__).resolve().parents[1] / "scripts" / "launch_smoke.py"
+    spec = importlib.util.spec_from_file_location("launch_smoke", script)
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    monkeypatch.setenv("TROUPE_EXIT_WITH_PARENT_PID", "1")
+    assert smoke.isolated_env(tmp_path)["TROUPE_EXIT_WITH_PARENT_PID"] == str(os.getpid())
+
+
+def test_sigkill_of_smoke_harness_leaves_no_engine(tmp_path):
+    """Run the real initializer and TUI; only GUI operations are suppressed (#127)."""
+    repo = Path(__file__).resolve().parents[1]
+    marker = tmp_path / "smoke-root"
+    code = '''
+import importlib.util
+import sys
+import time
+from pathlib import Path
+from troupe.service import _locked
+from troupe.store import Store
+marker, ready = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("launch_smoke", "scripts/launch_smoke.py")
+smoke = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(smoke)
+smoke.can_open_a_window = lambda env: ("skip", "no GUI during killed-harness regression")
+original_make = smoke.make_project
+def make(tmp, env):
+    # Record the owned directory even if initialization fails, so teardown always finds it.
+    marker.write_text(str(tmp / "proj"))
+    return original_make(tmp, env)
+smoke.make_project = make
+original_inject = smoke.inject_live_state
+def inject(proj):
+    original_inject(proj)
+    state = proj / ".troupe"
+    if (state / "engine.pid").exists() and _locked(state) and Store(state / "troupe.db").kv_get("heartbeat"):
+        ready.touch()
+        # Keep the harness mid-run until the test kills it, even if the TUI shot finishes.
+        time.sleep(60)
+smoke.inject_live_state = inject
+sys.argv = [sys.argv[0]]  # #127's main parses CLI flags; use its TUI-only default.
+sys.exit(smoke.main())
+'''
+    ready = tmp_path / "ready"
+    with (tmp_path / "harness.log").open("w+") as log:
+        harness = subprocess.Popen([sys.executable, "-c", code, str(marker), str(ready)],
+                                   cwd=repo, stdout=log, stderr=log)
+        root = None
+        try:
+            deadline = time.monotonic() + 20
+            while not ready.exists() and time.monotonic() < deadline:
+                if harness.poll() is not None:
+                    break
+                time.sleep(0.05)
+            log.seek(0)
+            assert ready.exists(), f"smoke never reached a live engine:\n{log.read()}"
+            root = Path(marker.read_text())
+            pid = json.loads((root / ".troupe/engine.pid").read_text())["pid"]
+            os.kill(pid, 0)
+            harness.kill()
+            harness.wait(timeout=5)
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"engine {pid} survived SIGKILL of smoke harness")
+            assert root.is_dir(), "must exit because the harness died, before directory cleanup"
+        finally:
+            if harness.poll() is None:
+                harness.kill()
+                harness.wait(timeout=5)
+            if marker.exists():
+                root = Path(marker.read_text())
+                reap_engines_under(root.parent, timeout=2)
+                shutil.rmtree(root.parent, ignore_errors=True)
 
 
 @pytest.mark.parametrize('newer_runs', [1, 205])
