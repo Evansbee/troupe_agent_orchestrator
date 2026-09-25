@@ -97,15 +97,28 @@ normal project work, including pushing to the project's own remote with the huma
     - Approve → merge (through the merge gate, REQ-ENG-040).
     - Reject → back to the builder with the note.
   - **Direct edits in main** (non-builder roles): protected paths changed during a run aren't auto-committed (REQ-ENG-036).
+  - [ ] (#118; the human's approval bar, REQ-COM-049) **One card per distinct change.**
+    - A protected-change card's identity is the protected hunks' own content: the added and removed lines per
+      protected file. It isn't the whole-branch diff or its context.
+    - A re-merge that only shifts context, or a resubmission of the same hunks after an approval, raises no new
+      card. Any new or different protected hunk raises exactly one.
+    - The card shows the full diff, protected paths first.
+    - Test: re-merging main twice into an approved protected branch raises no card; changing the hunk raises one.
+  - [ ] (#118) **Status-marker-only edits raise no card.** "Marker-only" means every changed line in a protected
+    spec differs from its old version only inside a status token (`[ ]`, `[x]`, `[~]`). No line is added or
+    removed, and nothing else on the line changes. It applies to protected `specs/*.md` only, never to code. Such
+    an edit auto-commits and is still written to the safety audit. Anything else is held as usual.
+    - Test: a marker-only flip lands without a card and with an audit line; a flip plus one changed word raises a
+      card.
     The change is saved as `.troupe/pending/<run>.patch`, reverted from the working tree, and raised as the same
     approval card. Approve → apply and commit; Reject → discard, and tell the author why.
   - Test: a task touching `roles.py` stays unmerged after QA approval until the card is approved; reject sends it back;
     a spec-role edit to `specs/05-safety.md` in main is held as a patch.
 - **REQ-SAFE-021 [x]** The `[safety]` section itself is guarded, and so is `[git] check` / `check_timeout` (REQ-ENG-040).
-  - [ ] (#107) `[git] doc_only_paths` is guarded the same way. An agent widening it (e.g. to `**`) would let code
+  - [x] (#107) `[git] doc_only_paths` is guarded the same way. An agent widening it (e.g. to `**`) would let code
     changes on main skip the merge gate's re-check. Test: a hand edit of `doc_only_paths` keeps the approved
     globs enforced and raises the approval card.
-  - [ ] (#109) The approval card shows **every** difference. After the diff of known fields (protected, remotes,
+  - [x] (#109) The approval card shows **every** difference. After the diff of known fields (protected, remotes,
     secret_allow, roles, check, check_timeout, doc_only_paths), any other difference between approved and
     proposed, including unknown keys, is listed under "other changes:" with the raw approved/proposed values. It
     is never dropped because a known field also changed. Test: a new remote plus an unknown `[safety]` key, and a
