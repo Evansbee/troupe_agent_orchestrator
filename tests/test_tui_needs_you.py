@@ -588,3 +588,84 @@ def test_pinned_safety_cards_sort_oldest_first_within_their_own_group():
             assert ids == [1, 2]  # oldest (ts=100) first, despite arriving after the newer one
 
     run(body())
+
+
+def test_apply_update_does_not_crash_when_ny_cards_is_detached():
+    """#124: ListView.insert()/.append() both go through Widget.mount() internally, which raises
+    MountError if the target isn't linked into the DOM yet -- the exact state #ny-cards is in
+    between TroupeApp._layout_body's remove_children() (which, confirmed live, prunes every pane's
+    own children outright, not just detaches them -- query_one raises NoMatches immediately after)
+    and its matching mount() during a compact<->wide resize. A live question.new/answered event can
+    arrive at any moment, unlike this pane's own lifecycle calls, so _apply_update must tolerate
+    #ny-cards not being usable right now rather than crash the whole app."""
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            list_view = pane.query_one("#ny-cards", ListView)
+            container = pane.parent
+            await pane.remove()
+            try:
+                pane.query_one("#ny-cards", ListView)
+                assert False, "test needs #ny-cards to genuinely be gone here"
+            except Exception:
+                pass  # NoMatches, confirming the detached state this guards against
+
+            pane.on_troupe_event({"event": "question.new", "data": {"question": question(2)}})
+            while list(pilot.app.workers):
+                await pilot.app.workers.wait_for_complete()  # must not raise
+
+            await container.mount(pane)
+            await pilot.pause()
+            new_list_view = pane.query_one("#ny-cards", ListView)
+            assert new_list_view is not list_view  # compose() really ran again
+
+    run(body())
+
+
+def test_set_cards_does_not_crash_when_ny_cards_is_detached():
+    """#124: same MountError risk as _apply_update above, but for the initial/reload population
+    path (_set_cards' own .append() loop)."""
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            container = pane.parent
+            await pane.remove()
+
+            await pane._set_cards([question(1), question(2)])  # must not raise
+
+            await container.mount(pane)
+            await pilot.pause()
+            assert pane.query_one("#ny-cards", ListView) is not None
+
+    run(body())
+
+
+def test_a_question_that_arrived_while_detached_shows_up_on_the_next_reload():
+    """#124's fix only has to not crash while #ny-cards is detached -- it doesn't have to preserve
+    state through a remount the way #111's dedicated fix does (that pane doesn't have #104-style
+    local history to replay yet). This pins that contract down: a card dropped while detached isn't
+    gone forever, since the next load() (the same one a periodic refresh or another live event
+    would trigger) re-fetches the full open-question list from the API, which -- like the real
+    engine -- already has it, regardless of what this TUI client's own DOM was doing."""
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            container = pane.parent
+            await pane.remove()
+
+            client.questions[2] = question(2)  # the backend already has it, live event or not
+            pane.on_troupe_event({"event": "question.new", "data": {"question": question(2)}})
+            while list(pilot.app.workers):
+                await pilot.app.workers.wait_for_complete()
+
+            await container.mount(pane)
+            await pane.load()
+            await pilot.pause()
+            assert {c.question["id"] for c in pane.query(QuestionCard)} == {1, 2}
+
+    run(body())
+
+    run(body())

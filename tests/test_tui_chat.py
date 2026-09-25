@@ -413,3 +413,66 @@ def test_sending_at_the_initial_layout_renders_a_you_bubble_once_the_engine_echo
             labels = [row.query_one(Static).content for row in thread.query(".chat-message")]
             assert labels and "you" in labels[-1]
     asyncio.run(scenario())
+
+
+def test_mount_message_queues_instead_of_crashing_on_an_unattached_thread():
+    """#124: `Widget.mount()` raises `MountError` if the target isn't linked into the DOM yet
+    (`is_attached` is False) — the exact condition between `compose()` returning a fresh
+    `#chat-thread` and it actually being attached (at startup, or mid-remount during a resize).
+    `_mount_message` must detect that itself and queue rather than ever attempt the mount."""
+    pane = ChatPane(FixtureClient())
+    thread = VerticalScroll(id="chat-thread")  # constructed but never mounted anywhere
+    assert not thread.is_attached
+
+    async def scenario():
+        m = message(1, "pm_1", "human", "hello while detached")
+        mounted = await pane._mount_message(thread, m)
+        assert mounted is False
+        assert pane._pending == [m]
+        assert len(thread.children) == 0  # .mount() was never attempted
+
+        # A second push of the same id while still detached must not queue a duplicate.
+        again = await pane._mount_message(thread, m)
+        assert again is False
+        assert pane._pending == [m]
+    asyncio.run(scenario())
+
+
+def test_live_message_arriving_while_the_thread_is_detached_is_queued_and_shown_once_reattached():
+    """#124 repro: TroupeApp._layout_body's compact<->wide transition removes every pane from its
+    container before mounting it into the new one (body.remove_children(), then body.mount(...)) —
+    the same remove()/mount() sequence test_removing_and_remounting_the_pane_replays_full_history
+    simulates directly. A live message.new arriving in that window used to crash the whole app with
+    MountError; it must instead be queued and appear exactly once, after the existing history, once
+    the pane is genuinely reattached."""
+    seed = [message(1, "pm_1", "human", "first"), message(2, "human", "pm_1", "second")]
+    client = FixtureClient(messages=seed)
+
+    async def scenario():
+        async with ChatTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(ChatPane)
+            await pilot.pause()
+            thread = pane.query_one("#chat-thread", VerticalScroll)
+            assert len(list(thread.query(Markdown))) == len(seed)
+
+            container = pane.parent
+            await pane.remove()
+            assert not thread.is_attached  # the exact condition the fix guards against
+
+            live = message(3, "pm_1", "human", "arrived while detached")
+            push(pane, "message.new", message=live)  # must not raise MountError
+            while list(pilot.app.workers):
+                await pilot.app.workers.wait_for_complete()
+            assert pane._pending == [live]  # queued, not lost, not mounted anywhere yet
+
+            await container.mount(pane)
+            await pilot.pause()
+
+            new_thread = pane.query_one("#chat-thread", VerticalScroll)
+            assert new_thread is not thread  # compose() really ran again
+            assert pane._pending == []  # flushed by on_mount
+            rows = list(new_thread.query(".chat-message"))
+            assert len(rows) == len(seed) + 1  # shown exactly once, not dropped or duplicated
+            who = [row.query_one(Static).content for row in rows]
+            assert "pm_1" in who[-1]  # the live message landed last, i.e. in arrival order
+    asyncio.run(scenario())

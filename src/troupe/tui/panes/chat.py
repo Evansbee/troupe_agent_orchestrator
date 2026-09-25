@@ -13,6 +13,7 @@ from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Markdown, Static, TextArea
@@ -111,6 +112,10 @@ class ChatPane(Widget):
         # into whatever #chat-thread it's handed, so it works the same on the very first mount (where
         # this is still empty — load() fills both the thread and this together) and on every remount.
         self._history: list[dict] = []
+        # Live messages _mount_message couldn't mount because #chat-thread wasn't attached yet
+        # (#124: startup, or mid-remount during a resize -- see _mount_message), oldest-first.
+        # on_mount flushes this once a genuinely attached thread shows up.
+        self._pending: list[dict] = []
         self._coalescer = ReloadCoalescer(self._attempt_load)
         self._retrier = AutoRetrier(self.load)
 
@@ -128,13 +133,24 @@ class ChatPane(Widget):
         run yet — it's awaited separately, after the initial layout, by TroupeApp), so this is a
         no-op then and `load()` populates the thread as before. On a remount, `self._history` is
         already populated from the *previous* mount's `load()`/live messages, so this replays it
-        into the fresh (otherwise permanently empty) #chat-thread `compose()` just handed back."""
-        if not self._history:
+        into the fresh (otherwise permanently empty) #chat-thread `compose()` just handed back.
+
+        (#124) Also flushes `self._pending`: live messages that arrived while the *previous*
+        #chat-thread was mid-teardown (detached but not yet replaced) get queued there by
+        `_mount_message` instead of being mounted into a widget that isn't attached to the DOM,
+        which raises `MountError` and used to crash the whole app. This mount is the first point
+        after a remount where the fresh thread is guaranteed attached, so it's also the right
+        place to drain that queue, in arrival order, right after the historical replay."""
+        if not self._history and not self._pending:
             return
         thread = self.query_one("#chat-thread", VerticalScroll)
         self._seen_ids = set()  # the new thread is genuinely empty; forget the old one's dedup state
         for m in self._history:
             await self._mount_message(thread, m)
+        pending, self._pending = self._pending, []
+        for m in pending:
+            if await self._mount_message(thread, m):
+                self._history.append(m)
         self._scroll_to_end(thread)
 
     # ── shared pane interface ────────────────────────────────────────────
@@ -163,16 +179,27 @@ class ChatPane(Widget):
             composer = self.query_one("#chat-composer", Composer)
             composer.placeholder = f"Message {self.pm_name}…  Enter to send · Shift+Enter for a new line"
             result = await self.client.call("messages", timeout=5.0, chat_with=self.pm_id, limit=100)
-            thread = self.query_one("#chat-thread", VerticalScroll)
-            for m in reversed(result.get("items", [])):
-                await self._mount_message(thread, m)
-                self._history.append(m)
-                self._last_sender = m.get("sender")
-            self._scroll_to_end(thread)
+            items = list(reversed(result.get("items", [])))
+            thread = self._live_thread()
+            if thread is None:
+                # #124: the pane's own subtree can be mid-teardown/rebuild right now (a
+                # compact<->wide resize) -- nothing to mount into yet. Queue the whole batch
+                # (oldest-first, ahead of anything already pending) for on_mount to flush once a
+                # genuinely attached thread shows up, rather than losing it or crashing.
+                self._pending = items + self._pending
+            else:
+                for m in items:
+                    if await self._mount_message(thread, m):
+                        self._history.append(m)
+                    self._last_sender = m.get("sender")
+                self._scroll_to_end(thread)
             self._pm_running = pm.get("state") == "running"
             self._pm_activity = pm.get("activity") or ""
         except Exception as e:
-            self.query_one("#chat-working", Static).update(f"couldn't load: {str(e) or type(e).__name__}")
+            try:
+                self.query_one("#chat-working", Static).update(f"couldn't load: {str(e) or type(e).__name__}")
+            except NoMatches:
+                pass
             self._retrier.schedule()
             return
         self._retrier.reset()
@@ -199,8 +226,32 @@ class ChatPane(Widget):
         sender, recipient = m.get("sender"), m.get("recipient")
         return (sender == "human" and recipient == self.pm_id) or (sender == self.pm_id and recipient == "human")
 
+    def _live_thread(self) -> VerticalScroll | None:
+        """(#124) The #chat-thread widget, but only when it's actually safe to mount into: `#124`'s
+        MountError repro needs two things, and `query_one` alone only rules out one of them.
+        `query_one` can itself raise `NoMatches` if compose() hasn't handed back a fresh
+        #chat-thread yet -- the pane's whole subtree was just torn down (TroupeApp._layout_body's
+        `remove_children()` during a compact<->wide resize prunes every pane's children outright,
+        confirmed live: `query_one` raises immediately after, before the matching `mount()` call
+        even starts). And even once compose() has run again, the fresh widget isn't linked into
+        the DOM (`is_attached`) until its own mount finishes -- calling `.mount()` on it before
+        then is exactly what raises MountError. A live message.new can arrive at any moment,
+        unlike this pane's own lifecycle calls, so this is the one lookup that must handle both."""
+        try:
+            thread = self.query_one("#chat-thread", VerticalScroll)
+        except NoMatches:
+            return None
+        return thread if thread.is_attached else None
+
     async def _handle_new_message(self, m: dict) -> None:
-        thread = self.query_one("#chat-thread", VerticalScroll)
+        thread = self._live_thread()
+        if thread is None:
+            # #124: queue it (deduped against both what's already mounted and already queued) --
+            # on_mount flushes this, in order, once a genuinely attached thread shows up.
+            mid = m.get("id")
+            if mid is None or not any(p.get("id") == mid for p in self._pending):
+                self._pending.append(m)
+            return
         was_at_bottom = thread.is_vertical_scroll_end
         mounted = await self._mount_message(thread, m)
         if mounted:
@@ -256,9 +307,19 @@ class ChatPane(Widget):
 
     async def _mount_message(self, thread: VerticalScroll, m: dict) -> bool:
         mid = m.get("id")
+        if mid is not None and mid in self._seen_ids:
+            return False
+        if not thread.is_attached:
+            # #124: the thread compose() just handed back isn't linked into the DOM yet -- at
+            # startup, or between TroupeApp._layout_body's remove_children() and its matching
+            # mount() during a compact<->wide resize -- so `thread.mount()` below would raise
+            # MountError and crash the whole app. Queue it instead (deduped against what's
+            # already queued, same as _seen_ids does for what's already mounted); on_mount drains
+            # this in order once a genuinely attached thread shows up.
+            if mid is None or not any(p.get("id") == mid for p in self._pending):
+                self._pending.append(m)
+            return False
         if mid is not None:
-            if mid in self._seen_ids:
-                return False
             self._seen_ids.add(mid)
         human = m.get("sender") == "human"
         who = "you" if human else self.pm_name
