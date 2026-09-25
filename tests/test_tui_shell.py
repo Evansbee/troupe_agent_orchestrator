@@ -582,6 +582,55 @@ def test_resize_round_trip_keeps_the_full_chat_history_rendered(project):
     asyncio.run(scenario())
 
 
+def test_resize_round_trip_keeps_every_needs_you_card_rendered(project):
+    """#111: the same TroupeApp._layout_body remount that emptied #104's chat thread does the
+    identical thing to NeedsYouPane's #ny-cards ListView — compose() hands back a fresh, empty
+    list on every compact<->wide transition, and load()/live events only ever populated the old
+    one. Worse than the chat bug in one way: a genuinely still-open safety approval card just
+    vanishes from view, with the pane looking like "nothing needs you" instead of showing the
+    pending approval."""
+    from troupe.tui.panes.needs_you import NeedsYouPane, QuestionCard
+
+    cfg, _store = project
+    questions = [
+        dict(id=1, ts=0, asker="system", kind="safety", question="Approve safety baseline?",
+             context="", options=["Approve", "Reject"], status="open", answer=None,
+             answered_at=None, task_id=None, approval=dict(task_id=None, branch=None, paths=[])),
+        dict(id=2, ts=0, asker="lead", kind="question", question="Which sharing model?",
+             context="", options=["Public", "Invite-only"], status="open", answer=None,
+             answered_at=None, task_id=None),
+    ]
+
+    async def scenario():
+        server = FixtureServer(cfg.root, agents=AGENTS, tasks=TASKS, usage=USAGE,
+                               engine=ENGINE, milestones=MILESTONES, questions=questions)
+        await server.start()
+        try:
+            app = _app(project)
+            async with app.run_test(size=(140, 42)) as pilot:
+                await _wait_until(lambda: app.client.connected)
+                needs_you = app.query_one(NeedsYouPane)
+                await _wait_until(
+                    lambda: len(list(needs_you.query(QuestionCard))) == len(questions))
+                assert any(c.is_safety for c in needs_you.query(QuestionCard))
+
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                cards = list(needs_you.query(QuestionCard))  # fresh widgets after the remount
+                assert len(cards) == len(questions)
+                assert any(c.is_safety for c in cards)
+
+                await pilot.resize_terminal(140, 42)
+                await pilot.pause()
+                cards = list(needs_you.query(QuestionCard))
+                assert len(cards) == len(questions)
+                assert any(c.is_safety for c in cards)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("size", [(140, 42), (80, 24)])
 @pytest.mark.parametrize("answer", ["y", "n"])
 def test_stop_and_resume_dialogs_restore_composer_focus(project, size, answer):

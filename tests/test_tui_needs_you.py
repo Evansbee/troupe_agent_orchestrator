@@ -524,6 +524,37 @@ def test_changed_baseline_card_falls_back_to_raw_context_for_an_unrecognized_cha
     assert "sneaky" in body
 
 
+def test_removing_and_remounting_the_pane_replays_all_open_cards():
+    """#111: TroupeApp._layout_body's compact<->wide transition removes every pane from its
+    container and mounts the *same instances* into a new one (body.remove_children(), then
+    body.mount(...)) — not a recompose() of children in place. That's the exact lifecycle this
+    simulates directly (out of the isolated NeedsYouTestApp's control, so no real resize is
+    available here): remove the widget, mount it again, and confirm NeedsYouPane.compose()
+    running fresh doesn't leave the new #ny-cards permanently empty, even for a still-open safety
+    approval (#111's repro: a resize hid a genuinely-still-open safety card, not just any card)."""
+    client = FakeClient([question(1), safety_question(2)])
+
+    async def body():
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            list_view = pane.query_one("#ny-cards", ListView)
+            assert len(list_view.children) == 2
+
+            container = pane.parent
+            await pane.remove()
+            await container.mount(pane)
+            await pilot.pause()
+
+            new_list_view = pane.query_one("#ny-cards", ListView)
+            assert new_list_view is not list_view  # compose() really ran again
+            cards = list(new_list_view.query(QuestionCard))
+            assert len(cards) == 2
+            assert {c.question["id"] for c in cards} == {1, 2}
+            assert any(c.is_safety for c in cards)
+
+    run(body())
+
+
 def test_changed_baseline_card_shows_known_diff_and_raw_context_for_a_mixed_change():
     """#109: a proposal that mixes a known-field change (roles) with a brand-new safety.<key> the
     summarizer doesn't recognize used to show only the recognized half — the human would approve
@@ -667,5 +698,31 @@ def test_a_question_that_arrived_while_detached_shows_up_on_the_next_reload():
             assert {c.question["id"] for c in pane.query(QuestionCard)} == {1, 2}
 
     run(body())
+
+
+def test_a_card_that_arrived_mid_resize_is_shown_exactly_once_after_the_remount():
+    """QA's #111/#124 merge note: _apply_update's early return for a detached #ny-cards must not
+    also skip updating self._questions -- if it did, a card delivered mid-resize would never reach
+    self._questions, on_mount's replay (the #111 fix) would never see it, and a pending safety
+    approval would stay hidden until the next full resync (worse than #104's chat bug: this one
+    can hide a safety-relevant card, not just an ordinary message). Unlike the "next reload" test
+    above, this proves the remount *alone* -- no explicit load() call afterward -- is enough,
+    since on_mount replays self._questions directly."""
+    async def body():
+        client = FakeClient([question(1)])
+        async with NeedsYouTestApp(client).run_test() as pilot:
+            pane = pilot.app.query_one(NeedsYouPane)
+            container = pane.parent
+            await pane.remove()
+
+            pane.on_troupe_event({"event": "question.new", "data": {"question": safety_question(2)}})
+            while list(pilot.app.workers):
+                await pilot.app.workers.wait_for_complete()  # must not raise
+
+            await container.mount(pane)
+            await pilot.pause()
+            cards = list(pane.query(QuestionCard))
+            assert {c.question["id"] for c in cards} == {1, 2}  # shown, not dropped
+            assert len([c for c in cards if c.question["id"] == 2]) == 1  # exactly once
 
     run(body())
