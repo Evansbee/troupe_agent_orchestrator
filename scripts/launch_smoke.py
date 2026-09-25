@@ -95,6 +95,9 @@ def isolated_env(tmp: Path) -> dict:
     home = tmp / "home"
     home.mkdir(exist_ok=True)
     env = os.environ.copy()
+    # Detached engines must exit even if this harness is SIGKILLed before its finally runs.
+    # Override an inherited pytest owner: that process can outlive this smoke run.
+    env["TROUPE_EXIT_WITH_PARENT_PID"] = str(os.getpid())
     env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
               XDG_DATA_HOME=str(home / ".local/share"), XDG_CACHE_HOME=str(home / ".cache"))
     return env

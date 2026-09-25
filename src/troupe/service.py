@@ -473,7 +473,7 @@ def run_foreground(cfg) -> bool:
                 # matter *why* the root vanished (a crashed test's tmpdir cleanup, the human
                 # deleting a project, a stray `rm -rf`), the engine notices within a couple of
                 # ticks instead of running forever. TROUPE_EXIT_WITH_PARENT_PID (set only by the
-                # test fixture, never in production) adds a second, tighter trigger: exit as soon
+                # tests and smoke harnesses, never normal launches) adds a second trigger: exit as soon
                 # as the process that spawned this engine is gone, rather than waiting for its
                 # directory to vanish too.
                 #

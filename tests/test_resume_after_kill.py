@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from troupe import config
-from troupe.service import service_status, set_owner, start_service, stop_service
+from troupe.service import reap_engines_under, service_status, set_owner, start_service, stop_service
 from troupe.store import Store
 from troupe.tui import lifecycle
 
@@ -56,8 +56,10 @@ def project(monkeypatch):
         baseline = store.kv_get("safety.config")
         store.answer(baseline["qid"], "Approve")
         cfg = config.load(root)
-        yield cfg
-        stop_service(cfg, timeout=2)
+        try:
+            yield cfg
+        finally:
+            reap_engines_under(Path(tmp), timeout=2)
 
 
 def _wait_running(store: Store, timeout: float = 10.0) -> None:
