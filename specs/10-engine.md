@@ -145,8 +145,17 @@ Client reporting does not depend on the deferred service supervisor shipping.
     #28 supervisor enabled, exercise a killed child and verify the same reporting and dedupe behavior.
   - Engine restart policy, backoff and crash-loop limits remain ENG-042/#28, which is deferred. Reporting does
     not re-enable supervision or change TUI engine ownership (REQ-TUI-001).
-- **REQ-ENG-059 [~]** (#92, #112 shipped; the gate-timeout process-group kill is #123) For changes under `src/troupe/gui/` or `src/troupe/tui/`, the merge gate includes headless
-  GUI and TUI launch smoke tests using the candidate merged tree (REQ-ENG-040).
+- **REQ-ENG-059 [~]** (#92, #112 shipped; hidden/scoped GUI smoke is #127; the gate-timeout process-group kill is #123)
+  For changes under `src/troupe/gui/` or `src/troupe/tui/`, the merge gate runs headless TUI launch smoke
+  using the candidate merged tree (REQ-ENG-040). It additionally runs GUI launch smoke only when the change
+  touches `src/troupe/gui/`, including a change touching both directories.
+  - (#127) `scripts/launch_smoke.py --no-gui` runs the TUI check without a GUI subprocess, display probe or
+    raylib window initialization; the gate selects it for TUI-only changes. A missing display never skips
+    the TUI check. Starting `troupe`/the TUI or its engine must not itself launch a GUI; only an applicable
+    GUI-change gate or an explicit GUI command may do so.
+  - (#127) Automated GUI launches, including display probes and QA screenshots, are hidden and unfocused
+    from initialization through shutdown (REQ-GUI-007). They must never show a window, appear in the Dock
+    or steal focus on the human's macOS desktop.
   - Exercise actual startup and at least one render/update cycle, then clean shutdown in a disposable project;
     an import-only check is insufficient. A startup exception, non-zero exit or timeout blocks the merge through
     the normal ENG-040 failure path. The check leaves no client or engine processes running.
@@ -155,12 +164,14 @@ Client reporting does not depend on the deferred service supervisor shipping.
   - After each client has initialized its notification cursor (about 10 frames), insert these through the Store:
     a `needs_help` message to the human, a PM chat message and a pending safety-baseline question. Then wait
     for the notification handler to run and render. Events present before launch don't cover this path, because
-    the GUI only treats post-first-refresh messages as new (#90). Capture a GUI screenshot (non-empty PNG) and
-    the TUI output as review evidence. Any traceback during startup, notification handling or shutdown fails
+    the GUI only treats post-first-refresh messages as new (#90). Capture the TUI output and, when the GUI
+    check applies, a GUI screenshot (non-empty PNG) as review evidence. Any traceback during startup, notification handling or shutdown fails
     the gate, and the stderr tail goes in the check log.
-  - Where no window can be opened (headless CI), the pytest wrapper skips and prints the reason. In the merge
-    gate, a skip is reported in the check log as "launch smoke not run: <reason>", never as a pass. QA then
-    runs the script by hand before approving (QA's gui/tui review rule).
+  - Where no hidden GUI window can be initialized (headless CI), only the applicable GUI check skips and
+    prints the reason; the TUI check still runs. In the merge gate, a skip is reported in the check log as
+    "launch smoke not run: <reason>" with the GUI scope identified, never as a pass. QA then runs the hidden
+    GUI check on a supported desktop before approving. GUI smoke omitted for a non-GUI change is inapplicable,
+    not a display-related skip requiring a manual GUI run.
   - Hardening (QA's #92 review, 2026-09-24):
     - **The candidate tree, not the installed copy.** The script and both client subprocesses run the task
       tree's code, through the tree's own environment (`uv run` in the tree). They must not use the engine's
@@ -168,8 +179,8 @@ Client reporting does not depend on the deferred service supervisor shipping.
     - **Deterministic injection.** Events are inserted after a positive first-refresh signal (or re-inserted
       until each client exits), never after a fixed delay alone. With the #90 bug re-added the check fails
       10 of 10 runs; on a healthy tree it passes 10 of 10.
-    - **Skip is decided up front.** Only a positive "no display" detection made before the clients launch may
-      skip, for example a window-open probe or raylib/GLFW's own no-display error. A client killed by a
+    - **GUI skip is decided up front.** Only a positive "no display" detection made before GUI launch may
+      skip that check, for example a hidden, unfocused window probe or raylib/GLFW's own no-display error. A client killed by a
       signal (negative exit code, such as a segfault) or any other non-zero exit is a failure, never a skip.
       (#112) A probe that itself raises a traceback or times out is also a failure; only its positive
       "no display" result skips. On a gate timeout, the whole process group (clients and any engine they
@@ -183,6 +194,11 @@ Client reporting does not depend on the deferred service supervisor shipping.
     whose `gui/app.py` fails to import fails the gate when run from the engine's installed python; a fake
     client that exits -11 fails, it doesn't skip; the real registry's hash is unchanged after a run. The check runs
     headlessly without interacting with the human's live project.
+  - (#127) Acceptance: a TUI-only candidate runs TUI smoke with no GUI subprocess, probe or raylib window
+    initialization; a GUI-only or mixed candidate runs TUI smoke and hidden GUI smoke. With no display,
+    TUI smoke still runs and only the applicable GUI check reports a skip. Test that ordinary TUI/engine
+    startup launches no GUI. QA observes a full smoke run and a standalone `TROUPE_SHOT` on a real macOS
+    desktop: no visible window or Dock appearance at any point, no focus change, and a valid screenshot.
 
 ### Out of scope
 - Automatically restarting or relaunching the human-facing client. Engine restart remains ENG-042/#28.
@@ -616,6 +632,8 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-059: #127 keeps TUI smoke mandatory for applicable gates, scopes GUI smoke to GUI changes,
+  and requires hidden, unfocused GUI shots/probes; no-display handling skips only the GUI check.
 - 2026-09-24 — ENG-059 → [~]: #92 and #112 shipped; the gate-timeout process-group kill remains (#123).
 - 2026-09-24 — ENG-060 → [~]: #115 adds the inode identity check and a shared `troupe.service reap <dir>`.
 - 2026-09-24 — Shipped: ENG-060 (#103) and ENG-040's #107 bullets marked [x]. #114's known gaps noted under ENG-040.

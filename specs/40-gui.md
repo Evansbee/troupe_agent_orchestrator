@@ -25,8 +25,17 @@ the Mac app.
 - **REQ-GUI-005 [x]** Toasts + macOS notifications for new questions and chat replies when unfocused. (OS
   notifications move into the engine service with REQ-ENG-047, #35. The GUI keeps in-window toasts.)
 - **REQ-GUI-006 [x]** Idle at 20 fps when nothing is happening; 60 fps when animating/working.
-- **REQ-GUI-007 [x]** F12 saves a screenshot to `.troupe/`; `TROUPE_SHOT=path TROUPE_TAB=Board troupe gui`
-  renders one frame to a PNG and exits (for agents to verify UI work visually).
+- **REQ-GUI-007 [~]** F12 saves a screenshot to `.troupe/`; `TROUPE_SHOT=path TROUPE_TAB=Board troupe gui`
+  renders to a PNG and exits (for agents to verify UI work visually).
+  - [x] Manual F12 capture and automated PNG capture/exit.
+  - [ ] (#127) Whenever `TROUPE_SHOT` is set, the GUI is hidden and unfocused from window initialization
+    through exit, without an extra opt-in flag. This applies to gate runs and QA screenshots; automated
+    display probes must obey the same rule. No visible frame, Dock appearance or focus stealing is allowed.
+    Configure hidden/unfocused behavior before initializing the window, and never request focus afterward.
+  - [ ] (#127) Acceptance: on a real macOS desktop, run a standalone shot and the applicable GUI launch smoke,
+    including its display probe. Each produces a non-empty, readable PNG and exits cleanly while the human's
+    active app keeps focus and no window or Dock entry appears. Automated tests verify hidden/unfocused
+    initialization ordering; a headless-only run is insufficient evidence of desktop invisibility.
 - **REQ-GUI-008 [ ]** (#55) Minimum window 1120×720: all seven tabs render without overlap or clipping at zoom 1.0 and
   1.15, and nothing regresses at 1560×980. Board card height grows with wrapped titles at any width (unit test on the
   height calculation). Verified by TROUPE_SHOT at both sizes.
@@ -244,6 +253,8 @@ not clicking. These requirements define *what* it shows and *when*. `design/stag
   - Test: row selection (priority/milestone filter, stage mapping) is a pure function with unit tests.
 
 ## Changelog
+- 2026-09-24 — GUI-007 marked partial for #127: every automated shot and display probe must stay hidden and
+  unfocused, with real macOS desktop verification; existing screenshot behavior remains shipped.
 - 2026-09-23 — written from the bootstrap implementation.
 - 2026-09-23 — acceptance criteria for GUI-020/021/022/023/024/027 (from backlog #1,#5,#6,#7,#11,#12).
 - 2026-09-23 — GUI-021: agents are edited in team.yaml, budget in troupe.toml.
