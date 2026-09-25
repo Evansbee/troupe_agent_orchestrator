@@ -30,6 +30,28 @@ def test_qa_rejection_then_resubmit_is_rework(project):
     assert runs[second].rework is True
 
 
+def test_qa_rereview_after_rejection_is_also_rework(project):
+    """QA #120 rejection: rework isn't just the rebuild -- QA's RE-review of the resubmitted branch
+    (reason='review', not 'task') is exactly the re-spend a bounce causes, and must count too."""
+    cfg, store = project
+    tid = store.add_task("Widget", status="review", assignee="builder-1")
+    t0 = time.time()
+    first_build = _run(store, "builder-1", "task", task_id=tid, started=t0)
+    # Same clock, not a synthetic forward offset: store.event() below stamps the reject with the
+    # *real* current time, which only ever advances -- a t0+N started value large enough to race
+    # past that real clock would wrongly look like it started after the rejection.
+    first_review = _run(store, "qa_1", "review", task_id=tid, started=t0)
+    store.event("qa_1", "task", f"qa_1 rejected #{tid} Widget", ref=f"task:{tid}")
+    rework_build = _run(store, "builder-1", "task", task_id=tid, started=t0 + 100)
+    re_review = _run(store, "qa_1", "review", task_id=tid, started=t0 + 110)
+
+    runs = {r.id: r for r in spend.load_runs(store)}
+    assert runs[first_build].rework is False
+    assert runs[first_review].rework is False
+    assert runs[rework_build].rework is True
+    assert runs[re_review].rework is True
+
+
 def test_gate_bounce_then_resubmit_is_rework(project):
     cfg, store = project
     tid = store.add_task("Widget", status="approved", assignee="builder-1")

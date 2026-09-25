@@ -5,12 +5,15 @@ Read-only over runs/tasks/events -- no new tracking. Two things are *derived*, n
   troupe (an edit, a commit, a message, an MCP call) happens through a tool call, so this is a
   sufficient proxy for "no tool calls, no commit, no message" without needing to separately
   correlate git history or the messages table.
-- "rework": a run on a task after that task was sent back -- a QA rejection (team.py's
+- "rework": *any* run carrying a task_id after that task was sent back -- a QA rejection (team.py's
   review_task), a merge-gate bounce (gates.py's check_failed), or a merge conflict (gates.py);
   all three log a `kind='task', ref='task:<id>'` event with recognizable wording, checked by
-  timestamp against the run's own start. A "messages"-reason run that produced nothing is also
-  rework: the wake fired, but there was nothing left to act on by the time it ran (a duplicate
-  delivery of a trigger someone else already handled).
+  timestamp against the run's own start. This deliberately isn't limited to reason='task': QA's
+  RE-review of the resubmitted branch (reason='review') is exactly the re-spend a bounce causes, so
+  it counts too (QA #120 rejection -- the first cut only flagged the rebuild, not the re-review).
+  A "messages"-reason run that produced nothing is also rework: the wake fired, but there was
+  nothing left to act on by the time it ran (a duplicate delivery of a trigger someone else already
+  handled).
 """
 from __future__ import annotations
 
@@ -94,9 +97,13 @@ def load_runs(store, since: str = "all") -> list[RunRow]:
     for r in rows:
         produced_nothing = r["id"] not in tool_ids
         rework = False
-        if r["reason"] == "task" and r["task_id"] is not None:
+        if r["task_id"] is not None:
+            # Any run against a bounced task is rework, not just the resubmitted build itself --
+            # QA's RE-review of that resubmit (reason='review') is exactly the cost the human's
+            # "$25k" question is about (QA #120 rejection: re-reviews were undercounted as
+            # first-pass). Also covers chat/messages/proactive runs that happen to carry the task_id.
             rework = any(ts < r["started"] for ts in triggers.get(r["task_id"], []))
-        elif r["reason"] == "messages" and produced_nothing:
+        if r["reason"] == "messages" and produced_nothing:
             rework = True
         out.append(RunRow(
             id=r["id"], agent=r["agent"], reason=r["reason"], status=r["status"] or "",
