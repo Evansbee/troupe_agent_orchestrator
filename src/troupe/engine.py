@@ -1015,6 +1015,12 @@ class Engine(MergeGateMixin):
             if evs:
                 p.append("\n## What happened since you last looked\n"
                          + "\n".join(f"- {ago(e['ts'])}: {names.event_text(e['text'])}" for e in evs[-25:]))
+        if a.role == "pm" and w.reason == "proactive":
+            from . import spend
+            runs = spend.load_runs(s, since="7d")
+            total = spend.summary(s, runs)
+            p.append(f"\n## Spend, last 7 days\n{spend.format_report(total, '7d', 'agent', spend.by_agent(s, runs), name=names.name)}"
+                     "\nMention this to the human if it's notable -- don't wait for them to ask.")
         p.append("\n## Now\n" + self.instruction(a, w, task, bool(msgs)))
         p.append("\nPrinciple 0 applies: the human comes first.")
         return "\n".join(p)

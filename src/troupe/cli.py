@@ -166,6 +166,17 @@ def cmd_status(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_spend(args: argparse.Namespace) -> None:
+    from . import spend
+    cfg = config_mod.load(require_root())
+    s = Store(cfg.db_path)
+    names = HandleBook(cfg.project, cfg.agents)
+    runs = spend.load_runs(s, since=args.since)
+    total = spend.summary(s, runs)
+    rows = spend.REPORTERS[args.by](s, runs)
+    print(spend.format_report(total, args.since, args.by, rows, name=names.name))
+
+
 def cmd_say(args: argparse.Namespace) -> None:
     cfg = config_mod.load(require_root())
     s = Store(cfg.db_path)
@@ -244,11 +255,14 @@ def main() -> None:
     p.add_argument("params", nargs="?", default="{}")
     sub.add_parser("doctor", help="check backends are available")
     sub.add_parser("concerns", help="list filed concerns (human-only; REQ-COM-029)")
+    p = sub.add_parser("spend", help="cost/token accounting: where the spend went (REQ-ENG-070)")
+    p.add_argument("--since", choices=("24h", "7d", "all"), default="7d")
+    p.add_argument("--by", choices=("task", "agent", "reason", "day"), default="agent")
     args = ap.parse_args()
     handlers = {"init": cmd_init, "tui": cmd_tui, "up": cmd_up, "engine": cmd_engine, "gui": cmd_gui,
                 "status": cmd_status, "say": cmd_say, "doctor": cmd_doctor, "api": cmd_api, "start": cmd_start,
                 "stop": cmd_stop, "resume": cmd_resume, "restart": cmd_restart, "projects": cmd_projects,
-                "ps": cmd_projects, "concerns": cmd_concerns}
+                "ps": cmd_projects, "concerns": cmd_concerns, "spend": cmd_spend}
     handlers.get(args.cmd or "tui", cmd_tui)(args)
 
 

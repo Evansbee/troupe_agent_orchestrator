@@ -23,6 +23,7 @@ from .panes.header import HeaderPane
 from .panes.needs_you import NeedsYouPane
 from .panes.tasks import TasksPane
 from .panes.team import TeamPane
+from .spend_screen import SpendScreen
 
 # Pane registries — see panes/__init__.py for the Pane API. LEFT_PANES sit under the header on
 # the left (Team/Tasks); RIGHT_PANES sit on the right, in design/tui.md's pane-priority order
@@ -97,6 +98,12 @@ class TroupeApp(App):
         Binding("R", "resume_action", "Resume", show=False),
         Binding("r", "restart_engine_action", "Restart"),
         Binding("/", "focus_chat", "Chat"),
+        # Like "s"/"r" above: a plain (non-priority) character binding, so it only fires while
+        # browsing another pane -- while the composer is focused, "$" is just a character to type.
+        # Textual's focused-Input/TextArea key handling inserts *any* printable character before
+        # binding dispatch, priority or not (unlike a control combo such as ctrl+c), so there's no
+        # way to make a bare printable-character binding fire while the composer has focus.
+        Binding("$", "show_spend", "Spend"),
         Binding("tab", "focus_next", "Next pane", show=False),
         Binding("shift+tab", "focus_previous", "Prev pane", show=False),
     ]
@@ -196,6 +203,9 @@ class TroupeApp(App):
 
     def action_focus_chat(self) -> None:
         self._focus_chat_composer()
+
+    def action_show_spend(self) -> None:
+        self.push_screen(SpendScreen(self.client))
 
     async def on_resize(self, event) -> None:
         await self._layout_body(event.size)

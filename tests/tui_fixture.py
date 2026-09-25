@@ -10,7 +10,7 @@ from pathlib import Path
 
 class FixtureServer:
     def __init__(self, root: Path, *, agents=None, tasks=None, usage=None, engine=None, milestones=None,
-                 messages=None, memories=None, errors=None, questions=None):
+                 messages=None, memories=None, errors=None, questions=None, spend=None):
         self.root = root
         self.agents = agents if agents is not None else []
         self.tasks = tasks if tasks is not None else []
@@ -21,6 +21,10 @@ class FixtureServer:
         self.memories = memories if memories is not None else []
         self.errors: dict[str, tuple[str, str]] = errors if errors is not None else {}
         self.questions = questions if questions is not None else []
+        self.spend = spend if spend is not None else dict(total=dict(runs=0, cost=0.0, tokens=0,
+                                                                       wall_seconds=0.0, rework_runs=0,
+                                                                       rework_cost=0.0, rework_share=0.0),
+                                                           by="agent", rows=[])
         self.seq = 0
         self._server: asyncio.base_events.Server | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -111,4 +115,9 @@ class FixtureServer:
             return dict(items=items)
         if method == "subscribe":
             return dict(epoch=1, seq=self.seq)
+        if method == "spend":
+            by = params.get("by", self.spend.get("by", "agent"))
+            if by == self.spend.get("by"):
+                return self.spend
+            return dict(total=self.spend["total"], by=by, rows=[])  # untouched "by": no canned rows
         return {}
