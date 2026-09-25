@@ -26,7 +26,7 @@ deferred. The lead builds #66 in four slices:
 Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 
 ## Launch
-- **REQ-TUI-001 [~]** (Ctrl-C and the restart-resume guarantees below are new, 13:32; the rest shipped with #66.)
+- **REQ-TUI-001 [~]** (Ctrl-C + rerun-resumes shipped with #100/#113; the 5 s bound at real project size is #119.)
   "Run and everything runs, quit and everything quits" (human, 2026-09-24). `troupe` with no
   arguments (or `troupe tui`) in a project directory starts the project's engine **as a child of the TUI** and opens
   the TUI on its API.
@@ -107,7 +107,7 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
   - **Comms:** agent→agent mail subjects, decisions and merges, newest at the bottom, sticky to the bottom
     (REQ-GUI-017 rules).
   - **Needs you:** open cards, including escalations the PM forwarded, credited "via pm_1 from …".
-    [ ] (#109) Must-deliver cards are pinned above every other card, whatever their age. Rules are in
+    [~] (#109 shipped the safety part) Must-deliver cards are pinned above every other card, whatever their age. Rules are in
     design/system.md "Pinning & priority order":
     - Pinned kinds: `concern`, then `safety` approvals, then `crash_loop` and `crash` (REQ-ENG-057, once #91
       lands).
@@ -210,3 +210,5 @@ Each slice ships its own tests and SVG snapshots, and flips its REQs to [x].
 - 2026-09-24 — TUI-010 pinning aligned with design/system.md (concern > safety > crash_loop/crash; safety oldest-first;
   "Pinned" label). TUI-011 → [~]: resizing across 80×24 preserves every pane and the chat draft (#104, #111).
 - 2026-09-24 — TUI-002's #108 item shipped [x]. TUI-021: sticky-to-bottom never undoes a human scroll-up (#116).
+- 2026-09-24 — TUI-001: Ctrl-C and rerun-resumes shipped (#100, #113); the 5 s bound at real size stays open (#119). TUI-010:
+  #109 shipped the safety-card pinning.

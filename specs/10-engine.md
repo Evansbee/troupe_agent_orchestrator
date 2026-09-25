@@ -145,7 +145,7 @@ Client reporting does not depend on the deferred service supervisor shipping.
     #28 supervisor enabled, exercise a killed child and verify the same reporting and dedupe behavior.
   - Engine restart policy, backoff and crash-loop limits remain ENG-042/#28, which is deferred. Reporting does
     not re-enable supervision or change TUI engine ownership (REQ-TUI-001).
-- **REQ-ENG-059 [ ]** For changes under `src/troupe/gui/` or `src/troupe/tui/`, the merge gate includes headless
+- **REQ-ENG-059 [~]** (#92, #112 shipped; the gate-timeout process-group kill is #123) For changes under `src/troupe/gui/` or `src/troupe/tui/`, the merge gate includes headless
   GUI and TUI launch smoke tests using the candidate merged tree (REQ-ENG-040).
   - Exercise actual startup and at least one render/update cycle, then clean shutdown in a disposable project;
     an import-only check is insufficient. A startup exception, non-zero exit or timeout blocks the merge through
@@ -616,6 +616,7 @@ pushed, no remote is added and no history is rewritten until the PM confirms the
 - Should the human approve tasks before builders start ("human-gated" autonomy mode)?
 
 ## Changelog
+- 2026-09-24 — ENG-059 → [~]: #92 and #112 shipped; the gate-timeout process-group kill remains (#123).
 - 2026-09-24 — ENG-060 → [~]: #115 adds the inode identity check and a shared `troupe.service reap <dir>`.
 - 2026-09-24 — Shipped: ENG-060 (#103) and ENG-040's #107 bullets marked [x]. #114's known gaps noted under ENG-040.
   SAFE-021's #107 sub-item stays [ ] until the protected-path freeze lifts (lead msg #1064).
