@@ -208,6 +208,18 @@ def stop_any_engine(proj: Path) -> None:
         print(f"warning: could not stop launch-smoke's engine: {e}", file=sys.stderr)
 
 
+def reap_tmp_engines(tmp: Path) -> None:
+    """#115: a filesystem-level backstop alongside stop_any_engine, for two cases that one alone
+    can't cover -- config_mod.load(proj) failing (a partially torn-down project, or an exception
+    before `proj` exists at all) and a forced kill of the gui/tui subprocess mid-run leaving its
+    own ensure_engine()-started engine behind. Identity-checked, like every other stop path."""
+    try:
+        from troupe.service import reap_engines_under
+        reap_engines_under(tmp)
+    except Exception as e:
+        print(f"warning: reap_engines_under failed: {e}", file=sys.stderr)
+
+
 def main() -> int:
     # dir="/tmp", not the default (macOS's per-user /var/folders/<hash>/T/...): a Unix domain
     # socket path has a ~104-byte kernel limit, and the default tempdir's random per-user hash
@@ -215,6 +227,7 @@ def main() -> int:
     # flake, not the #90 timing race this script exists to catch.
     with tempfile.TemporaryDirectory(prefix="troupe-launch-smoke-", dir="/tmp") as tmp_str:
         tmp = Path(tmp_str)
+        reap_tmp_engines(tmp)  # #115: belt-and-suspenders before creating anything under tmp
         env = isolated_env(tmp)
         verdict, detail = can_open_a_window(env)
         if verdict == "fail":
@@ -248,6 +261,8 @@ def main() -> int:
                     proc.wait()
             if proj is not None:
                 stop_any_engine(proj)
+            reap_tmp_engines(tmp)  # #115: backstop -- catches what stop_any_engine's cfg-based
+            # path can't (a raised config load, or a forcibly-killed client's own orphaned engine)
         failures = [r for r in results if r]
         if failures:
             print("\n\n".join(failures), file=sys.stderr)
