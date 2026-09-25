@@ -286,6 +286,16 @@ class NeedsYouPane(Widget):
         self._load_error_shown = False
         self._coalescer = ReloadCoalescer(self._attempt_load)
         self._retrier = AutoRetrier(self.load)
+        # Every open question currently known, keyed by id (#111): a compact<->wide layout
+        # transition tears down and rebuilds every pane's DOM (TroupeApp._layout_body's
+        # remove_children()+mount()), so NeedsYouPane.compose() runs again and hands back a brand
+        # new, empty #ny-cards ListView — load()/on_troupe_event only ever populated *that* list,
+        # so a resize left the pane showing "nothing needs you" even for a genuinely still-open
+        # safety approval. `on_mount` below replays this dict into whatever #ny-cards it's handed.
+        # Keyed by id (not an append-only list like ChatPane's #104 _history) because dismiss/
+        # answer/live-update already work by id and a card can be removed or replaced in place,
+        # not just appended.
+        self._questions: dict[int, dict] = {}
 
     def compose(self) -> ComposeResult:
         yield Static("Needs you", classes="pane-title")
@@ -293,8 +303,16 @@ class NeedsYouPane(Widget):
         yield Input(placeholder="a number, or a reply, then Enter — Esc to cancel", id="ny-answer")
         yield Static("", id="ny-status")
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        """(#111) Fires after every compose(), including a compact<->wide remount, not just the
+        very first mount. On the very first mount self._questions is still empty (load() hasn't
+        run yet — it's awaited separately, after the initial layout, by TroupeApp), so the replay
+        below is a no-op and load() populates the pane as before. On a remount, self._questions
+        already reflects the last known state, so this rebuilds #ny-cards from it, the same way
+        _set_cards already does for a normal resync."""
         self.query_one("#ny-answer", Input).display = False
+        if self._questions:
+            await self._set_cards(list(self._questions.values()))
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Keeps `y`/`n` inert (and free to bubble to some future global binding, e.g. copy) except
@@ -351,11 +369,14 @@ class NeedsYouPane(Widget):
         return list_view if list_view.is_attached else None
 
     async def _set_cards(self, items: list[dict]) -> None:
+        self._questions = {q["id"]: q for q in items}
         list_view = self._live_list_view()
         if list_view is None:
-            # Nothing to reconcile here either way: a remount already drops this pane's rendered
-            # cards regardless of this guard (#111 is the dedicated fix for that); this only has
-            # to not crash while detached.
+            # #124: the pane's own subtree can be mid-teardown/rebuild right now (a compact<->wide
+            # resize) -- nothing to mount into yet. self._questions is already updated above though
+            # (QA #111 note): on_mount replays it into whatever #ny-cards it's handed once a
+            # genuinely attached list shows up, so a card that arrives mid-resize isn't lost, just
+            # not painted this instant.
             return
         focused_id = self._focused_question_id()
         await list_view.clear()
@@ -382,6 +403,15 @@ class NeedsYouPane(Widget):
 
     async def _apply_update(self, q: dict) -> None:
         list_view = self._live_list_view()
+        # QA #111 note on the #124 merge: self._questions must stay in sync even while #ny-cards
+        # is detached, or on_mount's eventual replay never sees a card that arrived mid-resize --
+        # a pending safety approval would then stay hidden until the next full resync. So this
+        # updates self._questions unconditionally, before the list_view is None early return below,
+        # rather than only from inside the widget-mutation branches that guard skips.
+        if q.get("status") == "open":
+            self._questions[q["id"]] = q
+        else:
+            self._questions.pop(q["id"], None)
         if list_view is None:
             return
         focused_id = self._focused_question_id()
