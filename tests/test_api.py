@@ -632,3 +632,21 @@ def test_run_provider_is_not_rewritten_by_roster_changes(api):
         run = c.call("runs")["items"][0]
         assert run["id"] == rid
         assert (run["provider"], run["model"]) == ("local", "original")
+
+
+def test_spend_rpc_returns_total_and_grouped_rows(api):
+    """#120: the TUI/GUI spend view reads through this RPC, not the DB directly."""
+    _, s = api
+    rid = s.start_run("builder-1", "task", None, "/tmp", False)
+    s.run_line(rid, "tool", "edit foo.py")
+    s.end_run(rid, "ok", 3.5, 400, "done")
+    with client(api) as c:
+        result = c.call("spend", dict(since="all", by="agent"))
+        assert result["total"]["runs"] == 1
+        assert result["total"]["cost"] == 3.5
+        assert result["by"] == "agent"
+        assert result["rows"][0]["agent"] == "builder-1"
+    with client(api) as c:
+        error(c, "spend", dict(since="all", by="nonsense"), "bad_request")
+    with client(api) as c:
+        error(c, "spend", dict(since="nonsense", by="agent"), "bad_request")
