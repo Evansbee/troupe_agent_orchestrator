@@ -42,6 +42,7 @@ PARAMS = {
     "hello": "api_version client notifications",
     "snapshot": "messages_limit",
     "agents": "",
+    "spend": "since by",
     "tasks": "status milestone_id",
     "task": "id",
     "milestones": "",
@@ -596,6 +597,16 @@ class Data:
             )
         if method == "agents":
             return dict(items=self.agents())
+        if method == "spend":
+            from . import spend
+            since, by = string(p, "since", "7d"), string(p, "by", "agent")
+            if by not in spend.REPORTERS:
+                raise APIError("bad_request", f"by must be one of {sorted(spend.REPORTERS)}")
+            try:
+                runs = spend.load_runs(s, since=since)
+            except ValueError as e:
+                raise APIError("bad_request", str(e))
+            return dict(total=spend.summary(s, runs), by=by, rows=spend.REPORTERS[by](s, runs))
         if method == "milestones":
             return dict(items=s.milestones())
         if method == "task":
